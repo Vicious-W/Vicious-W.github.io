@@ -27,11 +27,16 @@
         <p>&nbsp;  👇WATCH MY WEB👇</p>
     </div>
     <div class="top">
-        <a href="https://i2.hdslb.com/bfs/archive/95eb5191f266148dca59bbda297da8b3a5aa251b.jpg">我的兴趣</a>
-        <a href="https://i2.hdslb.com/bfs/archive/95eb5191f266148dca59bbda297da8b3a5aa251b.jpg">我的过去</a>
-        <a href="https://i2.hdslb.com/bfs/archive/95eb5191f266148dca59bbda297da8b3a5aa251b.jpg">我的梦想</a>
-        <a href="https://i2.hdslb.com/bfs/archive/95eb5191f266148dca59bbda297da8b3a5aa251b.jpg">w的博客</a>
+    <a href="javascript:void(0);" onclick="showImage('好看的图.jpg')">我的兴趣</a>
+    <a href="javascript:void(0);" onclick="showImage('好看的图.jpg')">我的过去</a>
+    <a href="javascript:void(0);" onclick="showImage('好看的图.jpg')">我的梦想</a>
+    <a href="javascript:void(0);" onclick="showImage('好看的图.jpg')">w的博客</a>
     </div>
+
+    <div id="image-container" style="text-align:center; margin-top:20px;">
+    <!-- 这里将显示图片 -->
+    </div>
+
     <div class="content">
     
         <h1 class="avr">Hi this is Vicious, nice to see you</h1>
@@ -105,6 +110,22 @@
     <button class="bt" onclick="window.open('https://vicious-w.github.io/')">MY Github BLOG</button>
 
     <script>
+        function showImage(imagePath) {
+        // 获取显示图片的容器
+        const container = document.getElementById('image-container');
+        
+        // 创建图片元素
+        const img = document.createElement('img');
+        img.src = imagePath;  // 设置图片的路径
+        img.alt = '显示的图片'; // 可选的 alt 属性
+        img.style.maxWidth = '100%'; // 图片最大宽度为容器宽度
+        img.style.height = 'auto'; // 自动调整高度，保持比例
+        
+        // 清空容器，并将图片添加到容器中
+        container.innerHTML = '';  // 清空容器中的内容
+        container.appendChild(img); // 添加图片到容器
+    }
+
     let mucics = document.getElementById('audio')
     mucics.volume = 0.5;  // 将音量设置为 50%
     document.body.addEventListener('mousemove', function() {
@@ -121,6 +142,7 @@
 
     </script>
     
+          
     <div class="footer">
         <br />
         <p>海内存知己  天涯若比邻</p><br />
