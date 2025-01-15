@@ -4,10 +4,27 @@
     <meta charset="utf-8">
     <title>W'S WEB</title>
     <link rel="stylesheet" type="text/css" href="style.css">
+    <style>
+    .girl {
+        width: 50px;
+        height: 50px;
+        background: url('./楪祈.jpg') no-repeat center center;
+        background-size: cover;
+        position: fixed;
+        top: 0;
+        left: 0;
+        pointer-events: none; /* 确保美少女不会挡住鼠标事件 */
+        transform: translate(-50%, -50%);
+        }
+     </style>
+
 </head>
+
 <body>
+    <div id="girl" class="girl"></div>
+
     <div class="btn">
-        <p>&nbsp;👇WATCH MY CV👇</p>
+        <p>&nbsp;  👇WATCH MY WEB👇</p>
     </div>
     <div class="top">
         <a href="https://blog.csdn.net/weixin_51263734" target="_blank">我的兴趣</a>
@@ -89,11 +106,19 @@
 
     <script>
     let mucics = document.getElementById('audio')
+    mucics.volume = 0.5;  // 将音量设置为 50%
     document.body.addEventListener('mousemove', function() {
         setTimeout(() => {
             mucics.play();
         }, 2000);
     }, false);
+     // 美少女跟随鼠标移动
+    document.addEventListener('mousemove', function (e) {
+         const girl = document.getElementById('girl');
+         girl.style.left = `${e.clientX}px`;
+         girl.style.top = `${e.clientY}px`;
+     });
+
     </script>
     
     <div class="footer">
