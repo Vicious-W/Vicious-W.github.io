@@ -53,6 +53,15 @@
       line-height: 1.3;
     }
 
+    .project + .project {
+      margin-top: 1.5rem;
+    }
+
+    .project p {
+      margin-bottom: 0;
+      color: #666666;
+    }
+
     .contact {
       display: flex;
       flex-wrap: wrap;
@@ -87,6 +96,18 @@
     <section aria-labelledby="about-heading">
       <h2 id="about-heading">About me</h2>
       <p>I'm teaching myself the foundations of computer science — algorithms and data structures, computer systems, and machine learning. I mostly work in Python and C, and I enjoy understanding how things work and turning ideas into something real.</p>
+    </section>
+
+    <section aria-labelledby="projects-heading">
+      <h2 id="projects-heading">Projects</h2>
+      <article class="project">
+        <a href="https://github.com/Vicious-W/VKC_Study">VKC_Study</a>
+        <p>Notes and code from Weng Kai's C programming course.</p>
+      </article>
+      <article class="project">
+        <a href="https://github.com/Vicious-W/c-learning">c-learning</a>
+        <p>My code from working through CSAPP (Computer Systems: A Programmer's Perspective).</p>
+      </article>
     </section>
 
     <section class="contact" aria-label="Contact">
