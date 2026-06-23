@@ -1,0 +1,26 @@
+# OS / 系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+
+# Claude Code 本地配置（不应提交，仅本机）
+.claude/settings.local.json
+
+# 误入的 Windows UNC 路径文件（拖拽复制产生的垃圾）
+*wsl.localhost*
+
+# 依赖 / 构建产物（将来若引入构建工具）
+node_modules/
+dist/
+.cache/
+
+# 日志与临时文件
+*.log
+*~
+
+# Playwright MCP 浏览器工具的输出（截图 / snapshot，本地验证用）
+.playwright-mcp/
