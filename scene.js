@@ -42,9 +42,6 @@
         uniform vec2 u_resolution;
         uniform float u_time;
         uniform float u_seed;
-        uniform sampler2D u_skyPhoto;
-        uniform float u_photoReady;
-        uniform float u_skyAspect;
         uniform sampler2D u_waveState;
         uniform vec2 u_waveTexel;
         uniform float u_waveEncoded;
@@ -105,22 +102,7 @@
           vec3 cloudLight = vec3(1.0, 0.995, 0.96);
           vec3 cloudColor = mix(cloudLight, cloudShadow, shade);
           cloudColor += silver * vec3(0.09, 0.095, 0.08);
-          vec3 proceduralSky = mix(blue, cloudColor, cloud * 0.98);
-          float viewAspect = u_resolution.x / u_resolution.y;
-          vec2 photoUv = uv;
-          if (viewAspect < u_skyAspect) {
-            photoUv.x = (uv.x - 0.5) * viewAspect / u_skyAspect + 0.5;
-          } else {
-            photoUv.y = (uv.y - 0.5) * u_skyAspect / viewAspect + 0.5;
-          }
-          photoUv.y = photoUv.y * 0.94 + 0.03;
-          photoUv.x += sin(time * 0.0024 + u_seed * 2.1) * 0.008;
-          photoUv.y += sin(time * 0.0013 + u_seed) * 0.0025;
-          photoUv = clamp(photoUv, vec2(0.002), vec2(0.998));
-          vec3 photoSky = texture2D(u_skyPhoto, photoUv).rgb;
-          photoSky = pow(max(photoSky, 0.0), vec3(0.96));
-          photoSky *= vec3(0.985, 1.0, 1.015);
-          return mix(proceduralSky, photoSky, u_photoReady);
+          return mix(blue, cloudColor, cloud * 0.98);
         }
 
         vec2 waterGradient(vec2 uv, float time) {
@@ -208,45 +190,20 @@
         const waveTexelUniform = gl.getUniformLocation(program, "u_waveTexel");
         const waveEncodedUniform = gl.getUniformLocation(program, "u_waveEncoded");
         const seedUniform = gl.getUniformLocation(program, "u_seed");
-        const photoReadyUniform = gl.getUniformLocation(program, "u_photoReady");
-        const skyPhotoUniform = gl.getUniformLocation(program, "u_skyPhoto");
-        const skyAspectUniform = gl.getUniformLocation(program, "u_skyAspect");
         const randomSeed = Math.random() * 20 + 1;
         gl.uniform1f(seedUniform, randomSeed);
-        gl.uniform1f(photoReadyUniform, 0);
-
-        const skyTexture = gl.createTexture();
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, skyTexture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([76, 151, 207, 255]));
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.uniform1i(skyPhotoUniform, 0);
 
         const waveTexture = gl.createTexture();
         const floatWaveTexture = Boolean(gl.getExtension("OES_texture_float") && gl.getExtension("OES_texture_float_linear"));
-        gl.activeTexture(gl.TEXTURE1);
+        gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, waveTexture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.uniform1i(waveStateUniform, 1);
+        gl.uniform1i(waveStateUniform, 0);
         gl.uniform1f(waveEncodedUniform, floatWaveTexture ? 0 : 1);
 
-        const skyImage = new Image();
-        skyImage.decoding = "async";
-        skyImage.onload = () => {
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, skyTexture);
-          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, skyImage);
-          gl.uniform1f(skyAspectUniform, skyImage.naturalWidth / skyImage.naturalHeight);
-          gl.uniform1f(photoReadyUniform, 1);
-        };
-        skyImage.src = "sky-cumulus-natural.webp";
         let visible = false;
         let waveWidth = 0;
         let waveHeight = 0;
@@ -269,7 +226,7 @@
           waveNext = new Float32Array(size);
           wavePixels = floatWaveTexture ? null : new Uint8Array(size);
           if (wavePixels) wavePixels.fill(128);
-          gl.activeTexture(gl.TEXTURE1);
+          gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, waveTexture);
           gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
           gl.texImage2D(
@@ -335,7 +292,7 @@
               wavePixels[index] = Math.max(0, Math.min(255, 128 + waveCurrent[index] * 104));
             }
           }
-          gl.activeTexture(gl.TEXTURE1);
+          gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, waveTexture);
           gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
           gl.texSubImage2D(
@@ -371,8 +328,6 @@
 
             gl.uniform1f(timeUniform, time);
             gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, skyTexture);
-            gl.activeTexture(gl.TEXTURE1);
             gl.bindTexture(gl.TEXTURE_2D, waveTexture);
             gl.drawArrays(gl.TRIANGLES, 0, 6);
           }

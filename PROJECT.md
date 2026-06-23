@@ -34,8 +34,9 @@
 
 ## 5. 当前状态
 > 仓库已有初步开发
-- 文件结构：单页 `index.html` + `style.css` + `scene.js`（WebGL 背景）；配套资源 `sky-cumulus-natural.webp`、`texture-carpet-titanium.webp`、`texture-sketch-paper.webp`、`texture-forest-floor.webp`。仓库根目录另有若干早期实验资源（未被引用，暂留未提交）。
+- 文件结构：单页 `index.html` + `style.css` + `scene.js`（WebGL 背景）；配套资源 `texture-carpet-titanium.webp`、`texture-sketch-paper.webp`、`texture-forest-floor.webp`。仓库根目录另有若干早期实验资源（未被引用，暂留未提交）。
 - 已完成：首页已重构为**「极简开发者主页」**——单页四屏滚动，主题色依次为 纸白 → 红 → 绿 → 蓝；衬线字体 + 蓝色点缀；背景用 WebGL（`scene.js`）配合纹理贴图。四个区块：Hero（Vicious-W）/ About / Selected work（VKC_Study、c-learning）/ Contact（邮箱 + GitHub）。各区块为滚动触发渐显。
+- 已修复：第四屏水面反射统一使用 WebGL shader 生成的动态蓝天白云，不再加载照片纹理；`scene.js` 引用带版本号，避免浏览器/GitHub Pages 缓存旧脚本导致视觉不一致。
 - 已补内联 SVG favicon（data URI，纸白底衬线「W」），消除 `favicon.ico` 404；用 Playwright 逐屏渲染核对，四屏正常、console 0 报错。
 - 进行中：—
 - 下一步：继续深化整体艺术架构与项目展示（方向由所有者把控）。
@@ -50,6 +51,10 @@
 ## 7. 决策与目标演变日志（追加式，最新在最上面）
 > 每当目标发生变化、做出一项技术决策、或完成一个阶段性开发，就在此追加一条，并标注日期。
 > 这一节是这个项目的「记忆」——它记录我们是怎么一步步走到现在的。
+
+### 2026-06-23 — 修复第四屏本地与 GitHub Pages 视觉不一致
+- 原因：第四屏 WebGL 先生成程序化动态云层，但 `sky-cumulus-natural.webp` 加载成功后会切换/混合为照片纹理；GitHub Pages 上该图片正常加载，因此显示成照片，本地 `file://` 直接打开时则更容易看到未被照片覆盖的程序化动态云层。
+- 决策：第四屏以动态程序化云层为准，移除照片纹理加载与混合逻辑，并给 `scene.js` 引用加版本号，让 GitHub Pages、localhost、本地文件打开的视觉保持一致。
 
 ### 2026-06-23 — 首页重构为「极简开发者主页」＋ favicon
 - 首页重构为单页四屏滚动的极简开发者主页（主题色 纸白→红→绿→蓝），衬线字体 + 蓝色点缀，WebGL（`scene.js`）+ 纹理背景；含 Hero / About / Selected work / Contact 四区块（见 commit `90e3038` v1、`e9251c2` v2）。
