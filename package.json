@@ -1,0 +1,28 @@
+{
+  "name": "vicious-w.github.io",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vicious-W/Vicious-W.github.io.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Vicious-W/Vicious-W.github.io/issues"
+  },
+  "homepage": "https://github.com/Vicious-W/Vicious-W.github.io#readme",
+  "dependencies": {
+    "three": "^0.184.0"
+  },
+  "devDependencies": {
+    "vite": "^8.1.0"
+  }
+}
