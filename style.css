@@ -366,7 +366,11 @@ h1 span:last-child {
   min-height: 100svh;
   padding-bottom: 34px;
   color: var(--paper-light);
-  background: #315f82;
+  background-color: #082f35;
+  background-image: url("./src/assets/pond/pond-base-landscape.webp");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
   border-top: 0;
 }
 
@@ -377,8 +381,8 @@ h1 span:last-child {
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(ellipse at 50% 48%, transparent 58%, rgba(8, 24, 38, 0.16) 100%),
-    linear-gradient(180deg, rgba(15, 52, 79, 0.01), rgba(7, 27, 43, 0.1));
+    linear-gradient(90deg, rgba(2, 18, 24, 0.38) 0%, rgba(4, 25, 30, 0.2) 38%, transparent 70%),
+    linear-gradient(180deg, rgba(3, 20, 24, 0.03), rgba(3, 20, 24, 0.18));
 }
 
 .liquid-surface {
@@ -387,9 +391,14 @@ h1 span:last-child {
   inset: 0;
   width: 100%;
   height: 100%;
-  opacity: 1;
+  opacity: 0;
   pointer-events: none;
   filter: none;
+  transition: opacity 900ms ease;
+}
+
+.contact-section.pond-ready .liquid-surface {
+  opacity: 1;
 }
 
 .section__header--dark {
@@ -398,19 +407,19 @@ h1 span:last-child {
 }
 
 .contact-grid {
-  margin: clamp(70px, 12vw, 170px) 0;
+  margin: clamp(62px, 10vw, 140px) 0;
 }
 
 .contact-links {
-  width: min(760px, 100%);
-  margin-left: auto;
+  width: min(650px, 58vw);
+  margin-left: 0;
   border-top: 1px solid rgba(244, 240, 231, 0.7);
-  text-shadow: 0 1px 12px rgba(8, 16, 18, 0.42);
+  text-shadow: 0 1px 14px rgba(2, 12, 15, 0.72);
 }
 
 .contact-links a {
   display: grid;
-  grid-template-columns: 0.6fr 2fr;
+  grid-template-columns: minmax(72px, 0.46fr) 2fr;
   gap: 20px;
   padding: 24px 0;
   border-bottom: 1px solid rgba(244, 240, 231, 0.7);
@@ -428,12 +437,13 @@ h1 span:last-child {
 
 .contact-section footer {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   padding-top: 20px;
   border-top: 1px solid rgba(244, 240, 231, 0.35);
   color: rgba(244, 240, 231, 0.6);
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.09em;
+  text-shadow: 0 1px 10px rgba(2, 12, 15, 0.8);
   text-transform: uppercase;
 }
 
@@ -459,6 +469,12 @@ h1 span:last-child {
   .about__grid { grid-template-columns: 1.5fr 1fr; }
 }
 
+@media (max-aspect-ratio: 4 / 5) {
+  .contact-section {
+    background-image: url("./src/assets/pond/pond-base-portrait.webp");
+  }
+}
+
 @media (max-width: 640px) {
   .site-header { min-height: 88px; }
   .wordmark, .site-header nav { padding: 17px 20px; }
@@ -471,8 +487,19 @@ h1 span:last-child {
   .diagram { grid-column: 3 / 13; width: 88vw; opacity: 0.32; }
   .section { padding: 80px 20px; }
   .about__grid { grid-template-columns: 1fr; }
-  .contact-links a { grid-template-columns: 1fr auto; overflow-wrap: anywhere; }
-  .contact-links span { grid-column: 1 / -1; }
+  .contact-section {
+    min-height: 100svh;
+    background-image: url("./src/assets/pond/pond-base-portrait.webp");
+    background-position: center;
+  }
+  .contact-section::after {
+    background:
+      linear-gradient(90deg, rgba(2, 17, 22, 0.42) 0%, rgba(3, 22, 27, 0.18) 62%, transparent 100%),
+      linear-gradient(180deg, rgba(3, 20, 24, 0.03), rgba(3, 20, 24, 0.16));
+  }
+  .contact-grid { margin: 54px 0 70px; }
+  .contact-links { width: 100%; }
+  .contact-links a { grid-template-columns: 1fr; gap: 8px; overflow-wrap: anywhere; }
 }
 
 @media (prefers-reduced-motion: reduce) {

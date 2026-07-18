@@ -1,5 +1,3 @@
-import { createPondScene } from "./pondScene.js";
-
 const root = document.documentElement;
 const cantorPath = document.querySelector("[data-cantor]");
 const liquidSection = document.querySelector(".contact-section");
@@ -33,11 +31,31 @@ if (cantorPath) {
 }
 
 if (liquidSection && liquidCanvas) {
-  createPondScene({
-    section: liquidSection,
-    canvas: liquidCanvas,
-    reduceMotion
-  });
+  let pondStarted = false;
+  const startPond = () => {
+    if (pondStarted) return;
+    pondStarted = true;
+    import("./pondScene.js").then(({ createPondScene }) => {
+      createPondScene({
+        section: liquidSection,
+        canvas: liquidCanvas,
+        reduceMotion
+      });
+    }).catch(() => {
+      liquidCanvas.hidden = true;
+    });
+  };
+
+  if ("IntersectionObserver" in window) {
+    const pondObserver = new IntersectionObserver(entries => {
+      if (!entries[0].isIntersecting) return;
+      pondObserver.disconnect();
+      startPond();
+    }, { rootMargin: "100% 0px", threshold: 0 });
+    pondObserver.observe(liquidSection);
+  } else {
+    startPond();
+  }
 }
 
 const revealItems = document.querySelectorAll(".section__header, .lead, .prose, .project, .contact-grid");
