@@ -31,9 +31,14 @@
 - 源代码与样式；
 - 测试与测试资源；
 - 项目配置、构建脚本与依赖；
-- 项目文档；
-- 自动化验证工具；
-- `.agent/implementation-report.md` 和 `.agent/state.env` 中与实现轮次有关的字段。
+- `PROJECT.md` 中的当前状态、技术决策与追加式日志；
+- `.agent/implementation-report.md`；
+- 被 `.gitignore` 忽略的本地实现证据。
+
+通过 `run-implementation.sh` 自动运行时，协作协议、权限配置、轮次状态、
+审查报告和 Agent/验证控制脚本属于受保护控制面，只有外层中立脚本或项目所有者
+明确授权的基础设施维护轮次可以修改。外层脚本负责验证、暂存和本地提交；Claude
+不拥有 Git 提交权。
 
 ## 禁止事项
 
@@ -42,6 +47,7 @@
 - 在没有证据的情况下忽略 Blocker 或 Major；
 - 修改或删除 `.agent/review-history/` 中的 Codex 历史审查；
 - 直接改写 `.agent/latest-review.md` 的审查结论；
+- 修改 `.agent/state.env`、`.agent/next-task.md`、权限配置或 Agent 控制脚本；
 - 使用破坏性 Git 命令覆盖用户修改；
 - 自动 push、force push、部署或执行无限重试循环。
 

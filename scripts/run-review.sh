@@ -9,6 +9,11 @@ STATE_FILE="$AGENT_DIR/state.env"
 LATEST_REVIEW="$AGENT_DIR/latest-review.md"
 HISTORY_DIR="$AGENT_DIR/review-history"
 LOCK_DIR="$AGENT_DIR/.cycle.lock"
+RUNTIME_LIB="$ROOT_DIR/scripts/lib/agent-runtime.sh"
+
+# shellcheck source=scripts/lib/agent-runtime.sh
+source "$RUNTIME_LIB"
+agent_runtime_init "$ROOT_DIR"
 
 usage() {
   cat <<'EOF'
@@ -47,6 +52,7 @@ fi
 
 review_tmp=""
 cleanup() {
+  agent_stop_active_process
   if [[ -n "$review_tmp" ]]; then
     rm -f -- "$review_tmp"
   fi
@@ -55,6 +61,13 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+
+if ! "$ROOT_DIR/scripts/agent-preflight.sh" --review-only; then
+  printf 'Codex was not started because preflight failed.\n' >&2
+  exit 6
+fi
 
 dirty_status="$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)"
 if [[ -n "$dirty_status" ]]; then
@@ -68,6 +81,11 @@ if ! command -v codex >/dev/null 2>&1; then
   printf 'codex CLI is not available on PATH.\n' >&2
   exit 127
 fi
+
+codex_timeout="$(agent_runtime_config CODEX_TIMEOUT_SECONDS 3600 60 43200)" || exit 2
+heartbeat_seconds="$(agent_runtime_config AGENT_HEARTBEAT_SECONDS 30 5 300)" || exit 2
+termination_grace="$(agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60)" || exit 2
+agent_runtime_prepare_npm_cache || exit 2
 
 target_input="${1:-HEAD}"
 if ! target_commit="$(git -C "$ROOT_DIR" rev-parse --verify "$target_input^{commit}" 2>/dev/null)"; then
@@ -157,17 +175,23 @@ required sections and exactly one standalone line containing either
 VERDICT: PASS or VERDICT: CHANGES_REQUIRED. Do not wrap the report in a code fence.
 EOF
 
-codex exec \
-  --cd "$ROOT_DIR" \
-  --sandbox read-only \
-  --ephemeral \
-  --color never \
-  -c 'approval_policy="never"' \
-  --output-last-message "$review_tmp" \
-  - <"$prompt_file" >"$codex_log" 2>&1
+review_prompt="$(<"$prompt_file")"
+run_agent_process \
+  "Codex review round $next_round/$max_rounds" \
+  "$codex_timeout" "$heartbeat_seconds" "$termination_grace" "$codex_log" -- \
+  codex exec \
+    --cd "$ROOT_DIR" \
+    --sandbox read-only \
+    --ephemeral \
+    --color never \
+    -c 'approval_policy="never"' \
+    --output-last-message "$review_tmp" \
+    "$review_prompt"
 codex_exit=$?
 if (( codex_exit != 0 )); then
-  printf 'Codex review process failed (exit %s). Previous review was preserved.\n' "$codex_exit" >&2
+  agent_record_stop CODEX "$AGENT_RUN_REASON" "$codex_exit" "$codex_log"
+  printf 'Codex review process stopped (exit %s, reason %s). Previous review was preserved.\n' \
+    "$codex_exit" "$AGENT_RUN_REASON" >&2
   printf 'Log: %s\n' "$codex_log" >&2
   exit "$codex_exit"
 fi
@@ -237,6 +261,7 @@ state_tmp="$AGENT_DIR/state.env.tmp"
 } >"$state_tmp"
 mv "$state_tmp" "$STATE_FILE"
 
+agent_clear_stop
 printf 'Review complete: %s\n' "$verdict"
 printf 'Latest report: %s\n' "$LATEST_REVIEW"
 printf 'Archive: %s\n' "$archive_path"

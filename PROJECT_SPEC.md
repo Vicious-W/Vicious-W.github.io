@@ -123,6 +123,7 @@
 | 生产构建 | `npm run build` | 已配置 |
 | 预览构建 | `npm run preview -- --port 8000` | 已配置 |
 | 统一验证 | `./scripts/run-validation.sh` | 已配置 |
+| 权限/环境预检 | `./scripts/agent-cycle.sh preflight` | 已配置；不启动 Agent |
 | Claude 实现 | `./scripts/agent-cycle.sh implement` | 已配置；要求干净工作区 |
 | Codex 审查 | `./scripts/run-review.sh` | 已配置 |
 | 自动闭环 | `./scripts/agent-cycle.sh cycle` | 已配置；串行、最多三轮、不 push |

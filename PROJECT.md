@@ -78,6 +78,7 @@
 ## 5. 当前状态
 > 仓库已有初步开发
 - 进行中：所有者已确定第一屏下一阶段的两条主线，并写入 `.agent/next-task.md`：① 继续重做玻璃立方体的重量感、稳定性、真实材质，并增加由实际碰撞/滑动状态驱动的空间声音；② 推翻当前像贴图的 shader 反应堆，先依据公开可靠资料选定与俯视水池构图相符的研究堆原型，再把池体、堆芯支撑、燃料组件、控制机构、冷却/仪器结构等分别建成具有独立状态和可信联动的 Three.js 三维系统。旧 reactor shader 只保留为瞬开与失败降级。
+- 已完成：双 Agent 无人值守权限层加固。Claude 从本机 `bypassPermissions` 收紧为项目级 `dontAsk`，只允许项目内业务读写、必要 npm/只读 Git/本地预览、公开检索和 Playwright MCP，未预批能力直接拒绝，Git 暂存/提交仍只归中立包装器；Codex 固定为只读且 `approval_policy="never"`。新增不启动 Agent 的 `agent-cycle.sh preflight`、专用 npm/MCP 缓存、30 秒心跳、Claude 2 小时/Codex 1 小时超时、精确进程组终止、权限/认证/MCP/超时分类以及 Claude 受保护文件机械拦截。任何异常都停在当前阶段，不增加轮次、不启动下一个 Agent。
 - 已配置：所有者进一步明确双 Agent 的期望是自动串行闭环，而不是手动依次启动。新增 `run-implementation.sh` 和 `agent-cycle.sh implement|cycle`：从干净 Git 基线自动调用一次 Claude Code、验证并本地提交，再调用只读 Codex 审查、归档并提交报告；`CHANGES_REQUIRED` 自动进入下一轮，PASS 或最多三轮后停止。全流程不并发、不 push/deploy/reset/clean/rebase/switch，不在失败后擅自丢弃工作区。
 - 已完成：根据《项目双 Agent 协作体系改造报告》完成一次性协作基础设施改造。`PROJECT_SPEC.md` 成为目标/范围/验收的唯一正式来源；Claude Code 被明确为唯一业务代码实现者，Codex 默认转为只读审查者；新增 `REVIEW_CONTRACT.md`、`.agent/` 正式交接目录及统一验证、只读审查、有限命令分发脚本。当前自动检查只有依赖完整性与生产构建；测试、lint、类型检查、CI 均如实标记为未配置，网页验证继续使用 Playwright MCP。
 - 文件结构：单页 `index.html` + `style.css`；前端入口为 `src/main.js`；第一页为 `src/reactorScene.js`（重水池，原生 WebGL1，首屏瞬开/兜底）+ `src/glassCubes.js`（玻璃立方体层，Three.js + cannon-es，延迟加载）+ `src/reactorShader.js`（两者共用的池面 GLSL）；第四页水塘场景为 `src/pondScene.js`；第四页原创资源位于 `src/assets/pond/`，包含横版/竖版生态底图、横版/竖版蓝天积云反射纹理与透明鱼素材；构建配置为 `vite.config.js`，依赖记录在 `package.json` / `package-lock.json`。旧 `scene.js` 暂留为历史参考，页面不再加载。配套资源 `texture-carpet-titanium.webp`、`texture-sketch-paper.webp`、`texture-forest-floor.webp`。仓库根目录另有若干已提交但未引用的早期实验资源。
@@ -116,12 +117,20 @@
 - 统一自动验证：`./scripts/run-validation.sh`
 - Codex 只读正式审查（需干净工作区和明确提交）：`./scripts/run-review.sh`
 - 自动实现—验收闭环：`./scripts/agent-cycle.sh cycle`（串行，最多三轮）
-- 分步与状态入口：`./scripts/agent-cycle.sh implement|validate|review|status|archive`
+- 权限/环境预检：`./scripts/agent-cycle.sh preflight`（不启动 Agent）
+- 分步与状态入口：`./scripts/agent-cycle.sh preflight|implement|validate|review|status|archive`
 - 未配置：自动测试、lint、类型检查、CI、仓库内 Playwright 测试套件；页面验收使用环境中的 Playwright MCP。
 
 ## 7. 决策与目标演变日志（追加式，最新在最上面）
 > 每当目标发生变化、做出一项技术决策、或完成一个阶段性开发，就在此追加一条，并标注日期。
 > 这一节是这个项目的「记忆」——它记录我们是怎么一步步走到现在的。
+
+### 2026-07-22 — 无人值守权限层：最小授权、启动前预检、心跳与故障熔断
+- 权限原则确定为“项目内够用、项目外不放权”，而不是给 Agent 整机全权。Claude 的本机 `bypassPermissions` 已移除，跟踪的 `.claude/settings.json` 与本机覆盖均使用无人值守 `dontAsk`；allowlist 只覆盖项目内业务读写、实现所需 npm、只读 Git、检索、本地预览和 Playwright MCP，denylist 明确阻止 Git 控制命令、sudo、环境变量转储、另起 Agent、破坏性删除和常见凭据目录读取。未预批能力直接拒绝，不等待用户回答。Codex 审查继续由 CLI 强制 `read-only` + `approval_policy="never"`。
+- 新增 `agent-preflight.sh`/`agent-cycle.sh preflight`：在父循环开始及每个对应 Agent 真正启动前检查工作区、轮次状态、脚本语法、权限 JSON、必需 denylist、禁用模式/危险 allowlist、依赖、Git 身份及写入能力、两端登录和 Playwright MCP。预检本身不启动 Agent；任一关键项失败时 cycle 返回 6。
+- 新增共享 `scripts/lib/agent-runtime.sh` 和 `.agent/runtime.env`。子进程每 30 秒报告心跳；Claude/Codex 默认单轮上限分别为 7200/3600 秒，超时或外层收到中断时会按已知 PID 的独立进程组 TERM→KILL，不用模糊进程名。`npx` 使用专用 Playwright 缓存，避免为默认 `~/.npm` 放宽主目录权限。
+- Claude 结束后、验证与暂存前新增控制面检查：角色/规范、权限配置、任务/轮次/审查状态、审查历史和 Agent/验证脚本均不可由业务实现轮修改，同时核对本地 Git 配置、refs 和预暂存状态；自动提交关闭仓库 hooks 与 GPG 签名提示。失败按权限、认证、MCP/浏览器、超时或普通子进程错误分类，写入本地 `last-stop.env`，不增加轮次也不接着启动 Codex。
+- 验证：权限 JSON 可解析，所有 Agent shell 脚本通过 `bash -n`，`git diff --check` 通过；完整外部预检在“允许当前基础设施改造处于脏工作区、跳过当前 Codex 沙箱内的 `.git` 写探针”诊断模式下全部通过，包括 Claude/Codex 登录与 Playwright MCP。`test-agent-runtime.sh` 使用假的 shell 子进程验证 SUCCESS、PERMISSION 和 TIMEOUT 三条路径，未启动真实 Claude/Codex。本轮没有修改网页外观或行为，因此不需要 Playwright 页面回归。
 
 ### 2026-07-22 — 自动闭环启用；下一阶段重建玻璃物理/声音与真实三维反应堆
 - 所有者试玩后确认三个玻璃问题：手感偏飘、玻璃质感仍不真实、缺少随物理运动产生的声音。下一轮需要系统调整质量/惯性/阻尼/摩擦/恢复/约束/solver/休眠，重做厚度与折射/吸收/粗糙度/接触光学，并用 Web Audio 将碰撞冲量、相对速度、接触位置及滑动状态映射为受节流和限幅保护的空间声音。

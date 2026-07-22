@@ -11,6 +11,8 @@ usage() {
 Usage: ./scripts/agent-cycle.sh <command> [args]
 
 Commands:
+  preflight              Verify permissions/auth/MCP/checkpoint readiness only;
+                         never starts either Agent.
   cycle                  Claude implement -> validate -> commit -> Codex review;
                          repeat serially until PASS or the three-round limit.
   implement              Run one Claude implementation round and local checkpoint.
@@ -65,7 +67,10 @@ commit_review_handoff() {
     printf 'Review produced no handoff changes to checkpoint.\n' >&2
     return 4
   fi
-  git -C "$ROOT_DIR" commit -m "agent: codex review round $round" \
+  git -C "$ROOT_DIR" \
+    -c core.hooksPath=/dev/null \
+    -c commit.gpgSign=false \
+    commit -m "agent: codex review round $round" \
     >"$ROOT_DIR/.agent/artifacts/review/git-commit-round-${round}.log" 2>&1
 }
 
@@ -88,10 +93,9 @@ case "$command_name" in
     fi
     trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
-    if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)" ]]; then
-      printf 'Automatic cycle requires a clean working tree.\n' >&2
-      git -C "$ROOT_DIR" status --short >&2
-      exit 2
+    if ! "$ROOT_DIR/scripts/agent-preflight.sh"; then
+      printf 'Automatic cycle stopped at preflight; neither Agent was started.\n' >&2
+      exit 6
     fi
 
     while true; do
@@ -152,6 +156,9 @@ case "$command_name" in
       fi
     done
     ;;
+  preflight)
+    exec "$ROOT_DIR/scripts/agent-preflight.sh" "$@"
+    ;;
   implement)
     exec "$ROOT_DIR/scripts/run-implementation.sh" "$@"
     ;;
@@ -177,6 +184,10 @@ case "$command_name" in
     if [[ -f "$ROOT_DIR/.agent/artifacts/validation/summary.md" ]]; then
       printf '\nLatest validation\n'
       sed -n '1,14p' "$ROOT_DIR/.agent/artifacts/validation/summary.md"
+    fi
+    if [[ -f "$ROOT_DIR/.agent/artifacts/runtime/last-stop.env" ]]; then
+      printf '\nLatest automatic stop\n'
+      sed -n '1,12p' "$ROOT_DIR/.agent/artifacts/runtime/last-stop.env"
     fi
     ;;
   archive)

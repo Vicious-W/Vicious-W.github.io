@@ -15,10 +15,31 @@
 项目所有者确认 `.agent/next-task.md` 中的阶段目标后，只需在干净工作区运行：
 
 ```bash
+./scripts/agent-cycle.sh preflight
 ./scripts/agent-cycle.sh cycle
 ```
 
-脚本会严格串行执行：Claude Code 实现 → 自动验证 → 本地 Git 检查点 → Codex 只读审查 → 审查报告检查点。`CHANGES_REQUIRED` 时把报告交回 Claude，最多三轮；`PASS` 或任何安全/工具错误时停止。它不会同时运行两个 Agent，不会 push、部署、reset、clean 或无限重试。
+第一条只检查 Git、CLI 登录、Playwright MCP、权限配置、npm 依赖和本地提交能力，绝不启动 Agent。第二条会再次预检，然后严格串行执行：Claude Code 实现 → 自动验证 → 本地 Git 检查点 → Codex 只读审查 → 审查报告检查点。`CHANGES_REQUIRED` 时把报告交回 Claude，最多三轮；`PASS` 或任何安全/工具错误时停止。它不会同时运行两个 Agent，不会 push、部署、reset、clean 或无限重试。
+
+## 权限与无人值守边界
+
+- 不给两个 Agent 机器级“全权”。Claude 使用项目级 `dontAsk`：只允许项目内读写、明确列出的 npm/只读 Git/本地预览命令、公开网页检索和 Playwright MCP；任何未预批能力直接拒绝，不弹出人工授权。它不能暂存、提交、push、切分支、reset、clean、rebase、sudo、输出环境变量或另起后台/sub-Agent。
+- Git 暂存和本地提交只由中立包装脚本在验证后执行；实现返回后还会检查本地 Git 配置、refs 与预暂存状态。自动提交禁用仓库 hooks 和 GPG 签名提示，push 与部署始终不自动执行。
+- Claude 返回后，包装脚本会机械检查 Git 历史和受保护路径。`PROJECT_SPEC.md`、角色规则、权限配置、`.agent/` 控制状态、审查历史及 Agent/验证脚本一旦被越界修改，流程会在验证、暂存和 Codex 启动前停止，并保留现场。
+- Codex 使用 `read-only` 沙箱和 `approval_policy="never"`。它不能修改业务文件，也不会等待交互式授权；需要额外权限时直接失败。
+- `claude auth status`、`codex login status` 和 Playwright MCP 健康状态在完整 cycle 开始前检查，并在每个对应 Agent 真正启动前复查。Agent 运行所需的 `npx` 缓存固定到专用 Playwright 缓存目录，不需要开放整个主目录或默认 `~/.npm`。
+- 非交互进程每 30 秒输出一次心跳。Claude 单轮默认最多 7200 秒，Codex 单轮默认最多 3600 秒，终止宽限 15 秒；可在 `.agent/runtime.env` 调整，但预检会拒绝越界值。
+- 子进程失败会分类为 `PERMISSION`、`AUTHENTICATION`、`MCP_OR_BROWSER`、`TIMEOUT` 或普通执行错误，写入忽略的 `.agent/artifacts/runtime/last-stop.env`。任何此类失败都不增加审查轮次，也不会启动下一个 Agent。
+
+不要用 `sudo` 启动流程，不要把 Claude 改成 `bypassPermissions`/交互式权限模式，也不要给 Codex 改成可写审查。权限问题应修复具体的预检项，而不是扩大到整个 WSL、主目录或 GitHub 远端。
+
+运行监控器的无 Agent 烟雾测试：
+
+```bash
+./scripts/test-agent-runtime.sh
+```
+
+它只启动三个假的 shell 子进程，分别模拟成功、权限拒绝和超时。
 
 ## 分步入口
 
@@ -81,6 +102,7 @@ claude
 其他入口：
 
 ```bash
+./scripts/agent-cycle.sh preflight
 ./scripts/agent-cycle.sh validate
 ./scripts/agent-cycle.sh review
 ./scripts/agent-cycle.sh archive
@@ -96,6 +118,16 @@ claude
 - Codex 只审查干净工作区中的明确提交；不干净时脚本立即停止。
 - 两个 Agent 都不得自动 reset、clean、强制 checkout、rebase、push、部署或删除用户文件。
 - 审查完成后的最新报告、历史归档和状态变化应随下一安全检查点纳入 Git。
+
+## 预检失败时
+
+先看终端中的失败项和 `.agent/artifacts/preflight/summary.md`。常见情况：
+
+- `authentication`：在普通交互终端分别完成 `claude auth login` 或 `codex login`，再重新预检；不要把令牌写入仓库。
+- `Playwright MCP`：确认用户级 `playwright` MCP 已注册；预检会验证 Claude 的实际连接健康和 Codex 的启用状态。
+- `.git is not writable`：必须从项目所有者的普通 WSL 终端运行父脚本；不要用一个仍处于只读审查沙箱中的 Agent 启动 cycle。
+- `working tree is not clean`：先人工检查并建立安全提交；脚本不会吸收或丢弃既有修改。
+- `last-stop.env` 显示权限、认证、MCP 或超时：本轮已安全终止。修复明确原因后由所有者重新启动，不会自动无限重试。
 
 ## 当前未配置
 
