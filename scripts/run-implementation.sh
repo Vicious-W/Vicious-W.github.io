@@ -132,13 +132,14 @@ EOF
 
 printf 'Starting Claude Code implementation round %s/%s for %s\n' "$implementation_round" "$max_rounds" "$active_task_id"
 
+prompt_text="$(<"$prompt_file")"
 claude --print \
   --permission-mode acceptEdits \
   --no-session-persistence \
   --output-format text \
   --allowedTools "Bash(npm run *),Bash(npm install *),Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git rev-parse *),Bash(rg *),Bash(find *),Bash(sed *),Bash(ls *),Bash(curl http://localhost:*)" \
   --disallowedTools "Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git reset *),Bash(git clean *),Bash(git checkout *),Bash(git switch *),Bash(git rebase *),Bash(rm -rf *)" \
-  <"$prompt_file" >"$claude_log" 2>&1
+  -- "$prompt_text" >"$claude_log" 2>&1
 claude_exit=$?
 
 if (( claude_exit != 0 )); then

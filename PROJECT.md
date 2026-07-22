@@ -129,6 +129,7 @@
 - 验收边界：“真实运行”是静态网页中结构、尺度层次、机械、材料、光学和状态耦合可信，不声称达到工程级中子输运、热工水力或安全分析精度；将旧 shader 贴在三维平面、合并成单体模型或播放互不相关的循环动画均不通过。
 - 协作方式纠偏：所有者明确希望 Claude 实现与 Codex 验收自动一个接一个运行。新增 `.agent/next-task.md` 和 `run-implementation.sh`，`agent-cycle.sh cycle` 现在从干净基线自动串行执行 Claude → 验证 → 本地实现提交 → 只读 Codex → 审查归档/提交；CHANGES_REQUIRED 自动修正，PASS/三轮上限/工具或安全异常立即停止。禁止并发、push、部署、reset、clean、rebase、切分支和无限重试。
 - 基础安全测试：所有脚本 `bash -n` 与 `git diff --check` 通过；在当前尚未建立基线提交的脏工作区试运行 `agent-cycle.sh cycle`，按设计在调用 Claude 前返回 2，并保留全部改动与所有者文件。
+- 首次自动启动诊断：Claude CLI 使用“无位置参数、从 stdin 读取长提示”的调用在本机持续空转并最终只返回 `Execution error`，期间没有任何仓库改动，循环按设计以退出码 5 停止且清理锁。最小探针确认 Claude 非交互本身正常后，入口改为以 `--` 后的位置参数显式传入提示；同一套 allow/disallow 工具边界探针在约 4 秒内返回 `TOOLING_READY`。失败尝试未增加轮次，也没有产生实现提交。
 
 ### 2026-07-22 — 建立“Claude Code 实现 / Codex 独立审查”的双 Agent 协作体系
 - 所有者新增《项目双 Agent 协作体系改造报告》，明确长期角色：Claude Code 是唯一业务代码实现者，Codex 是独立结果审查者；二者不同步修改，通过仓库文件和 Git 检查点交接。
