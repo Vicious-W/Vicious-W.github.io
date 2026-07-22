@@ -39,8 +39,7 @@ mkdir -p "$ARTIFACT_DIR"
 
 lock_owned=0
 if [[ "${AGENT_CYCLE_LOCK_HELD:-0}" != "1" ]]; then
-  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    printf 'Another Agent workflow appears to be active: %s\n' "$LOCK_DIR" >&2
+  if ! agent_acquire_lock "$LOCK_DIR" 'standalone implementation'; then
     exit 2
   fi
   lock_owned=1
@@ -49,7 +48,7 @@ fi
 cleanup() {
   agent_stop_active_process
   if (( lock_owned == 1 )); then
-    rmdir "$LOCK_DIR" 2>/dev/null || true
+    agent_release_lock "$LOCK_DIR"
   fi
 }
 trap cleanup EXIT

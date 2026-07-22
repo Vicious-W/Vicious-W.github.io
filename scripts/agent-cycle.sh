@@ -5,6 +5,11 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_FILE="$ROOT_DIR/.agent/state.env"
 LOCK_DIR="$ROOT_DIR/.agent/.cycle.lock"
+RUNTIME_LIB="$ROOT_DIR/scripts/lib/agent-runtime.sh"
+
+# shellcheck source=scripts/lib/agent-runtime.sh
+source "$RUNTIME_LIB"
+agent_runtime_init "$ROOT_DIR"
 
 usage() {
   cat <<'EOF'
@@ -87,11 +92,10 @@ case "$command_name" in
       usage >&2
       exit 2
     fi
-    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-      printf 'Another Agent workflow appears to be active: %s\n' "$LOCK_DIR" >&2
+    if ! agent_acquire_lock "$LOCK_DIR" 'automatic cycle'; then
       exit 2
     fi
-    trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+    trap 'agent_release_lock "$LOCK_DIR"' EXIT
 
     if ! "$ROOT_DIR/scripts/agent-preflight.sh"; then
       printf 'Automatic cycle stopped at preflight; neither Agent was started.\n' >&2

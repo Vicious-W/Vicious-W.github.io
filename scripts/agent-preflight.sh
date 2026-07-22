@@ -85,7 +85,8 @@ run_private_check() {
   shift
   local output_file
   output_file="$(mktemp /tmp/agent-preflight.XXXXXX)"
-  if timeout 45 "$@" >"$output_file" 2>&1; then
+  if timeout --foreground --kill-after=5s 45s "$@" \
+    </dev/null >"$output_file" 2>&1; then
     rm -f -- "$output_file"
     record_pass "$label"
     return 0
@@ -100,7 +101,8 @@ check_mcp() {
   shift
   local output_file
   output_file="$(mktemp /tmp/agent-preflight-mcp.XXXXXX)"
-  if ! timeout 60 "$@" >"$output_file" 2>&1; then
+  if ! timeout --foreground --kill-after=5s 60s "$@" \
+    </dev/null >"$output_file" 2>&1; then
     rm -f -- "$output_file"
     record_fail "$owner Playwright MCP status command failed or timed out"
     return

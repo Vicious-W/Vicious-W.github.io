@@ -78,6 +78,7 @@
 ## 5. 当前状态
 > 仓库已有初步开发
 - 进行中：所有者已确定第一屏下一阶段的两条主线，并写入 `.agent/next-task.md`：① 继续重做玻璃立方体的重量感、稳定性、真实材质，并增加由实际碰撞/滑动状态驱动的空间声音；② 推翻当前像贴图的 shader 反应堆，先依据公开可靠资料选定与俯视水池构图相符的研究堆原型，再把池体、堆芯支撑、燃料组件、控制机构、冷却/仪器结构等分别建成具有独立状态和可信联动的 Three.js 三维系统。旧 reactor shader 只保留为瞬开与失败降级。
+- 已修复：首次在真实 TTY 启动 `agent-cycle.sh cycle` 时，预检的 `timeout claude auth status` 把子进程置于独立后台进程组；Claude CLI 访问终端后进入 `T` 停止态，而普通 TERM 超时无法唤醒，导致永远看不到实现轮次标题。预检现使用前台 timeout、`/dev/null` stdin 和 5 秒强杀宽限；正式 Agent 也断开 stdin。循环锁新增 PID + `/proc` 启动时间身份，可自动回收硬中断遗留锁而不误判活动流程。
 - 已完成：双 Agent 无人值守权限层加固。Claude 从本机 `bypassPermissions` 收紧为项目级 `dontAsk`，只允许项目内业务读写、必要 npm/只读 Git/本地预览、公开检索和 Playwright MCP，未预批能力直接拒绝，Git 暂存/提交仍只归中立包装器；Codex 固定为只读且 `approval_policy="never"`。新增不启动 Agent 的 `agent-cycle.sh preflight`、专用 npm/MCP 缓存、30 秒心跳、Claude 2 小时/Codex 1 小时超时、精确进程组终止、权限/认证/MCP/超时分类以及 Claude 受保护文件机械拦截。任何异常都停在当前阶段，不增加轮次、不启动下一个 Agent。
 - 已配置：所有者进一步明确双 Agent 的期望是自动串行闭环，而不是手动依次启动。新增 `run-implementation.sh` 和 `agent-cycle.sh implement|cycle`：从干净 Git 基线自动调用一次 Claude Code、验证并本地提交，再调用只读 Codex 审查、归档并提交报告；`CHANGES_REQUIRED` 自动进入下一轮，PASS 或最多三轮后停止。全流程不并发、不 push/deploy/reset/clean/rebase/switch，不在失败后擅自丢弃工作区。
 - 已完成：根据《项目双 Agent 协作体系改造报告》完成一次性协作基础设施改造。`PROJECT_SPEC.md` 成为目标/范围/验收的唯一正式来源；Claude Code 被明确为唯一业务代码实现者，Codex 默认转为只读审查者；新增 `REVIEW_CONTRACT.md`、`.agent/` 正式交接目录及统一验证、只读审查、有限命令分发脚本。当前自动检查只有依赖完整性与生产构建；测试、lint、类型检查、CI 均如实标记为未配置，网页验证继续使用 Playwright MCP。
@@ -124,6 +125,12 @@
 ## 7. 决策与目标演变日志（追加式，最新在最上面）
 > 每当目标发生变化、做出一项技术决策、或完成一个阶段性开发，就在此追加一条，并标注日期。
 > 这一节是这个项目的「记忆」——它记录我们是怎么一步步走到现在的。
+
+### 2026-07-22 — 修复真实 TTY 预检永久停止与硬中断陈旧锁
+- 所有者报告手动运行 `./scripts/agent-cycle.sh cycle` 后没有出现 Claude 实现轮次标题。宿主进程检查复现并定位：流程停在 `timeout 45 claude auth status`，Claude 状态为 `T`（job-control stopped）；`timeout` 默认创建的新进程组与真实终端交互冲突，且只有 TERM、没有 KILL 宽限，所以停止态子进程和父预检均永久等待。
+- 修复：认证/MCP 私密检查改用 `timeout --foreground --kill-after=5s` 并把 stdin 接到 `/dev/null`；正式 Claude/Codex 子进程也断开 stdin，所有提示均通过位置参数传入。修复后的完整 TTY 预检约 4.5 秒通过，不再停在认证检查。
+- 原有锁只是空目录，父进程被强杀后会永久阻挡后续启动。共享运行库现为锁写入 PID、`/proc/<pid>/stat` 启动时钟、命令和 UTC 时间；获取锁时同时核对 PID 与启动时钟，活动锁继续拒绝并发，死亡/PID 复用/旧版无元数据锁则仅清理四个已知文件并原子重建。烟雾测试覆盖了陈旧锁回收和活动锁拒绝。
+- 本次问题发生在预检阶段，Claude 实现与 Codex 审查均未启动，`CURRENT_ROUND` 仍为 0，业务代码和任务状态没有变化。
 
 ### 2026-07-22 — 无人值守权限层：最小授权、启动前预检、心跳与故障熔断
 - 权限原则确定为“项目内够用、项目外不放权”，而不是给 Agent 整机全权。Claude 的本机 `bypassPermissions` 已移除，跟踪的 `.claude/settings.json` 与本机覆盖均使用无人值守 `dontAsk`；allowlist 只覆盖项目内业务读写、实现所需 npm、只读 Git、检索、本地预览和 Playwright MCP，denylist 明确阻止 Git 控制命令、sudo、环境变量转储、另起 Agent、破坏性删除和常见凭据目录读取。未预批能力直接拒绝，不等待用户回答。Codex 审查继续由 CLI 强制 `read-only` + `approval_policy="never"`。

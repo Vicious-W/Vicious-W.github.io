@@ -30,6 +30,8 @@
 - `claude auth status`、`codex login status` 和 Playwright MCP 健康状态在完整 cycle 开始前检查，并在每个对应 Agent 真正启动前复查。Agent 运行所需的 `npx` 缓存固定到专用 Playwright 缓存目录，不需要开放整个主目录或默认 `~/.npm`。
 - 非交互进程每 30 秒输出一次心跳。Claude 单轮默认最多 7200 秒，Codex 单轮默认最多 3600 秒，终止宽限 15 秒；可在 `.agent/runtime.env` 调整，但预检会拒绝越界值。
 - 子进程失败会分类为 `PERMISSION`、`AUTHENTICATION`、`MCP_OR_BROWSER`、`TIMEOUT` 或普通执行错误，写入忽略的 `.agent/artifacts/runtime/last-stop.env`。任何此类失败都不增加审查轮次，也不会启动下一个 Agent。
+- 预检与 Agent 子进程都断开交互式 stdin；预检使用前台 `timeout`，到期后有强制 KILL 宽限，因此在真实 TTY 中也不会因 job-control stopped 状态永久挂起。
+- `.agent/.cycle.lock` 会记录父进程 PID 和 Linux 启动时间。真实活动锁阻止第二个流程；进程已消失、PID 被复用或旧版没有元数据时，下次启动会只删除已知锁元数据并安全回收陈旧锁。
 
 不要用 `sudo` 启动流程，不要把 Claude 改成 `bypassPermissions`/交互式权限模式，也不要给 Codex 改成可写审查。权限问题应修复具体的预检项，而不是扩大到整个 WSL、主目录或 GitHub 远端。
 
@@ -128,6 +130,7 @@ claude
 - `.git is not writable`：必须从项目所有者的普通 WSL 终端运行父脚本；不要用一个仍处于只读审查沙箱中的 Agent 启动 cycle。
 - `working tree is not clean`：先人工检查并建立安全提交；脚本不会吸收或丢弃既有修改。
 - `last-stop.env` 显示权限、认证、MCP 或超时：本轮已安全终止。修复明确原因后由所有者重新启动，不会自动无限重试。
+- 启动后长时间看不到 `=== Claude implementation round ... ===`：正常预检通常数秒完成；若曾被强制关闭，直接重新运行即可，父脚本会识别并回收陈旧锁。不要手工删除一个仍属于活动 PID 的锁。
 
 ## 当前未配置
 
