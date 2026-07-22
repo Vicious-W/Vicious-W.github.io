@@ -1,78 +1,32 @@
-// 第一页表层：一个个**独立的**玻璃立方体。
+// 第一页表层：一个个**独立的**玻璃立方体，俯视下方真三维的核反应堆重水池。
 //
-// 为什么推翻了原来的做法：之前玻璃是在反应堆那张全屏 shader 里用屏幕空间分格
-// "划分"出来的——在一整块画面上画格子，不管怎么调折射、倒角、压花，都得不到
-// 一个个真正的物体，因为画面里根本不存在物体。现在每个立方体是：
-//   · 一个真实的三维网格（BoxGeometry），有确切的体积和六个面；
-//   · 一个真实的刚体（cannon-es Box），有质量、碰撞、重力、摩擦；
-//   · 可以被鼠标抓起、拖到任意位置、松手后落下并压在别的立方体上。
-// 折射由 MeshPhysicalMaterial 的 transmission 真实计算，不是贴图或屏幕空间近似。
+// 三层结构：
+//   · 表层——这里的玻璃立方体：真实三维网格 + cannon-es 刚体，可抓起/拖动/堆叠；
+//   · 底层——reactorModel.js 的真三维反应堆（池体、堆芯、燃料棒、控制棒、辉光…），
+//     玻璃从上方俯视时会真实折射、遮挡它，改变视角能看出是立体结构；
+//   · reactorScene.js 的原生 WebGL 池面只留作首屏瞬开 / Three.js 失败时的兜底。
 //
-// 池底那块平面用的是和 reactorScene.js 同一份 shader（reactorShader.js），
-// 所以玻璃层接管画面时不会跳色。
+// 玻璃物理声音由 glassAudio.js 合成，触发量（冲击速度、切向滑动速度、接触点位置）
+// 全部来自 cannon-es 的真实碰撞/接触数据——见下方 collide 监听与 slide 计算。
 //
-// 已知限制：Three.js 的 transmission 只采样**不透明**物体的那一遍渲染，
-// 因此玻璃透过玻璃看不到后面那块玻璃。单层平铺时几乎看不出来；叠高后
-// 上面那块会直接看到池底而不是下面那块玻璃。要根治得自己写光线追踪，
-// 那是另一个量级的工程，先按当前方案跑起来看观感。
+// 已知限制：Three.js 的 transmission 只采样**不透明**物体那一遍渲染，所以玻璃透过
+// 玻璃看不到后面那块玻璃，加性辉光盘也不进折射（燃料棒自发光会进）。单层平铺几乎
+// 看不出来；叠高后上面那块会直接看到反应堆而不是下面那块玻璃。
 
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import * as CANNON from "cannon-es";
-import { REACTOR_GLSL } from "./reactorShader.js";
+import { createReactorModel } from "./reactorModel.js";
+import { createGlassAudio } from "./glassAudio.js";
 
 const CUBE = 1;                 // 立方体边长（世界单位），所有尺寸都以它为基准
-// 长焦俯视。用 42° 这种"正常"视角时相机离得太近，画面边缘的方块几乎整个侧面
-// 都露出来，读成一堆乱翻的盒子而不是"平铺的一层玻璃砖"。
-// 压到 22° 相当于把相机架高、拉远：仍然能看出是正方体（棱边和侧面还在），
-// 但整层重新读成俯视的一个平面。
-const FOV = 22;
-const LIFT_Y = 2.6;             // 拖动时立方体被提到的高度：高过任何堆叠，方便放置
+const FOV = 22;                 // 长焦俯视：仍看得出是正方体，整层又读成俯视的一个平面
+const LIFT_Y = 2.0;             // 拖动时立方体被提到的高度：高过任何堆叠，又不撞到驱动桥
 const MAX_DPR = 1.5;
 
-const POOL_VERT = `
-varying vec2 vUv;
-void main() {
-  vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}`;
-
-// 池面平面的片元着色器。注意最后要把颜色从"显示空间"转回线性空间：
-// poolColor() 返回的是已经压过光、带过 gamma 的成品色（和原生 WebGL 那版一致），
-// 而 Three.js 在输出时还会再做一次 linear→sRGB。不转回去就会被二次提亮，
-// 玻璃层一接管画面就整体发灰变亮。
-const POOL_FRAG = `
-precision highp float;
-uniform float uTime;
-uniform vec2 uExtent;   // 这块平面自身在世界里的尺寸（比可见范围大一圈）
-uniform vec2 uView;     // 相机实际看得见的范围，暗角按它算
-uniform float uShort;   // 可见范围的短边，场景坐标以它为 1
-varying vec2 vUv;
-
-${REACTOR_GLSL}
-
-vec3 srgbToLinear(vec3 c) {
-  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
-}
-
-void main() {
-  // 还原成 reactorScene 里那套"画面中心为原点、短边 = 1、y 向上"的场景坐标。
-  // 平面绕 X 转了 -90°，它的局部 +y 对应世界 -Z，而相机 up 也是 -Z，
-  // 所以局部 y 正好就是屏幕上的"上"，和原版的 sp.y 一致。
-  vec2 p = (vUv - 0.5) * uExtent;
-  vec2 sp = p / uShort;
-
-  vec3 col = poolColor(sp, uTime);
-
-  // 暗角：和原生 WebGL 版同一条曲线（那边 vc 是按整幅画面归一化的，范围 ±0.5）
-  col *= 1.0 - smoothstep(0.35, 0.78, length(p / uView)) * 0.50;
-
-  gl_FragColor = vec4(srgbToLinear(clamp(col, 0.0, 1.0)), 1.0);
-}`;
-
-// 环境贴图：本场景的光源在**下方**（发光的重水池），上方几乎全黑。
-// 玻璃的立体感几乎全靠环境反射，给错方向就会看着像塑料——所以这张图
-// 下半球是池子的蓝辉光，上半球接近全黑，只留两处很小的亮斑给棱边高光抓。
+// 环境贴图：本场景光源在**下方**（发光的重水池），上方几乎全黑。玻璃的立体感几乎
+// 全靠环境反射，给错方向就像塑料——下半球是池子蓝辉光，上半球接近全黑，留两处小
+// 亮斑给棱边高光抓。
 function buildEnvTexture() {
   const W = 96;
   const H = 48;
@@ -109,15 +63,14 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
   }
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MAX_DPR));
   renderer.setClearColor(0x02070f, 1);
-  renderer.toneMapping = THREE.NoToneMapping; // 池面色已经压过光，不能再压一次
+  renderer.toneMapping = THREE.NoToneMapping;
   if ("transmissionResolutionScale" in renderer) {
-    renderer.transmissionResolutionScale = 0.5; // 折射用的那张离屏图可以低一半分辨率
+    renderer.transmissionResolutionScale = 0.5; // 折射用的离屏图可低一半分辨率
   }
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(FOV, 1, 0.5, 200);
-  // 正上方俯视：屏幕的"上"对应世界的 -Z
-  camera.up.set(0, 0, -1);
+  camera.up.set(0, 0, -1); // 正上方俯视：屏幕的"上"对应世界 -Z
 
   const pmrem = new THREE.PMREMGenerator(renderer);
   const envSrc = buildEnvTexture();
@@ -126,44 +79,41 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
   envSrc.dispose();
   pmrem.dispose();
 
-  // 一盏定向光，给玻璃棱边一道明确的锐利高光（纯环境反射会偏柔）
-  const key = new THREE.DirectionalLight(0xdceeff, 1.5);
+  // 定向光给玻璃棱边一道锐利高光（纯环境反射偏柔）
+  const key = new THREE.DirectionalLight(0xdceeff, 1.4);
   key.position.set(-4, 7, -3);
   scene.add(key);
+  // 一点冷色环境光，避免池壁背光面死黑
+  scene.add(new THREE.AmbientLight(0x14202e, 0.6));
 
-  // —— 池底平面 ——
-  const poolMat = new THREE.ShaderMaterial({
-    vertexShader: POOL_VERT,
-    fragmentShader: POOL_FRAG,
-    uniforms: {
-      uTime: { value: 7.0 },
-      uExtent: { value: new THREE.Vector2(1, 1) },
-      uView: { value: new THREE.Vector2(1, 1) },
-      uShort: { value: 1 }
-    }
-  });
-  const pool = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), poolMat);
-  pool.rotation.x = -Math.PI / 2; // 平放在 XZ 平面
-  scene.add(pool);
+  // —— 底层：真三维反应堆 ——
+  const reactor = createReactorModel({ reduceMotion });
+  scene.add(reactor.group);
 
   // —— 物理世界 ——
-  const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -14, 0) });
+  const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -20, 0) });
   world.broadphase = new CANNON.SAPBroadphase(world);
   world.allowSleep = true;
+  world.solver.iterations = 14;   // 更多迭代 → 稳定堆叠、少穿透
+  world.solver.tolerance = 0.001;
   const glassPhys = new CANNON.Material("glass");
-  world.addContactMaterial(new CANNON.ContactMaterial(glassPhys, glassPhys, {
-    friction: 0.32,     // 玻璃之间很滑，但要能堆得住
-    restitution: 0.06   // 几乎不弹：厚玻璃砸在玻璃上是"闷"的
-  }));
-  world.defaultContactMaterial.friction = 0.32;
-  world.defaultContactMaterial.restitution = 0.06;
+  const glassContact = new CANNON.ContactMaterial(glassPhys, glassPhys, {
+    friction: 0.45,     // 够摩擦才堆得稳，但玻璃仍偏滑
+    restitution: 0.03,  // 厚玻璃砸在玻璃上几乎不弹，是"闷"的
+    contactEquationStiffness: 1e7,
+    contactEquationRelaxation: 3
+  });
+  world.addContactMaterial(glassContact);
+  world.defaultContactMaterial.friction = 0.45;
+  world.defaultContactMaterial.restitution = 0.03;
+  world.defaultContactMaterial.contactEquationStiffness = 1e7;
+  world.defaultContactMaterial.contactEquationRelaxation = 3;
 
   const ground = new CANNON.Body({ mass: 0, shape: new CANNON.Plane(), material: glassPhys });
   ground.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
   world.addBody(ground);
 
-  // 四面看不见的墙，把立方体关在画面里。要够高：入场时它们是从画面上方落下来的，
-  // 墙比落点矮的话，砖会从墙头飞出画面。
+  // 四面看不见的墙，把立方体关在画面里。要够高：入场时它们从画面上方落下。
   const walls = [];
   for (let i = 0; i < 4; i++) {
     const body = new CANNON.Body({ mass: 0, material: glassPhys });
@@ -172,9 +122,8 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
     walls.push(body);
   }
 
-  // 拖动用的"手"：一个不参与碰撞的静态点，通过点对点约束把立方体吊起来。
-  // 用约束而不是直接设坐标，立方体才会在手上摆动、并能推开挡路的邻居——
-  // 这就是"物理特性"该有的手感。
+  // 拖动用的"手"：不参与碰撞的静态点，用点对点约束把立方体吊起来。用约束而非直接
+  // 设坐标，立方体才会在手上摆动、推开挡路的邻居——这才有物理手感。
   const hand = new CANNON.Body({
     mass: 0,
     shape: new CANNON.Sphere(0.05),
@@ -183,27 +132,28 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
   });
   world.addBody(hand);
 
-  // —— 立方体 ——
-  // 棱边要略微倒圆：现实里没有数学意义上的尖棱，而玻璃的棱边正是高光最集中的地方。
-  // 纯 BoxGeometry 的绝对尖棱在渲染里一眼就假。
-  const geo = new RoundedBoxGeometry(CUBE, CUBE, CUBE, 4, 0.05);
+  // —— 声音 ——
+  const audio = createGlassAudio();
+  let audioUnlocked = false;
 
-  // 几种材质变体：真实的玻璃砖是分批浇铸的，块与块之间的清澈度和料色略有差别
+  // —— 立方体 ——
+  // 棱边略倒圆：现实里没有数学尖棱，而玻璃棱边正是高光最集中处，纯尖棱一眼就假。
+  const geo = new RoundedBoxGeometry(CUBE, CUBE, CUBE, 4, 0.06);
+
+  // 几种材质变体：真实玻璃砖分批浇铸，清澈度和料色略有差别。
+  // 不加 clearcoat（清漆是塑料/车漆特征）；衰减距离放长，避免染成实心蓝像有色塑料——
+  // 玻璃首先得是**清**的，体积感靠折射真实几何和棱边高光来体现。
   const materials = [0, 1, 2, 3].map(i => new THREE.MeshPhysicalMaterial({
     color: 0xffffff,
     metalness: 0,
-    roughness: 0.015 + i * 0.012,
+    roughness: 0.02 + i * 0.014,
     transmission: 1,
-    thickness: CUBE * (0.85 + i * 0.08),
-    ior: 1.52,
-    // 厚玻璃的体吸收：光在玻璃里走得越长颜色越浓，这是"有体积"最好认的证据。
-    // 但衰减距离给太短会把方块染成实心蓝，反而像有色塑料——玻璃首先得是**清**的。
-    attenuationColor: new THREE.Color(0.62, 0.86, 1.0),
-    attenuationDistance: 7.0 + i * 1.5,
-    // 不加 clearcoat：清漆层是塑料/车漆的特征，玻璃表面就是玻璃本身，
-    // 多一层清漆只会糊上一层塑料味的柔光。
+    thickness: CUBE * (0.95 + i * 0.1),
+    ior: 1.5,
+    attenuationColor: new THREE.Color(0.74, 0.89, 1.0),
+    attenuationDistance: 9.0 + i * 2.0,
     specularIntensity: 1,
-    envMapIntensity: 1.25
+    envMapIntensity: 1.4
   }));
 
   const cubes = [];   // { mesh, body }
@@ -213,20 +163,46 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
     const mesh = new THREE.Mesh(geo, materials[matIndex % materials.length]);
     scene.add(mesh);
     const body = new CANNON.Body({
-      mass: 1.1,
+      mass: 1.5,
       material: glassPhys,
       shape: new CANNON.Box(new CANNON.Vec3(CUBE / 2, CUBE / 2, CUBE / 2)),
       position: new CANNON.Vec3(x, y, z),
-      linearDamping: 0.10,
-      angularDamping: 0.22,
-      sleepSpeedLimit: 0.12,
-      sleepTimeLimit: 0.6
+      linearDamping: 0.12,
+      angularDamping: 0.35,
+      sleepSpeedLimit: 0.14,
+      sleepTimeLimit: 0.5
     });
+    body.userData = { lastSound: 0, baseAngularDamping: 0.35 };
+    // 碰撞 → 撞击声：强度/亮度来自法向冲击速度，声像来自接触点世界 x 坐标。
+    body.addEventListener("collide", onCollide);
     world.addBody(body);
     cubes.push({ mesh, body });
     meshes.push(mesh);
     mesh.userData.body = body;
   };
+
+  // —— 碰撞声 ——
+  function onCollide(event) {
+    if (!audioUnlocked || !audio) return;
+    const contact = event.contact;
+    // 法向冲击速度：静止接触≈0，真正撞上才大。这是撞击强度的物理来源。
+    let vImpact = Math.abs(contact.getImpactVelocityAlongNormal());
+    if (vImpact < 0.7) return;                 // 过滤静止接触的微冲击
+    const body = event.target;
+    const now = performance.now();
+    if (now - body.userData.lastSound < 45) return; // 单体节流
+    body.userData.lastSound = now;
+    // 接触点世界 x → 声像
+    const b = contact.bi;
+    const wx = b.position.x + contact.ri.x;
+    const halfX = Math.max(extentX / 2, 0.001);
+    const pan = Math.max(-1, Math.min(1, wx / halfX));
+    audio.impact({
+      strength: THREE.MathUtils.clamp((vImpact - 0.7) / 6.5, 0, 1),
+      velocity: THREE.MathUtils.clamp(vImpact / 8, 0, 1),
+      pan
+    });
+  }
 
   // —— 尺寸 / 布局 ——
   let extentX = 10;
@@ -240,7 +216,6 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
     renderer.setSize(cssW, cssH, false);
     camera.aspect = cssW / cssH;
 
-    // 短边上要排几块砖 —— 决定了立方体在画面里的大小
     const narrow = matchMedia("(max-width: 640px)").matches;
     const acrossShort = narrow ? 5.5 : 8.0;
     const shortExtent = acrossShort * CUBE;
@@ -257,12 +232,7 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
       extentZ = shortExtent / camera.aspect;
     }
 
-    const planeW = extentX * 1.6;
-    const planeH = extentZ * 1.6;
-    pool.scale.set(planeW, planeH, 1); // 比可见范围大一圈，避免边缘露空
-    poolMat.uniforms.uExtent.value.set(planeW, planeH);
-    poolMat.uniforms.uView.value.set(extentX, extentZ);
-    poolMat.uniforms.uShort.value = shortExtent;
+    reactor.setScale(shortExtent);
 
     const hx = extentX / 2;
     const hz = extentZ / 2;
@@ -283,11 +253,9 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
     return true;
   };
 
-  // 初始铺一层。每块砖**正对着自己那格的正上方**落下，落差很小、按离画面中心的
-  // 距离错开时间——这样它们会各就各位地铺成一层。
-  // （第一版让它们从很高的随机位置乱落，而可见范围又恰好只装得下这么多块，
-  //   结果互相砸中、彼此卡住，堆成一团乱翻的盒子，完全不是"一层"。）
-  const GAP = 1.02; // 每格比砖略宽一点，落定后不会互相挤着抖；再宽砖缝就明显了
+  // 初始铺一层：每块砖**正对自己那格上方**落下，落差小、按离中心距离错开时间，
+  // 于是各就各位铺成一层，而不是从高处乱落砸成一团。
+  const GAP = 1.02;
   const populate = () => {
     const nx = Math.max(2, Math.floor(extentX / (CUBE * GAP)));
     const nz = Math.max(2, Math.floor(extentZ / (CUBE * GAP)));
@@ -319,7 +287,6 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
     ndc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   };
 
-  // 把屏幕位置投到 y = LIFT_Y 的水平面上：拖动时立方体悬在所有堆叠之上
   const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -LIFT_Y);
   const hit = new THREE.Vector3();
 
@@ -331,6 +298,8 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
   };
 
   const onPointerDown = event => {
+    // 首次手势解锁音频（浏览器 autoplay 策略要求）
+    if (audio && !audioUnlocked) { audio.unlock(); audioUnlocked = true; }
     if (pointerId !== null) return;
     setNdc(event);
     raycaster.setFromCamera(ndc, camera);
@@ -339,18 +308,18 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
 
     const body = hits[0].object.userData.body;
     pointerId = event.pointerId;
-    // 指针捕获失败不该让整个拖拽功能挂掉（合成事件、指针中途被系统收走都会抛）
-    try { canvas.setPointerCapture(pointerId); } catch (e) { /* 没捕获也能拖，只是移出画布会断 */ }
+    try { canvas.setPointerCapture(pointerId); } catch (e) { /* 合成事件可能抛，无碍 */ }
     dragging = body;
     body.wakeUp();
+    body.angularDamping = 0.8; // 拖动时更稳，不乱转
 
-    // 抓在实际点击到的那个点上，而不是几何中心——这样立方体会自然地歪着被提起来
     const p = hits[0].point;
     const local = new CANNON.Vec3(p.x, p.y, p.z);
     body.pointToLocalFrame(local, local);
 
     hand.position.set(p.x, p.y, p.z);
-    joint = new CANNON.PointToPointConstraint(body, local, hand, new CANNON.Vec3(0, 0, 0), 60);
+    // maxForce 有限：质量 1.5 + 重力 20（重量 30）时，55 抬得起但有明显滞后 = 重量感
+    joint = new CANNON.PointToPointConstraint(body, local, hand, new CANNON.Vec3(0, 0, 0), 55);
     world.addConstraint(joint);
     canvas.style.cursor = "grabbing";
     moveHand();
@@ -358,7 +327,6 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
 
   const onPointerMove = event => {
     if (pointerId === null) {
-      // 悬停在立方体上时给个"可抓"的指针
       setNdc(event);
       raycaster.setFromCamera(ndc, camera);
       canvas.style.cursor = raycaster.intersectObjects(meshes, false).length ? "grab" : "";
@@ -375,9 +343,12 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
       world.removeConstraint(joint);
       joint = null;
     }
-    if (dragging) dragging.wakeUp();  // 松手 → 恢复受重力，落下并压在别的立方体上
+    if (dragging) {
+      dragging.angularDamping = dragging.userData.baseAngularDamping;
+      dragging.wakeUp(); // 松手 → 恢复受重力，落下压在别的立方体上
+    }
     dragging = null;
-    try { canvas.releasePointerCapture(pointerId); } catch (e) { /* 指针已经没了 */ }
+    try { canvas.releasePointerCapture(pointerId); } catch (e) { /* 指针已没了 */ }
     pointerId = null;
     canvas.style.cursor = "";
   };
@@ -386,6 +357,41 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
   canvas.addEventListener("pointermove", onPointerMove);
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
+
+  // —— 滑动声：扫描当前接触，取最大切向相对速度作为滑动强度 ——
+  const relVel = new CANNON.Vec3();
+  const tmpA = new CANNON.Vec3();
+  const tmpB = new CANNON.Vec3();
+  const computeSlide = () => {
+    if (!audioUnlocked || !audio) return;
+    let maxTan = 0;
+    let panX = 0;
+    const contacts = world.contacts;
+    for (let i = 0; i < contacts.length; i++) {
+      const c = contacts[i];
+      const bi = c.bi, bj = c.bj;
+      if (bi.sleepState === CANNON.Body.SLEEPING && bj.sleepState === CANNON.Body.SLEEPING) continue;
+      // 接触点相对速度：v = vel + angVel × r
+      bi.angularVelocity.cross(c.ri, tmpA);
+      tmpA.vadd(bi.velocity, tmpA);
+      bj.angularVelocity.cross(c.rj, tmpB);
+      tmpB.vadd(bj.velocity, tmpB);
+      tmpA.vsub(tmpB, relVel);
+      // 去掉法向分量，留切向
+      const vn = relVel.dot(c.ni);
+      relVel.x -= vn * c.ni.x;
+      relVel.y -= vn * c.ni.y;
+      relVel.z -= vn * c.ni.z;
+      const tan = relVel.length();
+      if (tan > maxTan) {
+        maxTan = tan;
+        panX = bi.position.x + c.ri.x;
+      }
+    }
+    const level = THREE.MathUtils.clamp((maxTan - 0.35) / 3.5, 0, 1);
+    const halfX = Math.max(extentX / 2, 0.001);
+    audio.setSlide(level, Math.max(-1, Math.min(1, panX / halfX)));
+  };
 
   // —— 主循环 ——
   let raf = 0;
@@ -398,11 +404,10 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
     if (!running || disposed) return;
     const dt = Math.min((now - last) / 1000, 0.05);
     last = now;
-    if (!reduceMotion) {
-      time += dt;
-      poolMat.uniforms.uTime.value = time;
-    }
-    world.step(1 / 60, dt, 3);
+    if (!reduceMotion) time += dt;
+    world.step(1 / 60, dt, 4);
+    reactor.update(dt, time);
+    computeSlide();
     for (let i = 0; i < cubes.length; i++) {
       const { mesh, body } = cubes[i];
       mesh.position.set(body.position.x, body.position.y, body.position.z);
@@ -417,11 +422,13 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
     if (running || disposed) return;
     running = true;
     last = performance.now();
+    if (audio && audioUnlocked) audio.unlock(); // 回到画面时恢复音频
     raf = requestAnimationFrame(frame);
   };
   const stop = () => {
     running = false;
     cancelAnimationFrame(raf);
+    if (audio) audio.suspend();
   };
 
   if (!layout()) return null;
@@ -470,10 +477,11 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
       canvas.removeEventListener("pointerup", endDrag);
       canvas.removeEventListener("pointercancel", endDrag);
       canvas.removeEventListener("webglcontextlost", onContextLost);
+      cubes.forEach(({ body }) => body.removeEventListener("collide", onCollide));
+      if (audio) audio.dispose();
+      reactor.dispose();
       geo.dispose();
       materials.forEach(m => m.dispose());
-      poolMat.dispose();
-      pool.geometry.dispose();
       envRT.dispose();
       renderer.dispose();
     }
