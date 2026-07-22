@@ -48,6 +48,10 @@ expect_result 13 PERMISSION permission-failure \
   run_agent_process 'fake permission child' 5 1 1 "$TEST_DIR/permission.log" -- \
   bash -c 'printf "approval required: tool denied by policy\n" >&2; exit 13'
 
+expect_result 42 USAGE_OR_BILLING_LIMIT usage-limit \
+  run_agent_process 'fake usage-limit child' 5 1 1 "$TEST_DIR/usage-limit.log" -- \
+  bash -c 'printf "You have hit your monthly spend limit\n" >&2; exit 42'
+
 expect_result 124 TIMEOUT timeout \
   run_agent_process 'fake timeout child' 1 1 1 "$TEST_DIR/timeout.log" -- \
   bash -c 'sleep 5'

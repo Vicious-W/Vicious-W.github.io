@@ -78,6 +78,7 @@
 ## 5. 当前状态
 > 仓库已有初步开发
 - 进行中：所有者已确定第一屏下一阶段的两条主线，并写入 `.agent/next-task.md`：① 继续重做玻璃立方体的重量感、稳定性、真实材质，并增加由实际碰撞/滑动状态驱动的空间声音；② 推翻当前像贴图的 shader 反应堆，先依据公开可靠资料选定与俯视水池构图相符的研究堆原型，再把池体、堆芯支撑、燃料组件、控制机构、冷却/仪器结构等分别建成具有独立状态和可信联动的 Three.js 三维系统。旧 reactor shader 只保留为瞬开与失败降级。
+- 当前阻塞：修复 TTY 预检后，完整父循环已真实显示并进入 `Claude implementation round 1/3`；Claude/Playwright MCP 进程正常启动，但模型调用最终返回账户 `monthly spend limit`，约 6 分钟后退出 1。父脚本按设计没有提交、没有启动 Codex、没有增加轮次并清理锁；需所有者在 Claude 用量设置中解除额度限制后重新运行 cycle。
 - 已修复：首次在真实 TTY 启动 `agent-cycle.sh cycle` 时，预检的 `timeout claude auth status` 把子进程置于独立后台进程组；Claude CLI 访问终端后进入 `T` 停止态，而普通 TERM 超时无法唤醒，导致永远看不到实现轮次标题。预检现使用前台 timeout、`/dev/null` stdin 和 5 秒强杀宽限；正式 Agent 也断开 stdin。循环锁新增 PID + `/proc` 启动时间身份，可自动回收硬中断遗留锁而不误判活动流程。
 - 已完成：双 Agent 无人值守权限层加固。Claude 从本机 `bypassPermissions` 收紧为项目级 `dontAsk`，只允许项目内业务读写、必要 npm/只读 Git/本地预览、公开检索和 Playwright MCP，未预批能力直接拒绝，Git 暂存/提交仍只归中立包装器；Codex 固定为只读且 `approval_policy="never"`。新增不启动 Agent 的 `agent-cycle.sh preflight`、专用 npm/MCP 缓存、30 秒心跳、Claude 2 小时/Codex 1 小时超时、精确进程组终止、权限/认证/MCP/超时分类以及 Claude 受保护文件机械拦截。任何异常都停在当前阶段，不增加轮次、不启动下一个 Agent。
 - 已配置：所有者进一步明确双 Agent 的期望是自动串行闭环，而不是手动依次启动。新增 `run-implementation.sh` 和 `agent-cycle.sh implement|cycle`：从干净 Git 基线自动调用一次 Claude Code、验证并本地提交，再调用只读 Codex 审查、归档并提交报告；`CHANGES_REQUIRED` 自动进入下一轮，PASS 或最多三轮后停止。全流程不并发、不 push/deploy/reset/clean/rebase/switch，不在失败后擅自丢弃工作区。
@@ -125,6 +126,11 @@
 ## 7. 决策与目标演变日志（追加式，最新在最上面）
 > 每当目标发生变化、做出一项技术决策、或完成一个阶段性开发，就在此追加一条，并标注日期。
 > 这一节是这个项目的「记忆」——它记录我们是怎么一步步走到现在的。
+
+### 2026-07-22 — 首次越过预检启动 Claude；账户月度额度安全熔断
+- TTY 修复提交后再次运行完整父循环，正式看到 `=== Claude implementation round 1/3 ===` 和 Claude PID/7200 秒监督信息，证明父脚本到实现者的启动链路已经打通；Claude 进程与 Playwright MCP 均处于正常运行态而非 job-control 停止态。
+- Claude 最终明确返回 `You've hit your monthly spend limit` 并退出 1。包装器保持工作区干净，`CURRENT_ROUND=0`、任务 `READY`、Codex 未启动、锁已清理，因此没有把账户额度失败误算为实现或审查轮次。
+- 运行库新增 `USAGE_OR_BILLING_LIMIT` 分类，覆盖月度用量、额度、余额、计费和速率上限；烟雾测试新增相应假进程。新版 Claude 同时提示 `Write(path)` 不是有效文件权限规则、`Edit(path)` 已覆盖全部文件编辑工具，因此从项目/本机/CLI 三处移除冗余 `Write` 规则，保留项目内 `Edit` 与 `.git` Edit deny。
 
 ### 2026-07-22 — 修复真实 TTY 预检永久停止与硬中断陈旧锁
 - 所有者报告手动运行 `./scripts/agent-cycle.sh cycle` 后没有出现 Claude 实现轮次标题。宿主进程检查复现并定位：流程停在 `timeout 45 claude auth status`，Claude 状态为 `T`（job-control stopped）；`timeout` 默认创建的新进程组与真实终端交互冲突，且只有 TERM、没有 KILL 宽限，所以停止态子进程和父预检均永久等待。

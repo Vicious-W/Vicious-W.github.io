@@ -161,7 +161,7 @@ run_agent_process \
     --permission-mode dontAsk \
     --no-session-persistence \
     --output-format text \
-    --allowedTools "Read(./**),Edit(./**),Write(./**),Glob,Grep,Bash(./scripts/run-validation.sh),Bash(npm run *),Bash(npm install *),Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git rev-parse *),Bash(git ls-files *),Bash(rg *),Bash(find *),Bash(sed *),Bash(ls *),Bash(curl http://localhost:*),Bash(curl http://127.0.0.1:*),WebSearch,WebFetch,mcp__playwright__*" \
+    --allowedTools "Read(./**),Edit(./**),Glob,Grep,Bash(./scripts/run-validation.sh),Bash(npm run *),Bash(npm install *),Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git rev-parse *),Bash(git ls-files *),Bash(rg *),Bash(find *),Bash(sed *),Bash(ls *),Bash(curl http://localhost:*),Bash(curl http://127.0.0.1:*),WebSearch,WebFetch,mcp__playwright__*" \
     --disallowedTools "Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git reset *),Bash(git clean *),Bash(git checkout *),Bash(git switch *),Bash(git rebase *),Bash(git rm *),Bash(rm -rf *),Bash(sudo *),Bash(env),Bash(printenv *),Task,Agent" \
     -- "$prompt_text"
 claude_exit=$?

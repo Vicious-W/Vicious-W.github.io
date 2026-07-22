@@ -219,8 +219,7 @@ const required = [
   'Bash(git rm *)',
   'Task',
   'Agent',
-  'Edit(./.git/**)',
-  'Write(./.git/**)'
+  'Edit(./.git/**)'
 ];
 if (required.some((rule) => !denied.has(rule))) process.exit(1);
 NODE

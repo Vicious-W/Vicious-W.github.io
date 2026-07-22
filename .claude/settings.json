@@ -4,7 +4,6 @@
     "allow": [
       "Read(./**)",
       "Edit(./**)",
-      "Write(./**)",
       "Glob",
       "Grep",
       "Bash(./scripts/run-validation.sh)",
@@ -43,7 +42,6 @@
       "Task",
       "Agent",
       "Edit(./.git/**)",
-      "Write(./.git/**)",
       "Read(//home/vicious/.ssh/**)",
       "Read(//home/vicious/.aws/**)",
       "Read(//home/vicious/.config/gh/**)",
