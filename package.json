@@ -20,6 +20,7 @@
   },
   "homepage": "https://github.com/Vicious-W/Vicious-W.github.io#readme",
   "dependencies": {
+    "cannon-es": "^0.20.0",
     "three": "^0.184.0"
   },
   "devDependencies": {

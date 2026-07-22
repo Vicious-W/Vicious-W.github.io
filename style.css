@@ -105,15 +105,42 @@ a {
   grid-template-columns: repeat(12, 1fr);
   grid-template-rows: 112px 1fr;
   min-height: 100svh;
-  background-color: #faf9f5;
-  background-image:
-    linear-gradient(90deg, transparent calc(25% - 0.5px), var(--rule) 25%, transparent calc(25% + 0.5px)),
-    linear-gradient(90deg, transparent calc(50% - 0.5px), var(--rule) 50%, transparent calc(50% + 0.5px)),
-    linear-gradient(90deg, transparent calc(75% - 0.5px), var(--rule) 75%, transparent calc(75% + 0.5px)),
-    url("texture-carpet-titanium.webp");
-  background-position: 0 0, 0 0, 0 0, center;
-  background-repeat: no-repeat;
-  background-size: auto, auto, auto, cover;
+  /* 反应堆场景的静态兜底：shader 加载前 / WebGL 不可用时也有辉光氛围 */
+  background-color: #02070f;
+  background-image: radial-gradient(ellipse 62% 62% at 50% 52%,
+    #1173c8 0%, #0a4487 26%, #062350 52%, #02070f 100%);
+}
+
+.reactor-surface {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 800ms ease;
+}
+
+.hero.reactor-ready .reactor-surface {
+  opacity: 1;
+}
+
+/* 玻璃立方体层：Three.js 三维场景，延迟加载后盖在池面画布之上。
+   它需要接收指针事件——立方体是可以用鼠标抓起来拖动的。 */
+.glass-surface {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  touch-action: none; /* 拖立方体时不要触发页面滚动 */
+  transition: opacity 900ms ease;
+}
+
+.hero.glass-ready .glass-surface {
+  opacity: 1;
 }
 
 .hero__copy {
@@ -366,8 +393,8 @@ h1 span:last-child {
   min-height: 100svh;
   padding-bottom: 34px;
   color: var(--paper-light);
-  background-color: #082f35;
-  background-image: url("./src/assets/pond/pond-base-landscape.webp");
+  background-color: #0a5f91;
+  background-image: url("./src/assets/pond/sky-reflection-landscape.webp");
   background-position: center;
   background-repeat: no-repeat;
   background-size: cover;
@@ -381,8 +408,8 @@ h1 span:last-child {
   inset: 0;
   pointer-events: none;
   background:
-    linear-gradient(90deg, rgba(2, 18, 24, 0.38) 0%, rgba(4, 25, 30, 0.2) 38%, transparent 70%),
-    linear-gradient(180deg, rgba(3, 20, 24, 0.03), rgba(3, 20, 24, 0.18));
+    linear-gradient(90deg, rgba(2, 18, 31, 0.52) 0%, rgba(3, 25, 38, 0.34) 38%, rgba(3, 31, 45, 0.08) 68%, transparent 100%),
+    linear-gradient(180deg, rgba(3, 24, 38, 0.04), rgba(3, 24, 38, 0.16));
 }
 
 .liquid-surface {
@@ -471,7 +498,7 @@ h1 span:last-child {
 
 @media (max-aspect-ratio: 4 / 5) {
   .contact-section {
-    background-image: url("./src/assets/pond/pond-base-portrait.webp");
+    background-image: url("./src/assets/pond/sky-reflection-portrait.webp");
   }
 }
 
@@ -489,13 +516,13 @@ h1 span:last-child {
   .about__grid { grid-template-columns: 1fr; }
   .contact-section {
     min-height: 100svh;
-    background-image: url("./src/assets/pond/pond-base-portrait.webp");
+    background-image: url("./src/assets/pond/sky-reflection-portrait.webp");
     background-position: center;
   }
   .contact-section::after {
     background:
-      linear-gradient(90deg, rgba(2, 17, 22, 0.42) 0%, rgba(3, 22, 27, 0.18) 62%, transparent 100%),
-      linear-gradient(180deg, rgba(3, 20, 24, 0.03), rgba(3, 20, 24, 0.16));
+      linear-gradient(90deg, rgba(2, 18, 32, 0.46) 0%, rgba(3, 28, 43, 0.26) 64%, rgba(3, 31, 48, 0.12) 100%),
+      linear-gradient(180deg, rgba(3, 25, 39, 0.04), rgba(3, 25, 39, 0.18));
   }
   .contact-grid { margin: 54px 0 70px; }
   .contact-links { width: 100%; }
@@ -506,4 +533,15 @@ h1 span:last-child {
   html { scroll-behavior: auto; }
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
   .reveal { opacity: 1; transform: none; }
+}
+
+/* 临时（蓝色主题重构期）：第一页文字全部隐藏，先做背景艺术；
+   文字如何出现，等第一页重构完成后再定，届时删除本块。
+   旧 Cantor 图属于纸白版设计，随第一页重构一并隐藏。 */
+.site-header,
+.hero__copy,
+.diagram,
+.cantor__zero,
+.cantor__one {
+  visibility: hidden;
 }

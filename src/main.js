@@ -1,10 +1,38 @@
+import { createReactorScene } from "./reactorScene.js";
+
 const root = document.documentElement;
 const cantorPath = document.querySelector("[data-cantor]");
+const heroSection = document.querySelector(".hero");
+const reactorCanvas = document.querySelector(".reactor-surface");
+const glassCanvas = document.querySelector(".glass-surface");
 const liquidSection = document.querySelector(".contact-section");
 const liquidCanvas = document.querySelector(".liquid-surface");
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 requestAnimationFrame(() => root.classList.add("is-ready"));
+
+let reactor = null;
+if (heroSection && reactorCanvas) {
+  reactor = createReactorScene({ section: heroSection, canvas: reactorCanvas, reduceMotion });
+}
+
+// 玻璃立方体层（Three.js + 物理）延迟加载：第一页在首屏，必须立刻有画面，
+// 所以先让原生 WebGL 的池面顶上，等这一层就绪再淡入接管。加载失败就停在池面上。
+if (heroSection && glassCanvas) {
+  const startGlass = () => {
+    import("./glassCubes.js").then(({ createGlassCubes }) => {
+      const glass = createGlassCubes({ section: heroSection, canvas: glassCanvas, reduceMotion });
+      // 玻璃层里也画了池底，底层画布再逐帧重绘就是白费一份 GPU
+      if (glass && reactor && reactor.suspend) reactor.suspend();
+      else if (!glass) glassCanvas.hidden = true;
+    }).catch(err => {
+      console.error("glassCubes failed to load", err);
+      glassCanvas.hidden = true;
+    });
+  };
+  if ("requestIdleCallback" in window) requestIdleCallback(startGlass, { timeout: 1200 });
+  else setTimeout(startGlass, 200);
+}
 
 if (cantorPath) {
   const points = [];

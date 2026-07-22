@@ -4,14 +4,27 @@ Thumbs.db
 desktop.ini
 
 # 编辑器 / IDE
-.idea/
-.vscode/
+# 不带斜杠：这里误落进来的 .idea / .vscode 是**空文件**而不是目录，
+# 只写 `.idea/` 这种目录写法匹配不到它们。
+.idea
+.vscode
 
 # Claude Code 本地配置（不应提交，仅本机）
 .claude/settings.local.json
 
 # 误入的 Windows UNC 路径文件（拖拽复制产生的垃圾）
 *wsl.localhost*
+
+# 误落进项目目录的 shell / 工具配置（本该在 home 里，且多数是空文件）
+.bashrc
+.bash_profile
+.profile
+.zshrc
+.zprofile
+.gitconfig
+.ripgreprc
+.gitmodules
+.mcp.json
 
 # 依赖 / 构建产物（将来若引入构建工具）
 node_modules/
