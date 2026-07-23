@@ -60,6 +60,50 @@ agent_runtime_config() {
   printf '%s\n' "$value"
 }
 
+agent_runtime_model_config() {
+  local key="$1"
+  local default_value="$2"
+  local config_file="$AGENT_RUNTIME_ROOT/.agent/runtime.env"
+  local value=""
+
+  if [[ -f "$config_file" ]]; then
+    value="$(sed -n "s/^${key}=//p" "$config_file" | head -n 1)"
+  fi
+  [[ -n "$value" ]] || value="$default_value"
+
+  # Model aliases and full slugs used by both CLIs are deliberately limited to
+  # a shell-safe token. This prevents runtime.env from becoming executable
+  # configuration while still allowing names such as gpt-5.6-sol.
+  if [[ ! "$value" =~ ^[[:alnum:]][[:alnum:]._:/-]{0,127}$ ]]; then
+    printf 'Invalid %s=%s in %s; expected a model alias or slug.\n' \
+      "$key" "$value" "$config_file" >&2
+    return 2
+  fi
+  printf '%s\n' "$value"
+}
+
+agent_runtime_effort_config() {
+  local key="$1"
+  local default_value="$2"
+  local config_file="$AGENT_RUNTIME_ROOT/.agent/runtime.env"
+  local value=""
+
+  if [[ -f "$config_file" ]]; then
+    value="$(sed -n "s/^${key}=//p" "$config_file" | head -n 1)"
+  fi
+  [[ -n "$value" ]] || value="$default_value"
+
+  case "$value" in
+    low|medium|high|xhigh|max) ;;
+    *)
+      printf 'Invalid %s=%s in %s; expected low, medium, high, xhigh, or max.\n' \
+        "$key" "$value" "$config_file" >&2
+      return 2
+      ;;
+  esac
+  printf '%s\n' "$value"
+}
+
 agent_process_start_ticks() {
   local pid="$1"
   if [[ -r "/proc/$pid/stat" ]]; then

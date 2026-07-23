@@ -76,6 +76,8 @@ fi
 claude_timeout="$(agent_runtime_config CLAUDE_TIMEOUT_SECONDS 7200 60 43200)" || exit 2
 heartbeat_seconds="$(agent_runtime_config AGENT_HEARTBEAT_SECONDS 30 5 300)" || exit 2
 termination_grace="$(agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60)" || exit 2
+claude_model="$(agent_runtime_model_config CLAUDE_MODEL sonnet)" || exit 2
+claude_effort="$(agent_runtime_effort_config CLAUDE_EFFORT high)" || exit 2
 agent_runtime_prepare_npm_cache || exit 2
 
 if [[ ! -s "$TASK_FILE" ]]; then
@@ -152,12 +154,15 @@ Base commit at launch: $base_commit
 EOF
 
 printf 'Starting Claude Code implementation round %s/%s for %s\n' "$implementation_round" "$max_rounds" "$active_task_id"
+printf 'Claude model policy: %s (effort %s)\n' "$claude_model" "$claude_effort"
 
 prompt_text="$(<"$prompt_file")"
 run_agent_process \
   "Claude implementation round $implementation_round/$max_rounds" \
   "$claude_timeout" "$heartbeat_seconds" "$termination_grace" "$claude_log" -- \
   claude --print \
+    --model "$claude_model" \
+    --effort "$claude_effort" \
     --permission-mode dontAsk \
     --no-session-persistence \
     --output-format text \
@@ -198,7 +203,7 @@ is_protected_implementation_path() {
     .claude/*|.codex/*) return 0 ;;
     .agent/implementation-report.md|.agent/artifacts/*) return 1 ;;
     .agent/*) return 0 ;;
-    scripts/agent-*.sh|scripts/run-implementation.sh|scripts/run-review.sh|scripts/run-validation.sh|scripts/test-agent-runtime.sh|scripts/lib/agent-runtime.sh) return 0 ;;
+    scripts/agent-*.sh|scripts/generate-cycle-summary.sh|scripts/run-implementation.sh|scripts/run-review.sh|scripts/run-validation.sh|scripts/test-agent-runtime.sh|scripts/lib/agent-runtime.sh) return 0 ;;
     *) return 1 ;;
   esac
 }

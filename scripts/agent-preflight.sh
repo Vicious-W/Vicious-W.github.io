@@ -146,6 +146,7 @@ required_files=(
   .agent/runtime.env
   .claude/settings.json
   scripts/agent-preflight.sh
+  scripts/generate-cycle-summary.sh
   scripts/run-validation.sh
   scripts/lib/agent-runtime.sh
   scripts/test-agent-runtime.sh
@@ -234,6 +235,7 @@ if [[ -x "$ROOT_DIR/scripts/run-validation.sh" && \
       -x "$ROOT_DIR/scripts/run-implementation.sh" && \
       -x "$ROOT_DIR/scripts/run-review.sh" && \
       -x "$ROOT_DIR/scripts/agent-cycle.sh" && \
+      -x "$ROOT_DIR/scripts/generate-cycle-summary.sh" && \
       -x "$ROOT_DIR/scripts/test-agent-runtime.sh" ]]; then
   record_pass 'Agent entry scripts are executable'
 else
@@ -245,6 +247,7 @@ if bash -n "$ROOT_DIR/scripts/agent-preflight.sh" \
   "$ROOT_DIR/scripts/test-agent-runtime.sh" \
   "$ROOT_DIR/scripts/run-implementation.sh" \
   "$ROOT_DIR/scripts/run-review.sh" \
+  "$ROOT_DIR/scripts/generate-cycle-summary.sh" \
   "$ROOT_DIR/scripts/agent-cycle.sh"; then
   record_pass 'Agent shell scripts pass bash -n'
 else
@@ -265,9 +268,20 @@ agent_runtime_config CODEX_TIMEOUT_SECONDS 3600 60 43200 >/dev/null || runtime_v
 agent_runtime_config AGENT_HEARTBEAT_SECONDS 30 5 300 >/dev/null || runtime_values_ok=0
 agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60 >/dev/null || runtime_values_ok=0
 if (( runtime_values_ok == 1 )); then
-  record_pass '.agent/runtime.env values are within safe bounds'
+  record_pass '.agent/runtime.env timing values are within safe bounds'
 else
-  record_fail '.agent/runtime.env contains invalid values'
+  record_fail '.agent/runtime.env contains invalid timing values'
+fi
+
+runtime_models_ok=1
+claude_model="$(agent_runtime_model_config CLAUDE_MODEL sonnet)" || runtime_models_ok=0
+claude_effort="$(agent_runtime_effort_config CLAUDE_EFFORT high)" || runtime_models_ok=0
+codex_model="$(agent_runtime_model_config CODEX_MODEL gpt-5.6-sol)" || runtime_models_ok=0
+codex_effort="$(agent_runtime_effort_config CODEX_REASONING_EFFORT high)" || runtime_models_ok=0
+if (( runtime_models_ok == 1 )); then
+  record_pass "project model policy is valid: Claude=$claude_model/$claude_effort, Codex=$codex_model/$codex_effort"
+else
+  record_fail '.agent/runtime.env contains an invalid model or effort value'
 fi
 
 current_round="$(sed -n 's/^CURRENT_ROUND=//p' "$STATE_FILE" | head -n 1)"

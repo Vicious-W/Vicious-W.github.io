@@ -77,6 +77,14 @@
 
 ## 5. 当前状态
 > 仓库已有初步开发
+- 已完成（2026-07-22，协作可观测性/额度控制）：Claude 第 2 轮因月度额度中断后留下的两个未完成文件已
+  可恢复地保存为具名 Git stash `recovery: interrupted Claude implementation round 2 at usage limit`，
+  工作区回到最后一份有效审查检查点。`.agent/runtime.env` 现在显式固定项目级模型策略，不再继承个人会话中
+  昂贵的 Opus/max 选择：Claude 使用最新 `sonnet` + `high`，Codex 使用 `gpt-5.6-sol` + `high`；启动前
+  预检会校验模型名和 effort。父循环每次退出（PASS、三轮上限、额度/权限/验证错误等）都会自动生成
+  `.agent/artifacts/cycle/latest-summary.md`，按轮概括 Claude 的主要改动、Codex 的判定与问题标题、提交、
+  中断原因和下一步；`./scripts/agent-cycle.sh summary` 可随时重新生成并直接查看。Codex 原始日志也改为
+  `codex-round-N.log`，不再被下一轮覆盖。
 - 已完成（自动闭环第 1 轮，2026-07-22）：第一屏两条主线首轮实现。① 玻璃层重调质量/重力/摩擦/恢复/
   阻尼/solver/睡眠与有限力拖拽约束，手感更重、堆叠更稳；材质去塑料感（去 clearcoat、放长体吸收、去饱和
   料色）；新增 `src/glassAudio.js`，用 cannon-es 的法向冲击速度、切向滑动速度和接触点位置驱动 Web Audio
@@ -130,11 +138,30 @@
 - 自动实现—验收闭环：`./scripts/agent-cycle.sh cycle`（串行，最多三轮）
 - 权限/环境预检：`./scripts/agent-cycle.sh preflight`（不启动 Agent）
 - 分步与状态入口：`./scripts/agent-cycle.sh preflight|implement|validate|review|status|archive`
+- 多轮简报：`./scripts/agent-cycle.sh summary`（最新文件：
+  `.agent/artifacts/cycle/latest-summary.md`；每次生成同时保留本地时间戳历史）
 - 未配置：自动测试、lint、类型检查、CI、仓库内 Playwright 测试套件；页面验收使用环境中的 Playwright MCP。
 
 ## 7. 决策与目标演变日志（追加式，最新在最上面）
 > 每当目标发生变化、做出一项技术决策、或完成一个阶段性开发，就在此追加一条，并标注日期。
 > 这一节是这个项目的「记忆」——它记录我们是怎么一步步走到现在的。
+
+### 2026-07-22 — 项目级模型/effort 固定 + 自动多轮简报 + 中断恢复
+- 背景：首次真实闭环证明 Claude→Codex 串行交接成立，但个人 Claude Code 会话此前选用 Opus 4.8/max，
+  很快耗尽月度额度；第 2 轮在写到一半时中断，留下能构建但运行时接线未完成的
+  `src/glassCubes.js`/`style.css`。这两个文件已用具名 Git stash 完整保存后从工作区移走，未提交为有效实现，
+  当前 HEAD 仍是 Codex 第 1 轮审查检查点 `7555e53`。
+- 模型策略：不再静默继承全局选择。`.agent/runtime.env` 新增 `CLAUDE_MODEL=sonnet`、
+  `CLAUDE_EFFORT=high`、`CODEX_MODEL=gpt-5.6-sol`、`CODEX_REASONING_EFFORT=high`；实现/审查脚本显式传给
+  两个 CLI，预检限制 model 为安全 slug、effort 为 `low|medium|high|xhigh|max`。选择理由是本项目已有独立
+  审查兜底，Sonnet/high 能覆盖复杂 Three.js/物理/浏览器工具工作，同时避免 Opus/max 的额度消耗；只有自动
+  三轮后仍不能解决的问题才由所有者决定临时升级。
+- 可观测性：新增 `scripts/generate-cycle-summary.sh` 和 `agent-cycle.sh summary`。简报从本轮 Git 检查点中的
+  `.agent/implementation-report.md` 与 `.agent/latest-review.md` 提取每轮主要改动、验证、问题等级/标题和
+  详情命令；额度/权限等中断也会记录未形成检查点的轮次。`cycle` 用 EXIT trap 在所有终止路径生成最新简报
+  和时间戳本地历史，不改变业务 Git 状态。
+- 细节保留：Claude 日志本来已按 `claude-round-N.log` 分轮；Codex 的 `prompt.md`/`codex.log` 也改为
+  `prompt-round-N.md`/`codex-round-N.log`，避免后续审查覆盖前一轮原始记录。
 
 ### 2026-07-22 — 第一屏重建第 1 轮：真三维 TRIGA 反应堆 + 玻璃物理/材质/声音
 - 目标：执行 `.agent/next-task.md` 的两条主线首轮实现。

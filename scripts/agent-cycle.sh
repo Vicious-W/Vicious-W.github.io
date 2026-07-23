@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_FILE="$ROOT_DIR/.agent/state.env"
 LOCK_DIR="$ROOT_DIR/.agent/.cycle.lock"
 RUNTIME_LIB="$ROOT_DIR/scripts/lib/agent-runtime.sh"
+SUMMARY_SCRIPT="$ROOT_DIR/scripts/generate-cycle-summary.sh"
 
 # shellcheck source=scripts/lib/agent-runtime.sh
 source "$RUNTIME_LIB"
@@ -24,6 +25,8 @@ Commands:
   validate               Run the unified configured checks.
   review [target base]   Run one read-only Codex review.
   status                 Show Git, task, validation, and handoff state.
+  summary                Generate and print a concise report of all rounds in
+                         the current/recent task cycle.
   archive                Archive latest-review.md if not already archived.
 
 The automatic cycle never runs both Agents concurrently and never pushes,
@@ -95,7 +98,18 @@ case "$command_name" in
     if ! agent_acquire_lock "$LOCK_DIR" 'automatic cycle'; then
       exit 2
     fi
-    trap 'agent_release_lock "$LOCK_DIR"' EXIT
+    cycle_cleanup() {
+      local cycle_exit=$?
+      trap - EXIT
+      if summary_path="$("$SUMMARY_SCRIPT" "$cycle_exit" 2>/dev/null)"; then
+        printf '\nCycle summary: %s\n' "$summary_path"
+      else
+        printf '\nWarning: could not generate the cycle summary.\n' >&2
+      fi
+      agent_release_lock "$LOCK_DIR" || true
+      exit "$cycle_exit"
+    }
+    trap cycle_cleanup EXIT
 
     if ! "$ROOT_DIR/scripts/agent-preflight.sh"; then
       printf 'Automatic cycle stopped at preflight; neither Agent was started.\n' >&2
@@ -193,6 +207,18 @@ case "$command_name" in
       printf '\nLatest automatic stop\n'
       sed -n '1,12p' "$ROOT_DIR/.agent/artifacts/runtime/last-stop.env"
     fi
+    if [[ -f "$ROOT_DIR/.agent/artifacts/cycle/latest-summary.md" ]]; then
+      printf '\nLatest cycle summary\n'
+      printf '%s\n' '.agent/artifacts/cycle/latest-summary.md'
+    fi
+    ;;
+  summary)
+    if (( $# != 0 )); then
+      usage >&2
+      exit 2
+    fi
+    summary_path="$("$SUMMARY_SCRIPT")" || exit $?
+    sed -n '1,320p' "$summary_path"
     ;;
   archive)
     if (( $# != 0 )); then

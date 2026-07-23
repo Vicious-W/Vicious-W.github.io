@@ -84,6 +84,8 @@ fi
 codex_timeout="$(agent_runtime_config CODEX_TIMEOUT_SECONDS 3600 60 43200)" || exit 2
 heartbeat_seconds="$(agent_runtime_config AGENT_HEARTBEAT_SECONDS 30 5 300)" || exit 2
 termination_grace="$(agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60)" || exit 2
+codex_model="$(agent_runtime_model_config CODEX_MODEL gpt-5.6-sol)" || exit 2
+codex_effort="$(agent_runtime_effort_config CODEX_REASONING_EFFORT high)" || exit 2
 agent_runtime_prepare_npm_cache || exit 2
 
 target_input="${1:-HEAD}"
@@ -144,8 +146,8 @@ else
 fi
 
 review_tmp="$(mktemp /tmp/vicious-review.XXXXXX.md)"
-prompt_file="$ARTIFACT_DIR/prompt.md"
-codex_log="$ARTIFACT_DIR/codex.log"
+prompt_file="$ARTIFACT_DIR/prompt-round-${next_round}.md"
+codex_log="$ARTIFACT_DIR/codex-round-${next_round}.log"
 
 cat >"$prompt_file" <<EOF
 You are the independent Codex reviewer for this repository, not the implementer.
@@ -175,15 +177,18 @@ VERDICT: PASS or VERDICT: CHANGES_REQUIRED. Do not wrap the report in a code fen
 EOF
 
 review_prompt="$(<"$prompt_file")"
+printf 'Codex model policy: %s (reasoning effort %s)\n' "$codex_model" "$codex_effort"
 run_agent_process \
   "Codex review round $next_round/$max_rounds" \
   "$codex_timeout" "$heartbeat_seconds" "$termination_grace" "$codex_log" -- \
   codex exec \
     --cd "$ROOT_DIR" \
+    --model "$codex_model" \
     --sandbox read-only \
     --ephemeral \
     --color never \
     -c 'approval_policy="never"' \
+    -c "model_reasoning_effort=\"$codex_effort\"" \
     --output-last-message "$review_tmp" \
     "$review_prompt"
 codex_exit=$?
