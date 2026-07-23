@@ -84,7 +84,8 @@
   预检会校验模型名和 effort。父循环每次退出（PASS、三轮上限、额度/权限/验证错误等）都会自动生成
   `.agent/artifacts/cycle/latest-summary.md`，按轮概括 Claude 的主要改动、Codex 的判定与问题标题、提交、
   中断原因和下一步；`./scripts/agent-cycle.sh summary` 可随时重新生成并直接查看。Codex 原始日志也改为
-  `codex-round-N.log`，不再被下一轮覆盖。
+  `codex-round-N.log`，不再被下一轮覆盖。简报固定使用中文界面；后续 Codex 在保留契约机器标记和英文章节
+  名的同时，正文与问题标题使用简体中文。
 - 已完成（自动闭环第 1 轮，2026-07-22）：第一屏两条主线首轮实现。① 玻璃层重调质量/重力/摩擦/恢复/
   阻尼/solver/睡眠与有限力拖拽约束，手感更重、堆叠更稳；材质去塑料感（去 clearcoat、放长体吸收、去饱和
   料色）；新增 `src/glassAudio.js`，用 cannon-es 的法向冲击速度、切向滑动速度和接触点位置驱动 Web Audio
@@ -161,7 +162,8 @@
   详情命令；额度/权限等中断也会记录未形成检查点的轮次。`cycle` 用 EXIT trap 在所有终止路径生成最新简报
   和时间戳本地历史，不改变业务 Git 状态。
 - 细节保留：Claude 日志本来已按 `claude-round-N.log` 分轮；Codex 的 `prompt.md`/`codex.log` 也改为
-  `prompt-round-N.md`/`codex-round-N.log`，避免后续审查覆盖前一轮原始记录。
+  `prompt-round-N.md`/`codex-round-N.log`，避免后续审查覆盖前一轮原始记录。简报固定为中文界面，审查
+  prompt 要求 Codex 保留契约的固定 section/VERDICT 标记、但用简体中文撰写正文和问题标题。
 
 ### 2026-07-22 — 第一屏重建第 1 轮：真三维 TRIGA 反应堆 + 玻璃物理/材质/声音
 - 目标：执行 `.agent/next-task.md` 的两条主线首轮实现。

@@ -117,37 +117,37 @@ fi
 (( display_rounds <= max_rounds )) || display_rounds="$max_rounds"
 
 {
-  printf '# Agent cycle summary\n\n'
-  printf -- '- Generated: `%s`\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-  printf -- '- Task: `%s`\n' "${task_id:-unknown}"
-  printf -- '- Status: `%s`\n' "${task_status:-unknown}"
-  printf -- '- Completed reviews: `%s/%s`\n' "$current_round" "$max_rounds"
-  printf -- '- Latest verdict: `%s`\n' "${last_verdict:-NOT_REVIEWED}"
-  printf -- '- Cycle base: `%s`\n' "$cycle_base"
+  printf '# 双 Agent 循环简报\n\n'
+  printf -- '- 生成时间：`%s`\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  printf -- '- 任务：`%s`\n' "${task_id:-unknown}"
+  printf -- '- 当前状态：`%s`\n' "${task_status:-unknown}"
+  printf -- '- 已完成审查：`%s/%s`\n' "$current_round" "$max_rounds"
+  printf -- '- 最新结论：`%s`\n' "${last_verdict:-NOT_REVIEWED}"
+  printf -- '- 本轮基准提交：`%s`\n' "$cycle_base"
   if [[ -n "$CYCLE_EXIT" ]]; then
-    printf -- '- Parent exit code: `%s`\n' "$CYCLE_EXIT"
+    printf -- '- 父脚本退出码：`%s`\n' "$CYCLE_EXIT"
   fi
   if [[ -n "$stop_reason" ]]; then
-    printf -- '- Latest stop: `%s / %s / exit %s` at `%s`\n' \
+    printf -- '- 最近停止：`%s / %s / exit %s`，时间 `%s`\n' \
       "${stop_stage:-unknown}" "$stop_reason" "${stop_exit:-unknown}" "${stop_time:-unknown}"
   fi
-  printf -- '- Model policy: Claude `%s` / `%s`; Codex `%s` / `%s`\n' \
+  printf -- '- 模型策略：Claude `%s` / `%s`；Codex `%s` / `%s`\n' \
     "$(runtime_value CLAUDE_MODEL)" "$(runtime_value CLAUDE_EFFORT)" \
     "$(runtime_value CODEX_MODEL)" "$(runtime_value CODEX_REASONING_EFFORT)"
   printf '\n'
 
   for ((round = 1; round <= display_rounds; round++)); do
-    printf '## Round %s\n\n' "$round"
+    printf '## 第 %s 轮\n\n' "$round"
     implementation_commit="${implementation_commits[$round]:-}"
     review_commit="${review_commits[$round]:-}"
 
-    printf '### Claude implementation\n\n'
+    printf '### Claude 实现\n\n'
     if [[ -n "$implementation_commit" ]] && \
        git -C "$ROOT_DIR" show "$implementation_commit:.agent/implementation-report.md" \
          >"$report_tmp" 2>/dev/null; then
-      printf -- '- Commit: `%s`\n' "$implementation_commit"
-      printf -- '- Files: %s\n' "$(join_changed_files "$implementation_commit")"
-      printf -- '- Main changes:\n'
+      printf -- '- 提交：`%s`\n' "$implementation_commit"
+      printf -- '- 改动文件：%s\n' "$(join_changed_files "$implementation_commit")"
+      printf -- '- 主要改动：\n'
       change_count=0
       while IFS= read -r change_title; do
         [[ -n "$change_title" ]] || continue
@@ -155,22 +155,22 @@ fi
         change_count=$((change_count + 1))
       done < <(report_change_titles "$report_tmp")
       if (( change_count == 0 )); then
-        printf '  - See the implementation report stored in this commit.\n'
+        printf '  - 详见该提交中保存的实现报告。\n'
       fi
       validation="$(
         sed -n 's/^- Unified validation: //p' "$report_tmp" | tail -n 1
       )"
-      [[ -n "$validation" ]] && printf -- '- Validation: %s\n' "$validation"
-      printf -- '- Details: `git show %s:.agent/implementation-report.md`\n' \
+      [[ -n "$validation" ]] && printf -- '- 验证：%s\n' "$validation"
+      printf -- '- 详细报告：`git show %s:.agent/implementation-report.md`\n' \
         "$implementation_commit"
     elif [[ "$stop_stage" == "CLAUDE" && "$round" == "$((current_round + 1))" ]]; then
-      printf -- '- Result: interrupted before a valid implementation checkpoint.\n'
-      printf -- '- Stop: `%s` (exit `%s`)\n' "${stop_reason:-unknown}" "${stop_exit:-unknown}"
+      printf -- '- 结果：在形成有效实现检查点之前中断。\n'
+      printf -- '- 停止原因：`%s`（退出码 `%s`）\n' "${stop_reason:-unknown}" "${stop_exit:-unknown}"
       dirty_status="$(git -C "$ROOT_DIR" status --short)"
       if [[ -n "$dirty_status" ]]; then
-        printf -- '- Preserved uncommitted paths:\n\n```text\n%s\n```\n' "$dirty_status"
+        printf -- '- 保留的未提交文件：\n\n```text\n%s\n```\n' "$dirty_status"
       else
-        printf -- '- No uncommitted paths remain in the working tree.\n'
+        printf -- '- 工作区中没有残留未提交文件。\n'
       fi
       recovery_stash="$(
         git -C "$ROOT_DIR" stash list --format='%gd%x09%s' |
@@ -178,15 +178,15 @@ fi
             '$2 ~ ("interrupted Claude implementation round " round) { print $1; exit }'
       )"
       if [[ -n "$recovery_stash" ]]; then
-        printf -- '- Recoverable partial work: `%s`.\n' "$recovery_stash"
+        printf -- '- 可恢复的半成品：`%s`。\n' "$recovery_stash"
       fi
-      printf -- '- Raw log: `.agent/artifacts/implementation/claude-round-%s.log`\n' "$round"
+      printf -- '- 原始日志：`.agent/artifacts/implementation/claude-round-%s.log`\n' "$round"
     else
-      printf -- '- Not run or no valid checkpoint was created.\n'
+      printf -- '- 未运行，或没有形成有效检查点。\n'
     fi
     printf '\n'
 
-    printf '### Codex review\n\n'
+    printf '### Codex 审查\n\n'
     if [[ -n "$review_commit" ]] && \
        git -C "$ROOT_DIR" show "$review_commit:.agent/latest-review.md" \
          >"$report_tmp" 2>/dev/null; then
@@ -194,40 +194,40 @@ fi
       reviewed_commit="$(
         sed -n 's/^- Reviewed commit: //p' "$report_tmp" | head -n 1
       )"
-      printf -- '- Review commit: `%s`\n' "$review_commit"
-      printf -- '- Reviewed implementation: `%s`\n' "${reviewed_commit:-unknown}"
-      printf -- '- Verdict: `%s`\n' "${verdict:-unknown}"
+      printf -- '- 审查提交：`%s`\n' "$review_commit"
+      printf -- '- 审查的实现提交：`%s`\n' "${reviewed_commit:-unknown}"
+      printf -- '- 结论：`%s`\n' "${verdict:-unknown}"
       finding_count=0
       while IFS=$'\t' read -r severity finding_title; do
         [[ -n "$finding_title" ]] || continue
         if (( finding_count == 0 )); then
-          printf -- '- Findings:\n'
+          printf -- '- 发现的问题：\n'
         fi
         printf '  - **%s** — %s\n' "$severity" "$finding_title"
         finding_count=$((finding_count + 1))
       done < <(report_findings "$report_tmp")
       if (( finding_count == 0 )); then
-        printf -- '- Findings: none.\n'
+        printf -- '- 发现的问题：无。\n'
       fi
-      printf -- '- Details: `git show %s:.agent/latest-review.md`\n' "$review_commit"
+      printf -- '- 详细报告：`git show %s:.agent/latest-review.md`\n' "$review_commit"
     else
-      printf -- '- Not run.\n'
+      printf -- '- 未运行。\n'
     fi
     printf '\n'
   done
 
-  printf '## What to do next\n\n'
+  printf '## 接下来怎么做\n\n'
   if [[ "$task_status" == "COMPLETE" && "$last_verdict" == "PASS" ]]; then
-    printf -- '- The automatic cycle passed. The owner can now evaluate subjective look and feel.\n'
+    printf -- '- 自动循环已经通过；所有者现在可以进行主观观感与手感验收。\n'
   elif (( current_round >= max_rounds )); then
-    printf -- '- The round limit was reached. Read the latest findings and make a product/technical decision before starting a new cycle.\n'
+    printf -- '- 已达到轮数上限；启动新循环前，请阅读最新问题并作出产品或技术决策。\n'
   elif [[ -n "$stop_reason" ]]; then
-    printf -- '- Resolve the external or safety stop `%s`, then inspect the working tree before resuming.\n' "$stop_reason"
+    printf -- '- 先解决外部或安全停止原因 `%s`，恢复前再检查工作区。\n' "$stop_reason"
   else
-    printf -- '- Continue from the latest Codex findings.\n'
+    printf -- '- 从最新 Codex 问题继续下一轮实现。\n'
   fi
-  printf -- '- Full status: `./scripts/agent-cycle.sh status`\n'
-  printf -- '- Regenerate this report: `./scripts/agent-cycle.sh summary`\n'
+  printf -- '- 完整状态：`./scripts/agent-cycle.sh status`\n'
+  printf -- '- 重新生成本简报：`./scripts/agent-cycle.sh summary`\n'
 } >"$summary_tmp"
 
 install -m 0644 "$summary_tmp" "$OUTPUT_FILE"

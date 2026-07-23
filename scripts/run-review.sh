@@ -171,6 +171,11 @@ Do not introduce requirements outside PROJECT_SPEC.md. Every finding must have
 evidence, impact, reproduction, expected/actual behavior, and objective acceptance
 criteria. Minor and Suggestion items do not block passing.
 
+Keep every required Markdown section heading and machine-readable marker exactly
+as specified by REVIEW_CONTRACT.md, but write the report prose and finding titles
+in Simplified Chinese so the project owner can read the handoff directly. Keep
+code identifiers, commands, paths, and VERDICT values unchanged.
+
 Output only the complete Markdown report matching REVIEW_CONTRACT.md. Include all
 required sections and exactly one standalone line containing either
 VERDICT: PASS or VERDICT: CHANGES_REQUIRED. Do not wrap the report in a code fence.
