@@ -58,11 +58,16 @@
 
 ## Agent 协作结构
 
-- Agent 默认身份为 `GENERAL`，专用身份为 `IMPLEMENTER` 与 `REVIEWER`；
+- Agent 默认身份为 `GENERAL`，专用身份为 `MONITOR`、`IMPLEMENTER` 与
+  `REVIEWER`；
 - 角色不与 Claude Code 或 Codex 绑定，父脚本可为每个角色指定执行器、模型和
   effort；
 - 当前默认配置仍是 Claude Code 实现、Codex 审查；
 - 实现和审查使用全新进程严格串行，审查阶段只读；
+- `agent-cycle.sh` 管理有界实现—审查轮次，`agent-supervisor.sh` 管理跨额度窗口
+  的恢复、定时续跑和异常交接；
+- 长时间等待由 shell 完成，不运行 AI；MONITOR 只在无法机械处理的事件边界以只读
+  身份启动；
 - 每次专用调用在 `.agent/artifacts/runs/` 留下实际运行配置。
 
 ## 建模规则

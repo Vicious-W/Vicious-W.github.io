@@ -6,11 +6,12 @@
 ## 文件职责
 
 - `roles/GENERAL.md`：默认通用身份；
+- `roles/MONITOR.md`：跨额度窗口的只读监督身份；
 - `roles/IMPLEMENTER.md`：专用实现身份；
 - `roles/REVIEWER.md`：专用独立审查身份；
 - `next-task.md`：所有者确认的当前执行切片；
 - `state.env`：任务、轮次、结论和上一轮实际运行配置；
-- `runtime.env`：实现者与审查者的默认执行器、模型、effort 和超时；
+- `runtime.env`：三种专用角色的默认执行器、模型、effort、超时和恢复策略；
 - `implementation-report.md`：最近一轮实现交接，由 IMPLEMENTER 更新；
 - `latest-review.md`：最近一次正式审查，由中立审查包装器替换；
 - `review-history/`：只追加的正式审查归档；
@@ -19,8 +20,8 @@
 ## 身份规则
 
 直接启动 Agent 且没有明确指定身份时，默认是 `GENERAL`。只有项目所有者或父脚本
-明确分配后，Agent 才成为 `IMPLEMENTER` 或 `REVIEWER`。同一执行器可以在不同的
-新进程中承担两种角色，但不得复用会话或在一个进程中自行切换。
+明确分配后，Agent 才成为 `MONITOR`、`IMPLEMENTER` 或 `REVIEWER`。同一执行器
+可以在不同的新进程中承担不同角色，但不得复用会话或在一个进程中自行切换。
 
 一次专用调用的实际身份由以下内容共同确定：
 
@@ -54,6 +55,18 @@
 
 也可以让同一种执行器承担两种角色；父脚本仍会为两者创建全新进程，并强制审查
 阶段只读。模型名必须是相应 CLI 实际支持的值。
+
+预计一次任务会跨越多个额度窗口时，使用外层监督器：
+
+```bash
+./scripts/agent-cycle.sh supervise \
+  --implementer claude --implementer-model sonnet --implementer-effort high \
+  --reviewer claude --reviewer-model sonnet --reviewer-effort max
+```
+
+`agent-supervisor.sh` 调用有界的 `agent-cycle.sh`，在额度中断后保存合法实现现场、
+记录恢复时间并由 shell 等待。等待期间没有 Agent 进程，不消耗模型 token。
+MONITOR 不持续轮询，只在未知异常时生成只读事件报告。
 
 完整顺序为：
 
@@ -89,11 +102,14 @@
 ./scripts/agent-cycle.sh implement --agent claude --model sonnet --effort high
 ./scripts/agent-cycle.sh review --agent codex --model gpt-5.6-sol --effort high
 ./scripts/agent-cycle.sh cycle
+./scripts/agent-cycle.sh supervise
+./scripts/agent-cycle.sh supervisor-status
 ./scripts/agent-cycle.sh summary
 ./scripts/test-agent-runtime.sh
+./scripts/test-agent-supervisor.sh
 ```
 
-`test-agent-runtime.sh` 只使用假的 shell 子进程并检查适配路由，不启动真实 Agent。
+两个测试脚本都只使用假的 shell 子进程，不启动真实 Agent。
 
 ## 失败与恢复
 
@@ -106,5 +122,6 @@ cat .agent/artifacts/runtime/last-stop.env
 ```
 
 权限、认证、额度、MCP、超时、工作区污染、越权或报告无效都会立即停止，不会增加
-审查轮次或启动下一个 Agent。不要用 `git reset --hard`、`git clean -fd` 或删除
-活动锁来恢复；先检查保留现场，再由所有者决定。
+审查轮次。普通 `cycle` 会停止；`supervise` 只对明确分类的额度事件进行有界恢复，
+其他错误会唤醒只读 MONITOR 后停止。不要用 `git reset --hard`、`git clean -fd`
+或删除活动锁来恢复；先检查保留现场，再由所有者决定。

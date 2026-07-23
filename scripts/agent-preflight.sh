@@ -241,6 +241,7 @@ required_files=(
   CLAUDE.md
   REVIEW_CONTRACT.md
   .agent/roles/GENERAL.md
+  .agent/roles/MONITOR.md
   .agent/roles/IMPLEMENTER.md
   .agent/roles/REVIEWER.md
   docs/engineering/SOURCE_SCENE.md
@@ -248,6 +249,7 @@ required_files=(
   docs/engineering/REACTOR_MODEL.md
   docs/guides/PROJECT_COMMAND_MANUAL.md
   docs/methodology/AI_Project_Meta_Method_v3.0_2026-07-23.md
+  docs/methodology/AI_Project_Meta_Method_v4.0_2026-07-23.md
   references/README.md
   .vscode/settings.json
   .agent/next-task.md
@@ -257,14 +259,17 @@ required_files=(
   .codex/config.toml
   scripts/agent-preflight.sh
   scripts/agent-cycle.sh
+  scripts/agent-supervisor.sh
   scripts/agent-runners/claude.sh
   scripts/agent-runners/codex.sh
   scripts/generate-cycle-summary.sh
   scripts/run-implementation.sh
+  scripts/run-monitor.sh
   scripts/run-review.sh
   scripts/run-validation.sh
   scripts/lib/agent-runtime.sh
   scripts/test-agent-runtime.sh
+  scripts/test-agent-supervisor.sh
 )
 for relative_path in "${required_files[@]}"; do
   if [[ -s "$ROOT_DIR/$relative_path" ]]; then
@@ -330,11 +335,14 @@ if [[ -x "$ROOT_DIR/scripts/run-validation.sh" && \
       -x "$ROOT_DIR/scripts/agent-preflight.sh" && \
       -x "$ROOT_DIR/scripts/run-implementation.sh" && \
       -x "$ROOT_DIR/scripts/run-review.sh" && \
+      -x "$ROOT_DIR/scripts/run-monitor.sh" && \
       -x "$ROOT_DIR/scripts/agent-cycle.sh" && \
+      -x "$ROOT_DIR/scripts/agent-supervisor.sh" && \
       -x "$ROOT_DIR/scripts/agent-runners/claude.sh" && \
       -x "$ROOT_DIR/scripts/agent-runners/codex.sh" && \
       -x "$ROOT_DIR/scripts/generate-cycle-summary.sh" && \
-      -x "$ROOT_DIR/scripts/test-agent-runtime.sh" ]]; then
+      -x "$ROOT_DIR/scripts/test-agent-runtime.sh" && \
+      -x "$ROOT_DIR/scripts/test-agent-supervisor.sh" ]]; then
   record_pass 'Agent entry and adapter scripts are executable'
 else
   record_fail 'one or more Agent entry/adapter scripts are not executable'
@@ -344,12 +352,15 @@ if bash -n \
   "$ROOT_DIR/scripts/agent-preflight.sh" \
   "$ROOT_DIR/scripts/lib/agent-runtime.sh" \
   "$ROOT_DIR/scripts/test-agent-runtime.sh" \
+  "$ROOT_DIR/scripts/test-agent-supervisor.sh" \
   "$ROOT_DIR/scripts/run-implementation.sh" \
+  "$ROOT_DIR/scripts/run-monitor.sh" \
   "$ROOT_DIR/scripts/run-review.sh" \
   "$ROOT_DIR/scripts/agent-runners/claude.sh" \
   "$ROOT_DIR/scripts/agent-runners/codex.sh" \
   "$ROOT_DIR/scripts/generate-cycle-summary.sh" \
-  "$ROOT_DIR/scripts/agent-cycle.sh"; then
+  "$ROOT_DIR/scripts/agent-cycle.sh" \
+  "$ROOT_DIR/scripts/agent-supervisor.sh"; then
   record_pass 'Agent shell scripts pass bash -n'
 else
   record_fail 'Agent shell script syntax check failed'
@@ -364,8 +375,12 @@ fi
 runtime_values_ok=1
 agent_runtime_config IMPLEMENTER_TIMEOUT_SECONDS 7200 60 43200 >/dev/null || runtime_values_ok=0
 agent_runtime_config REVIEWER_TIMEOUT_SECONDS 3600 60 43200 >/dev/null || runtime_values_ok=0
+agent_runtime_config MONITOR_TIMEOUT_SECONDS 900 60 7200 >/dev/null || runtime_values_ok=0
 agent_runtime_config AGENT_HEARTBEAT_SECONDS 30 5 300 >/dev/null || runtime_values_ok=0
 agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60 >/dev/null || runtime_values_ok=0
+agent_runtime_config QUOTA_WAIT_SECONDS 18000 60 604800 >/dev/null || runtime_values_ok=0
+agent_runtime_config MAX_QUOTA_RESUMES 6 1 100 >/dev/null || runtime_values_ok=0
+agent_runtime_config SUPERVISOR_HEARTBEAT_SECONDS 300 30 3600 >/dev/null || runtime_values_ok=0
 if (( runtime_values_ok == 1 )); then
   record_pass '.agent/runtime.env timing values are within safe bounds'
 else

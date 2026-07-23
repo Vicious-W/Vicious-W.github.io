@@ -27,6 +27,8 @@ Commands:
   status                 Show Git, task, validation, handoff and runtime state.
   summary                Print the concise report for current/recent rounds.
   archive                Archive latest-review.md if not already archived.
+  supervise [options]     Run the multi-window, quota-aware outer supervisor.
+  supervisor-status      Show persisted outer-supervisor state.
 
 Cycle options:
   --implementer, --implementer-agent claude|codex
@@ -35,6 +37,7 @@ Cycle options:
   --reviewer, --reviewer-agent claude|codex
   --reviewer-model MODEL
   --reviewer-effort low|medium|high|xhigh|max
+  --start-stage implementer|reviewer
 
 Defaults come from .agent/runtime.env. Roles are not tied to executors: the same
 executor may fill both roles in separate fresh processes, and roles may be
@@ -106,6 +109,7 @@ case "$command_name" in
     reviewer_agent="$(agent_runtime_executor_config REVIEWER_AGENT codex)" || exit 2
     reviewer_model="$(agent_runtime_model_config REVIEWER_MODEL gpt-5.6-sol)" || exit 2
     reviewer_effort="$(agent_runtime_effort_config REVIEWER_EFFORT high)" || exit 2
+    next_stage="implementer"
 
     while (( $# > 0 )); do
       case "$1" in
@@ -139,6 +143,11 @@ case "$command_name" in
           reviewer_effort="$2"
           shift 2
           ;;
+        --start-stage)
+          [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+          next_stage="$2"
+          shift 2
+          ;;
         --help|-h)
           usage
           exit 0
@@ -157,6 +166,13 @@ case "$command_name" in
     agent_validate_executor "$reviewer_agent" || exit 2
     agent_validate_model "$reviewer_model" || exit 2
     agent_validate_effort "$reviewer_effort" || exit 2
+    case "$next_stage" in
+      implementer|reviewer) ;;
+      *)
+        printf 'Invalid --start-stage: %s\n' "$next_stage" >&2
+        exit 2
+        ;;
+    esac
 
     if ! agent_acquire_lock "$LOCK_DIR" 'automatic cycle'; then
       exit 2
@@ -179,6 +195,7 @@ case "$command_name" in
       "$implementer_agent" "$implementer_model" "$implementer_effort"
     printf '  REVIEWER:    %s / %s / %s\n' \
       "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
+    printf '  START STAGE: %s\n' "$next_stage"
 
     if ! "$ROOT_DIR/scripts/agent-preflight.sh" \
       --implementer-agent "$implementer_agent" \
@@ -208,16 +225,20 @@ case "$command_name" in
         exit 3
       fi
 
-      printf '\n=== IMPLEMENTER (%s) round %s/%s ===\n' \
-        "$implementer_agent" "$((current_round + 1))" "$max_rounds"
-      AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-implementation.sh" \
-        --agent "$implementer_agent" \
-        --model "$implementer_model" \
-        --effort "$implementer_effort"
-      implementation_exit=$?
-      if (( implementation_exit != 0 )); then
-        printf 'Cycle stopped during IMPLEMENTER (exit %s).\n' "$implementation_exit" >&2
-        exit "$implementation_exit"
+      if [[ "$next_stage" == "implementer" ]]; then
+        printf '\n=== IMPLEMENTER (%s) round %s/%s ===\n' \
+          "$implementer_agent" "$((current_round + 1))" "$max_rounds"
+        AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-implementation.sh" \
+          --agent "$implementer_agent" \
+          --model "$implementer_model" \
+          --effort "$implementer_effort"
+        implementation_exit=$?
+        if (( implementation_exit != 0 )); then
+          printf 'Cycle stopped during IMPLEMENTER (exit %s).\n' "$implementation_exit" >&2
+          exit "$implementation_exit"
+        fi
+      else
+        printf '\nResuming directly at REVIEWER for the existing implementation checkpoint.\n'
       fi
 
       implementation_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
@@ -255,6 +276,7 @@ case "$command_name" in
         printf 'Unknown review verdict; stopping: %s\n' "$verdict" >&2
         exit 4
       fi
+      next_stage="implementer"
     done
     ;;
   preflight)
@@ -290,6 +312,10 @@ case "$command_name" in
       printf '\nLatest automatic stop\n'
       sed -n '1,14p' "$ROOT_DIR/.agent/artifacts/runtime/last-stop.env"
     fi
+    if [[ -f "$ROOT_DIR/.agent/artifacts/supervisor/state.env" ]]; then
+      printf '\nOuter supervisor\n'
+      sed -n '1,24p' "$ROOT_DIR/.agent/artifacts/supervisor/state.env"
+    fi
     ;;
   summary)
     if (( $# != 0 )); then usage >&2; exit 2; fi
@@ -317,6 +343,13 @@ case "$command_name" in
     destination="$history/$(date -u +"%Y-%m-%dT%H%M%SZ")_manual_${reviewed_commit:0:12}.md"
     install -m 0644 "$latest" "$destination"
     printf 'Archived latest review at %s\n' "$destination"
+    ;;
+  supervise)
+    exec "$ROOT_DIR/scripts/agent-supervisor.sh" supervise "$@"
+    ;;
+  supervisor-status)
+    if (( $# != 0 )); then usage >&2; exit 2; fi
+    exec "$ROOT_DIR/scripts/agent-supervisor.sh" status
     ;;
   *)
     printf 'Unknown command: %s\n\n' "$command_name" >&2

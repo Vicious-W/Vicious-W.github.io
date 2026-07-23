@@ -1,6 +1,6 @@
 # 项目参与者指令手册
 
-版本：v2.0
+版本：v3.0
 
 更新日期：2026-07-23
 
@@ -20,7 +20,7 @@ cd /home/vicious/projects/Vicious-W.github.io
 - 反应堆池工程基线：`docs/engineering/REACTOR_POOL_SYSTEM.md`
 - 反应堆模型基线：`docs/engineering/REACTOR_MODEL.md`
 - Agent 身份总协议：`AGENT_PROTOCOL.md`
-- 三种角色：`.agent/roles/`
+- 四种角色：`.agent/roles/`
 - 正式审查格式：`REVIEW_CONTRACT.md`
 
 ## 2. 最常用命令
@@ -38,6 +38,9 @@ npm run dev -- --port 8000
 # 按 runtime.env 默认配置启动完整循环
 ./scripts/agent-cycle.sh cycle
 
+# 启动可跨多个额度窗口的监督循环
+./scripts/agent-cycle.sh supervise
+
 # 查看各轮中文简报
 ./scripts/agent-cycle.sh summary
 ```
@@ -50,12 +53,15 @@ npm run dev -- --port 8000
 
 | 概念 | 可选值 | 含义 |
 | --- | --- | --- |
-| 角色 | GENERAL / IMPLEMENTER / REVIEWER | 本次调用要承担什么职责 |
+| 角色 | GENERAL / MONITOR / IMPLEMENTER / REVIEWER | 本次调用要承担什么职责 |
 | 执行器 | claude / codex | 使用哪个 CLI 与服务运行 |
 | 运行参数 | model / effort / timeout / permissions | 这次调用怎样运行 |
 
 `GENERAL` 是默认身份：所有者直接请一个 Agent 进入项目而没有指定专用身份时，它
 作为通用协作者工作，不自动写正式交接或推进循环。
+
+`MONITOR` 是跨额度窗口的监督身份：只检查流程、进程、Git 和恢复证据，不评价业务
+质量。常规等待和确定性恢复由 shell 完成；只有未知异常才需要启动 MONITOR Agent。
 
 `IMPLEMENTER` 和 `REVIEWER` 是显式分配的专用身份。任何受支持的执行器都可以承担
 任一角色，同一执行器也可以在两个全新进程中先实现再审查。后一种配置具有权限和
@@ -100,6 +106,12 @@ REVIEWER_AGENT=codex
 REVIEWER_MODEL=gpt-5.6-sol
 REVIEWER_EFFORT=high
 REVIEWER_TIMEOUT_SECONDS=3600
+MONITOR_AGENT=codex
+MONITOR_MODEL=gpt-5.6-terra
+MONITOR_EFFORT=medium
+MONITOR_TIMEOUT_SECONDS=900
+QUOTA_WAIT_SECONDS=18000
+MAX_QUOTA_RESUMES=6
 ```
 
 这只是默认调用配置，不是永久身份绑定。可以在每次 `cycle` 启动时覆盖。
@@ -187,6 +199,65 @@ Agent 不负责启动下一个 Agent。中立父脚本一直等待子进程结�
 默认最多三轮。权限、认证、额度、MCP、超时、脏工作区、越权、无效报告或未知
 结论都会立即停止。流程不会 push、部署、reset、clean、rebase 或无限重试。
 
+### 6.1 跨额度窗口的监督循环
+
+如果预计单次额度不足以完成全部轮次，使用：
+
+```bash
+./scripts/agent-cycle.sh supervise \
+  --implementer claude \
+  --implementer-model sonnet \
+  --implementer-effort high \
+  --reviewer claude \
+  --reviewer-model sonnet \
+  --reviewer-effort max \
+  --monitor codex \
+  --monitor-model gpt-5.6-terra \
+  --monitor-effort medium
+```
+
+如果需要在确定时间才首次启动：
+
+```bash
+./scripts/agent-cycle.sh supervise \
+  --start-at "2026-07-23 10:42:15 PDT" \
+  --implementer claude --implementer-model sonnet --implementer-effort high \
+  --reviewer claude --reviewer-model sonnet --reviewer-effort max
+```
+
+监督器分为两层：
+
+```text
+agent-supervisor.sh：跨额度窗口、恢复次数、定时等待、异常交接
+└── agent-cycle.sh：最多 N 轮的实现—审查状态机
+    ├── IMPLEMENTER
+    └── REVIEWER
+```
+
+额度中断时，监督器会先确认工作 Agent 已退出。若实现阶段留下合法半成品，它运行
+统一验证并创建标题明确的 recovery checkpoint；该提交只保存现场，不代表通过，
+也不增加审查轮次。然后状态进入 `WAITING_FOR_QUOTA`，由 shell 的 `sleep` 等待。
+这段等待不会调用模型，因此不会消耗 Agent token。
+
+到点后，监督器从中断角色启动全新进程：实现阶段中断就继续 IMPLEMENTER，已有
+实现检查点后的审查中断就直接继续 REVIEWER。默认每次额度等待 5 小时，最多恢复
+6 次，均可用 `--quota-wait-seconds` 和 `--max-quota-resumes` 覆盖。
+
+查看监督状态：
+
+```bash
+./scripts/agent-cycle.sh supervisor-status
+./scripts/agent-cycle.sh status
+```
+
+`SCHEDULED` 和 `WAITING_FOR_QUOTA` 表示没有 AI Agent 在运行；`RUNNING` 表示正在
+执行一个有界 cycle；`COMPLETE` 或 `STOPPED` 是终态。
+
+普通额度事件由脚本机械处理，不唤醒 MONITOR。只有未知退出、恢复现场不安全或控制
+状态异常时，才启动一次只读 MONITOR 生成事件报告，然后停止等待所有者决定。避免
+让 AI 每分钟查看相同状态：shell 等待近似零模型成本，高频 AI 轮询会重复读取上下文
+并实际消耗 token。
+
 ## 7. 父脚本命令
 
 | 命令 | 作用 | 启动 Agent |
@@ -194,6 +265,8 @@ Agent 不负责启动下一个 Agent。中立父脚本一直等待子进程结�
 | `status` | 查看状态、默认配置、验证和停止原因 | 否 |
 | `preflight [options]` | 检查选定配置 | 否 |
 | `cycle [options]` | 完整串行循环 | 是 |
+| `supervise [options]` | 跨额度窗口运行完整轮转 | 串行启动 |
+| `supervisor-status` | 查看外层监督状态和恢复时间 | 否 |
 | `implement [options]` | 单独运行一轮 IMPLEMENTER 并提交 | 一个 |
 | `review [options] [target base]` | 单独运行一次只读 REVIEWER | 一个 |
 | `validate` | 统一构建/测试检查 | 否 |
@@ -205,6 +278,7 @@ Agent 不负责启动下一个 Agent。中立父脚本一直等待子进程结�
 ```bash
 ./scripts/agent-cycle.sh --help
 ./scripts/agent-preflight.sh --help
+./scripts/agent-supervisor.sh --help
 ./scripts/run-implementation.sh --help
 ./scripts/run-review.sh --help
 ```
@@ -244,9 +318,10 @@ typecheck。未配置的项目写 `NOT CONFIGURED`，不能算作 PASS。摘要�
 
 ```bash
 ./scripts/test-agent-runtime.sh
+./scripts/test-agent-supervisor.sh
 ```
 
-该测试不会启动真实 Claude 或 Codex。
+这两个测试都不会启动真实 Claude 或 Codex。
 
 ## 9. 在哪里看结果
 
@@ -269,6 +344,8 @@ typecheck。未配置的项目写 `NOT CONFIGURED`，不能算作 PASS。摘要�
 .agent/latest-review.md
 .agent/review-history/
 .agent/artifacts/cycle/latest-summary.md
+.agent/artifacts/supervisor/state.env
+.agent/artifacts/supervisor/events.log
 .agent/artifacts/runs/
 .agent/artifacts/implementation/<executor>-round-N.log
 .agent/artifacts/review/<executor>-round-N.log
@@ -295,6 +372,7 @@ git show <审查提交>:.agent/latest-review.md
 
 - Claude IMPLEMENTER：`dontAsk` + 项目工具白名单/禁止列表；
 - Claude REVIEWER：无 Write/Edit，只有只读命令、公开资料和 Playwright MCP；
+- Claude/Codex MONITOR：与 REVIEWER 同级的只读权限，只写忽略目录中的候选报告；
 - Codex IMPLEMENTER：`workspace-write` + `approval_policy="never"`；
 - Codex REVIEWER：`read-only` + `approval_policy="never"`。
 
@@ -315,13 +393,14 @@ cat .agent/artifacts/runtime/last-stop.env
 
 | 分类 | 含义 | 处理 |
 | --- | --- | --- |
-| `USAGE_OR_BILLING_LIMIT` | 额度、余额或速率限制 | 等待恢复或调整调用配置 |
+| `USAGE_OR_BILLING_LIMIT` | 额度、余额或速率限制 | `supervise` 自动保存并定时续跑 |
 | `AUTHENTICATION` | 登录或令牌失效 | 在普通终端恢复对应 CLI 登录 |
 | `PERMISSION` | 角色所需能力未授权 | 只调整确有需要的最小权限 |
 | `MCP_OR_BROWSER` | Playwright 或浏览器不可用 | 修复注册/浏览器后重新预检 |
 | `TIMEOUT` | 超过单轮硬时限 | 检查日志，拆小任务或合理调时限 |
 | `POLICY_VIOLATION` | 实现者触碰控制面 | 检查保留现场，不自动提交 |
 | 达到 `MAX_ROUNDS` | 纠错上限到达 | 阅读简报，由所有者决定 |
+| 达到 `MAX_QUOTA_RESUMES` | 额度恢复次数上限 | 停止并由所有者调整计划 |
 
 不要使用这些命令恢复：
 

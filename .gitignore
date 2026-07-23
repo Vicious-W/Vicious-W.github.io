@@ -42,4 +42,5 @@ dist/
 # Agent 本地运行/验证/审查产物；协议、状态和历史报告仍纳入 Git
 .agent/artifacts/
 .agent/.cycle.lock/
+.agent/.supervisor.lock/
 .agent/*.tmp

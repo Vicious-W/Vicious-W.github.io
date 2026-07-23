@@ -4,10 +4,10 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: codex.sh <IMPLEMENTER|REVIEWER> <model> <effort> <prompt-file> <output-file>
+Usage: codex.sh <IMPLEMENTER|REVIEWER|MONITOR> <model> <effort> <prompt-file> <output-file>
 
 Runs one Codex process using the sandbox profile for the assigned role.
-For REVIEWER, output-file receives the final Markdown report.
+For REVIEWER or MONITOR, output-file receives the final Markdown report.
 EOF
 }
 
@@ -43,9 +43,9 @@ case "$role" in
       -c 'sandbox_workspace_write.network_access=true' \
       "$prompt_text"
     ;;
-  REVIEWER)
+  REVIEWER|MONITOR)
     if [[ "$output_file" == "-" ]]; then
-      printf 'Codex reviewer requires a report output file.\n' >&2
+      printf 'Codex %s requires a report output file.\n' "$role" >&2
       exit 2
     fi
     exec codex exec \

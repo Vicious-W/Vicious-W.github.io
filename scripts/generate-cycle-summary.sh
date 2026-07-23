@@ -7,6 +7,7 @@ AGENT_DIR="$ROOT_DIR/.agent"
 STATE_FILE="$AGENT_DIR/state.env"
 RUNTIME_FILE="$AGENT_DIR/runtime.env"
 STOP_FILE="$AGENT_DIR/artifacts/runtime/last-stop.env"
+SUPERVISOR_STATE_FILE="$AGENT_DIR/artifacts/supervisor/state.env"
 RUN_DIR="$AGENT_DIR/artifacts/runs"
 OUTPUT_DIR="$AGENT_DIR/artifacts/cycle"
 OUTPUT_FILE="$OUTPUT_DIR/latest-summary.md"
@@ -22,6 +23,7 @@ value_from() {
 state_value() { value_from "$STATE_FILE" "$1"; }
 runtime_value() { value_from "$RUNTIME_FILE" "$1"; }
 stop_value() { value_from "$STOP_FILE" "$1"; }
+supervisor_value() { value_from "$SUPERVISOR_STATE_FILE" "$1"; }
 manifest_value() {
   local file="$1"
   local key="$2"
@@ -151,6 +153,15 @@ fi
     printf -- '- 最近停止：`%s / %s / exit %s`，时间 `%s`\n' \
       "${stop_stage:-unknown}" "$stop_reason" "${stop_exit:-unknown}" "${stop_time:-unknown}"
   fi
+  supervisor_status="$(supervisor_value SUPERVISOR_STATUS)"
+  if [[ -n "$supervisor_status" ]]; then
+    printf -- '- 外层监督：`%s`，阶段 `%s`，额度恢复 `%s` 次\n' \
+      "$supervisor_status" "$(supervisor_value CURRENT_STAGE)" \
+      "$(supervisor_value QUOTA_RESUMES)"
+    if [[ -n "$(supervisor_value RESUME_AT)" ]]; then
+      printf -- '- 计划恢复时间：`%s`\n' "$(supervisor_value RESUME_AT)"
+    fi
+  fi
   printf -- '- 默认 IMPLEMENTER：`%s / %s / %s`\n' \
     "$(runtime_value IMPLEMENTER_AGENT)" "$(runtime_value IMPLEMENTER_MODEL)" \
     "$(runtime_value IMPLEMENTER_EFFORT)"
@@ -242,11 +253,17 @@ fi
   elif (( current_round >= max_rounds )); then
     printf -- '- 已达到轮数上限；启动新循环前请先作出产品或技术决定。\n'
   elif [[ -n "$stop_reason" ]]; then
-    printf -- '- 先解决停止原因 `%s`，恢复前再次检查工作区。\n' "$stop_reason"
+    if [[ "$supervisor_status" == "WAITING_FOR_QUOTA" || \
+          "$supervisor_status" == "SCHEDULED" ]]; then
+      printf -- '- 外层监督器已安排恢复；无需保持 AI Agent 轮询。\n'
+    else
+      printf -- '- 先解决停止原因 `%s`，恢复前再次检查工作区。\n' "$stop_reason"
+    fi
   else
     printf -- '- 从最新正式审查问题继续下一轮实现。\n'
   fi
   printf -- '- 完整状态：`./scripts/agent-cycle.sh status`\n'
+  printf -- '- 监督状态：`./scripts/agent-cycle.sh supervisor-status`\n'
   printf -- '- 调用审计：`.agent/artifacts/runs/`\n'
   printf -- '- 重新生成简报：`./scripts/agent-cycle.sh summary`\n'
 } >"$summary_tmp"

@@ -4,10 +4,10 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: claude.sh <IMPLEMENTER|REVIEWER> <model> <effort> <prompt-file> <output-file>
+Usage: claude.sh <IMPLEMENTER|REVIEWER|MONITOR> <model> <effort> <prompt-file> <output-file>
 
 Runs one Claude Code process using the permission profile for the assigned role.
-For REVIEWER, output-file receives the final Markdown report.
+For REVIEWER or MONITOR, output-file receives the final Markdown report.
 EOF
 }
 
@@ -41,9 +41,9 @@ case "$role" in
       --disallowedTools "NotebookEdit,Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git reset *),Bash(git clean *),Bash(git checkout *),Bash(git switch *),Bash(git rebase *),Bash(git rm *),Bash(rm -rf *),Bash(sudo *),Bash(env),Bash(printenv *),Task,Agent" \
       -- "$prompt_text"
     ;;
-  REVIEWER)
+  REVIEWER|MONITOR)
     if [[ "$output_file" == "-" ]]; then
-      printf 'Claude reviewer requires a report output file.\n' >&2
+      printf 'Claude %s requires a report output file.\n' "$role" >&2
       exit 2
     fi
     claude --print \
