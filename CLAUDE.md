@@ -7,14 +7,15 @@
 按顺序阅读：
 
 1. `PROJECT_SPEC.md`：唯一正式的目标、范围与验收来源；
-2. `docs/engineering/SOURCE_SCENE.md`：SOURCE 生命周期、轻水、玻璃和跨系统物理基线；
-3. `docs/engineering/REACTOR_MODEL.md`：反应堆工程设计基线和差距清单；
-4. `REVIEW_CONTRACT.md`：审查问题的等级、证据和验收约定；
-5. `.agent/latest-review.md`：最近一轮 Codex 审查；
-6. `.agent/implementation-report.md`：上一轮实现交接；
-7. `PROJECT.md`：技术决策与当前状态；
-8. `README.md`：项目目录地图；
-9. 当前 Git 状态、与本轮任务直接相关的代码和测试。
+2. `docs/engineering/SOURCE_SCENE.md`：SOURCE 连续运行、轻水、玻璃和跨系统物理基线；
+3. `docs/engineering/REACTOR_POOL_SYSTEM.md`：完整反应堆池、环境设备和连续运行基线；
+4. `docs/engineering/REACTOR_MODEL.md`：反应堆工程设计基线和差距清单；
+5. `REVIEW_CONTRACT.md`：审查问题的等级、证据和验收约定；
+6. `.agent/latest-review.md`：最近一轮 Codex 审查；
+7. `.agent/implementation-report.md`：上一轮实现交接；
+8. `PROJECT.md`：技术决策与当前状态；
+9. `README.md`：项目目录地图；
+10. 当前 Git 状态、与本轮任务直接相关的代码和测试。
 
 开始修改前必须确认工作区中哪些改动属于项目所有者，不得覆盖或删除未提交修改。若目标与 `PROJECT_SPEC.md` 冲突或需要新的产品决定，停止并询问项目所有者。
 
@@ -22,8 +23,10 @@
 
 - 根据 `PROJECT_SPEC.md` 和所有者本轮明确目标实现功能；
 - SOURCE 修改必须符合 `docs/engineering/SOURCE_SCENE.md`，并在实现报告中记录
-  生命周期状态、复位规则、水体耦合、玻璃损伤/破碎、声音激活边界、所用近似和
+  连续运行状态、复位规则、水体耦合、玻璃损伤/破碎、声音激活边界、所用近似和
   未关闭的决策；
+- 反应堆池修改必须符合 `docs/engineering/REACTOR_POOL_SYSTEM.md`，逐项记录
+  `RP-*` 部件、结构连接、设备状态、脉冲载荷路径、资料标签和未关闭差距；
 - 反应堆修改必须符合 `docs/engineering/REACTOR_MODEL.md`，并在实现报告中逐项记录
   资料、部件、状态、近似和仍未关闭的差距 ID；
 - 修复最新审查报告中的有效问题，优先处理 Blocker 和 Major；

@@ -12,7 +12,8 @@
 
 - 项目目标、技术背景和历史决策：读 `PROJECT.md`。
 - 当前正式目标、范围和验收标准：读 `PROJECT_SPEC.md`。
-- SOURCE 生命周期、轻水、玻璃和跨系统物理：读 `docs/engineering/SOURCE_SCENE.md`。
+- SOURCE 连续运行、轻水、玻璃和跨系统物理：读 `docs/engineering/SOURCE_SCENE.md`。
+- 完整反应堆池、环境设备和连续运行：读 `docs/engineering/REACTOR_POOL_SYSTEM.md`。
 - 反应堆资料、部件、状态和真实性边界：读 `docs/engineering/REACTOR_MODEL.md`。
 - Claude Code 的实现边界：读 `CLAUDE.md`。
 - Codex 的审查边界：读 `AGENTS.md`。

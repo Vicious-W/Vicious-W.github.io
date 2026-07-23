@@ -161,17 +161,20 @@ Validation status: $validation_status (exit $validation_exit)
 Validation summary: .agent/artifacts/validation/summary.md
 
 Read PROJECT_SPEC.md, docs/engineering/SOURCE_SCENE.md,
-docs/engineering/REACTOR_MODEL.md, REVIEW_CONTRACT.md, AGENTS.md, README.md,
-.agent/implementation-report.md, the specified Git diff, related code/tests, and
-validation evidence. Check scope compliance, bugs, regressions, test adequacy,
-responsive behavior, main flows, and console errors. For SOURCE changes, verify
-the startup-to-steady state machine, session reset, cross-system causality, water
-response, glass damage/fracture, audio activation boundary, declared
-approximations, and unresolved owner decisions. For reactor changes, verify source
-configuration, independent components, state causality, declared approximations,
-and gap closure. If the change affects page appearance or behavior, use Playwright
-MCP (not a Bash Playwright script) at the required viewports when available;
-otherwise record exactly what is unverified.
+docs/engineering/REACTOR_POOL_SYSTEM.md, docs/engineering/REACTOR_MODEL.md,
+REVIEW_CONTRACT.md, AGENTS.md, README.md, .agent/implementation-report.md, the
+specified Git diff, related code/tests, and validation evidence. Check scope
+compliance, bugs, regressions, test adequacy, responsive behavior, main flows, and
+console errors. For SOURCE changes, verify first-interaction activation, the
+continuous operation controller, session reset, cross-system causality, grating
+support, water response, glass damage/fracture, audio activation, and locked owner
+decisions. For reactor-pool changes, verify RP-* structures and connections,
+low-power pulse preconditions, millisecond pulse timing, mechanical/water/thermal
+load paths, post-pulse heat transfer, full-power equilibrium, source/proxy labels,
+declared approximations, and gap closure. For core changes, verify source
+configuration and independent components. If the change affects page appearance
+or behavior, use Playwright MCP (not a Bash Playwright script) at the required
+viewports when available; otherwise record exactly what is unverified.
 
 Do not introduce requirements outside PROJECT_SPEC.md. Every finding must have
 evidence, impact, reproduction, expected/actual behavior, and objective acceptance

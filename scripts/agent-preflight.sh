@@ -143,6 +143,7 @@ required_files=(
   REVIEW_CONTRACT.md
   PROJECT.md
   docs/engineering/SOURCE_SCENE.md
+  docs/engineering/REACTOR_POOL_SYSTEM.md
   docs/engineering/REACTOR_MODEL.md
   docs/guides/PROJECT_COMMAND_MANUAL.md
   docs/methodology/AI_Project_Meta_Method_v2.0_2026-07-23.md

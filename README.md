@@ -34,7 +34,8 @@ docs/methodology/        项目构建方法论
 
 - `PROJECT.md`：当前实现事实与技术结构；
 - `PROJECT_SPEC.md`：当前目标、范围和验收标准。
-- `docs/engineering/SOURCE_SCENE.md`：SOURCE 生命周期、轻水、玻璃和跨系统物理；
+- `docs/engineering/SOURCE_SCENE.md`：SOURCE 连续运行、轻水、玻璃和跨系统物理；
+- `docs/engineering/REACTOR_POOL_SYSTEM.md`：完整反应堆池、环境设备和连续运行；
 - `docs/engineering/REACTOR_MODEL.md`：反应堆资料、部件、状态和真实性边界。
 
 Agent 规则：

@@ -23,22 +23,25 @@ Codex 的常规身份是独立审查者，不是业务代码实现者。
 按顺序阅读：
 
 1. `PROJECT_SPEC.md`：唯一正式的目标、范围与验收来源；
-2. `docs/engineering/SOURCE_SCENE.md`：SOURCE 生命周期、轻水、玻璃和跨系统物理基线；
-3. `docs/engineering/REACTOR_MODEL.md`：反应堆工程设计基线和差距清单；
-4. `REVIEW_CONTRACT.md`：问题等级、报告格式与终止条件；
-5. `.agent/implementation-report.md`：Claude Code 本轮交接；
-6. 当前 Git 状态、指定提交及其 diff；
-7. `README.md`：项目目录地图；
-8. 与修改相关的代码、测试和自动化结果；
-9. `PROJECT.md`：仅在需要技术背景或历史决策时阅读。
+2. `docs/engineering/SOURCE_SCENE.md`：SOURCE 连续运行、轻水、玻璃和跨系统物理基线；
+3. `docs/engineering/REACTOR_POOL_SYSTEM.md`：完整反应堆池、环境设备和连续运行基线；
+4. `docs/engineering/REACTOR_MODEL.md`：反应堆工程设计基线和差距清单；
+5. `REVIEW_CONTRACT.md`：问题等级、报告格式与终止条件；
+6. `.agent/implementation-report.md`：Claude Code 本轮交接；
+7. 当前 Git 状态、指定提交及其 diff；
+8. `README.md`：项目目录地图；
+9. 与修改相关的代码、测试和自动化结果；
+10. `PROJECT.md`：仅在需要技术背景或历史决策时阅读。
 
 若上述信息相互冲突，以项目所有者最新明确指令为最高优先级，其次是 `PROJECT_SPEC.md`。不得把 `PROJECT.md` 中已经标记为历史或被推翻的路线重新当成当前要求。
 
 ## 审查职责
 
 - 检查实现是否满足 `PROJECT_SPEC.md` 和本轮明确目标；
-- 涉及 SOURCE 场景时，按 `docs/engineering/SOURCE_SCENE.md` 核对启动—稳态状态机、
-  会话复位、跨系统因果、水体响应、玻璃损伤/破碎、声音激活边界和未决选择；
+- 涉及 SOURCE 场景时，按 `docs/engineering/SOURCE_SCENE.md` 核对连续运行控制器、
+  会话复位、跨系统因果、水体响应、玻璃损伤/破碎、声音激活边界和锁定决定；
+- 涉及反应堆池时，按 `docs/engineering/REACTOR_POOL_SYSTEM.md` 核对 `RP-*` 部件、
+  结构/管线连接、连续运行、脉冲时间尺度与载荷路径、资料标签和差距关闭条件；
 - 涉及反应堆时，按 `docs/engineering/REACTOR_MODEL.md` 核对资料配置、独立部件、
   状态因果、明确近似和差距关闭条件；
 - 检查功能错误、回归、遗漏、异常状态和边界情况；

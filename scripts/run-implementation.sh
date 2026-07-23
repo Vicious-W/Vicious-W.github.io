@@ -119,20 +119,21 @@ exactly one bounded implementation round for task $active_task_id (round
 $implementation_round of at most $max_rounds).
 
 Read, in order: PROJECT_SPEC.md, docs/engineering/SOURCE_SCENE.md,
-docs/engineering/REACTOR_MODEL.md, CLAUDE.md, REVIEW_CONTRACT.md,
-.agent/next-task.md, .agent/latest-review.md, .agent/implementation-report.md,
-PROJECT.md, README.md, the current Git status, and all directly relevant code.
+docs/engineering/REACTOR_POOL_SYSTEM.md, docs/engineering/REACTOR_MODEL.md,
+CLAUDE.md, REVIEW_CONTRACT.md, .agent/next-task.md, .agent/latest-review.md,
+.agent/implementation-report.md, PROJECT.md, README.md, the current Git status,
+and all directly relevant code.
 
 Implement the active task comprehensively. If the latest Codex verdict is
 CHANGES_REQUIRED, address every valid Blocker and Major first. Make reasonable
 technical decisions within the owner's approved scope; do not invent unrelated
-features. Follow the protected SOURCE scene baseline and record lifecycle states,
-session reset behavior, water coupling, glass damage/fracture, audio activation,
-deliberate abstractions, verification, and unresolved decisions. For reactor
-accuracy, record the changed component IDs, authoritative sources, geometry,
-state links, deliberate abstractions, verification, and open gap IDs in
-.agent/implementation-report.md. If S-001, S-002, S-003, D-001, or D-002 is
-unresolved, stop instead of inventing product behavior or mixing configurations.
+features. Follow the protected SOURCE scene and reactor-pool baselines. Record the
+continuous operation phases, session reset, water coupling, grating support,
+glass damage/fracture, audio activation, changed RP-* and reactor component IDs,
+authoritative sources, geometry, state links, source/proxy labels, deliberate
+abstractions, verification, and open gap IDs in .agent/implementation-report.md.
+If a newly discovered source conflict would change a locked owner decision, stop
+instead of inventing product behavior or mixing incompatible configurations.
 
 You may edit source, styles, tests, package configuration, and project progress
 documentation. The collaboration control plane is protected: do not modify
@@ -147,10 +148,11 @@ stores, or expose credentials.
 Run ./scripts/run-validation.sh. Because this task changes page appearance and
 behavior, start/reuse the local Vite preview and use Playwright MCP—not a Bash
 Playwright script—to exercise the required desktop, tablet, and mobile viewports,
-page/session reset, startup-to-steady transitions, water response, glass
-dragging/stacking/damage/fracture/audio activation, reactor behavior, responsive
-layout, and browser console. Preserve evidence in ignored .agent/artifacts paths
-when useful.
+page/session reset, first-interaction activation, continuous reactor-pool
+operation, the millisecond pulse, grating/bridge and water response, post-pulse
+heat transfer, full-power equilibrium, glass dragging/stacking/damage/fracture,
+audio activation, responsive layout, and browser console. Preserve evidence in
+ignored .agent/artifacts paths when useful.
 
 Before finishing, replace .agent/implementation-report.md with a complete report
 matching its documented format. Update PROJECT.md only when a current implemented

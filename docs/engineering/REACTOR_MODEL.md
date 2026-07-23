@@ -8,6 +8,7 @@ DESIGN_STATUS: ACTIVE
 ## 1. 文档职责
 
 - `PROJECT_SPEC.md` 决定产品目标和验收要求；
+- `REACTOR_POOL_SYSTEM.md` 决定完整反应堆池、环境设备和连续运行；
 - 本文件决定反应堆目标如何映射为可核查的三维部件和状态；
 - `src/scenes/reactor/reactorModel.js` 是当前实现；
 - `.agent/implementation-report.md` 记录单轮实现证据；
@@ -345,8 +346,8 @@ Three.js 使用右手坐标系：
 
 ## 7. 状态与运行链
 
-SOURCE 的页面加载、启动、稳态、可选历史脉冲和重置时间线定义在
-`SOURCE_SCENE.md`。本节只定义反应堆内部状态关系。
+SOURCE 的第一次交互、连续运行、历史脉冲、脉冲后传热、最终平衡和重置定义在
+`REACTOR_POOL_SYSTEM.md` 与 `SOURCE_SCENE.md`。本节只定义堆芯内部状态关系。
 
 ### 7.1 当前实现
 
