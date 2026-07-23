@@ -294,10 +294,12 @@ IMPLEMENTER。
 优先使用服务明确提供的绝对恢复时间。若只有窗口规律，则使用：
 
 ```text
-resume_at = stop_time + configured_quota_wait
+resume_at = first quota boundary strictly later than stop_time
 ```
 
-状态文件应记录 UTC 绝对时间，用户界面可以另行显示本地时区。
+固定窗口应记录一个 reset anchor 和周期长度；后续恢复对齐
+`anchor + N × window`，不能简单地从中断时刻再等待完整窗口，否则会无意义地错过
+已经恢复的额度。状态文件应记录 UTC 绝对时间，用户界面可以另行显示本地时区。
 
 到点后先重新预检。认证、权限或 MCP 失败不应伪装成额度问题。
 

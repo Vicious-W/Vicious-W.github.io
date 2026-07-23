@@ -37,6 +37,8 @@ Role options:
 
 Recovery options:
   --start-at DATE        Wait before the first cycle attempt; accepted by `date -d`.
+                         Also becomes the fixed quota-window anchor by default.
+  --quota-anchor DATE    Fixed quota reset anchor; defaults to --start-at.
   --resume-at DATE       Absolute first quota-resume time accepted by `date -d`.
   --quota-wait-seconds N Subsequent quota wait; default runtime.env value.
   --max-quota-resumes N  Hard recovery limit.
@@ -206,6 +208,7 @@ max_resumes="$(agent_runtime_config MAX_QUOTA_RESUMES 6 1 100)" || exit 2
 supervisor_heartbeat="$(agent_runtime_config SUPERVISOR_HEARTBEAT_SECONDS 300 30 3600)" || exit 2
 first_resume_at=""
 start_at=""
+quota_anchor_at=""
 
 while (( $# > 0 )); do
   case "$1" in
@@ -219,6 +222,7 @@ while (( $# > 0 )); do
     --monitor-model) monitor_model="${2:-}"; shift 2 ;;
     --monitor-effort) monitor_effort="${2:-}"; shift 2 ;;
     --start-at) start_at="${2:-}"; shift 2 ;;
+    --quota-anchor) quota_anchor_at="${2:-}"; shift 2 ;;
     --resume-at) first_resume_at="${2:-}"; shift 2 ;;
     --quota-wait-seconds) quota_wait="${2:-}"; shift 2 ;;
     --max-quota-resumes) max_resumes="${2:-}"; shift 2 ;;
@@ -246,6 +250,15 @@ if [[ -n "$start_at" ]]; then
     printf 'Invalid --start-at value: %s\n' "$start_at" >&2
     exit 2
   }
+fi
+quota_anchor_epoch=""
+if [[ -n "$quota_anchor_at" ]]; then
+  quota_anchor_epoch="$(date -d "$quota_anchor_at" +%s 2>/dev/null)" || {
+    printf 'Invalid --quota-anchor value: %s\n' "$quota_anchor_at" >&2
+    exit 2
+  }
+elif [[ -n "$start_epoch" ]]; then
+  quota_anchor_epoch="$start_epoch"
 fi
 if [[ -n "$first_resume_at" ]]; then
   first_resume_epoch="$(date -d "$first_resume_at" +%s 2>/dev/null)" || {
@@ -352,6 +365,16 @@ while true; do
     if [[ -n "$first_resume_epoch" && "$first_resume_epoch" -gt "$now_epoch" ]]; then
       resume_epoch="$first_resume_epoch"
       first_resume_epoch=""
+    elif [[ -n "$quota_anchor_epoch" ]]; then
+      if (( now_epoch < quota_anchor_epoch )); then
+        resume_epoch="$quota_anchor_epoch"
+      else
+        elapsed_since_anchor=$((now_epoch - quota_anchor_epoch))
+        resume_epoch=$(( \
+          quota_anchor_epoch + \
+          ((elapsed_since_anchor / quota_wait) + 1) * quota_wait \
+        ))
+      fi
     else
       resume_epoch=$((now_epoch + quota_wait))
     fi

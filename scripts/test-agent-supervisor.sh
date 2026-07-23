@@ -74,6 +74,7 @@ AGENT_SUPERVISOR_ALLOW_DIRTY_TEST=1 \
 AGENT_SUPERVISOR_MONITOR_ON_ERROR=0 \
   "$ROOT_DIR/scripts/agent-supervisor.sh" supervise \
     --quota-wait-seconds 60 \
+    --quota-anchor "2026-07-23 00:00:00 UTC" \
     --max-quota-resumes 2 \
     --implementer claude --implementer-model sonnet --implementer-effort high \
     --reviewer claude --reviewer-model sonnet --reviewer-effort max \
