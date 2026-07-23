@@ -7,6 +7,7 @@ AGENT_DIR="$ROOT_DIR/.agent"
 STATE_FILE="$AGENT_DIR/state.env"
 RUNTIME_FILE="$AGENT_DIR/runtime.env"
 STOP_FILE="$AGENT_DIR/artifacts/runtime/last-stop.env"
+RUN_DIR="$AGENT_DIR/artifacts/runs"
 OUTPUT_DIR="$AGENT_DIR/artifacts/cycle"
 OUTPUT_FILE="$OUTPUT_DIR/latest-summary.md"
 HISTORY_DIR="$OUTPUT_DIR/history"
@@ -21,6 +22,11 @@ value_from() {
 state_value() { value_from "$STATE_FILE" "$1"; }
 runtime_value() { value_from "$RUNTIME_FILE" "$1"; }
 stop_value() { value_from "$STOP_FILE" "$1"; }
+manifest_value() {
+  local file="$1"
+  local key="$2"
+  value_from "$file" "$key"
+}
 
 report_change_titles() {
   awk '
@@ -71,15 +77,39 @@ last_verdict="$(state_value LAST_REVIEW_VERDICT)"
 [[ "$current_round" =~ ^[0-9]+$ ]] || current_round=0
 [[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || max_rounds=3
 
-round_one_commit="$(
-  git -C "$ROOT_DIR" log -n 1 --format='%H' \
-    --grep='^agent: implementation round 1$' HEAD 2>/dev/null
-)"
-if [[ -n "$round_one_commit" ]] && \
-   cycle_base="$(git -C "$ROOT_DIR" rev-parse "$round_one_commit^" 2>/dev/null)"; then
+first_implementation_manifest=""
+latest_implementation_manifest=""
+if [[ -d "$RUN_DIR" ]]; then
+  while IFS= read -r manifest_path; do
+    [[ "$(manifest_value "$manifest_path" TASK_ID)" == "$task_id" ]] || continue
+    [[ "$(manifest_value "$manifest_path" ROLE)" == "IMPLEMENTER" ]] || continue
+    [[ -n "$first_implementation_manifest" ]] || first_implementation_manifest="$manifest_path"
+    latest_implementation_manifest="$manifest_path"
+  done < <(
+    find "$RUN_DIR" -maxdepth 1 -type f -printf '%T@ %p\n' 2>/dev/null |
+      sort -n |
+      cut -d' ' -f2-
+  )
+fi
+
+manifest_cycle_base=""
+if [[ -n "$first_implementation_manifest" ]]; then
+  manifest_cycle_base="$(manifest_value "$first_implementation_manifest" BASE_COMMIT)"
+fi
+if [[ -n "$manifest_cycle_base" ]] && \
+   cycle_base="$(git -C "$ROOT_DIR" rev-parse "$manifest_cycle_base^{commit}" 2>/dev/null)"; then
   :
 else
-  cycle_base="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  round_one_commit="$(
+    git -C "$ROOT_DIR" log -n 1 --format='%H' \
+      --grep='^agent: implementation round 1$' HEAD 2>/dev/null
+  )"
+  if [[ -n "$round_one_commit" ]] && \
+     cycle_base="$(git -C "$ROOT_DIR" rev-parse "$round_one_commit^" 2>/dev/null)"; then
+    :
+  else
+    cycle_base="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  fi
 fi
 
 declare -A implementation_commits=()
@@ -159,6 +189,12 @@ fi
         "$implementation_commit"
     elif [[ "$stop_stage" == "IMPLEMENTER" || "$stop_stage" == "CLAUDE" ]] && \
          [[ "$round" == "$((current_round + 1))" ]]; then
+      if [[ -n "$latest_implementation_manifest" ]]; then
+        printf -- '- 实际运行：`%s / %s / %s`\n' \
+          "$(manifest_value "$latest_implementation_manifest" EXECUTOR)" \
+          "$(manifest_value "$latest_implementation_manifest" MODEL)" \
+          "$(manifest_value "$latest_implementation_manifest" EFFORT)"
+      fi
       printf -- '- 结果：形成有效实现检查点前中断。\n'
       printf -- '- 停止原因：`%s`（退出码 `%s`）\n' \
         "${stop_reason:-unknown}" "${stop_exit:-unknown}"
