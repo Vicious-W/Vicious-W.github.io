@@ -12,6 +12,11 @@
 //
 // 这里只负责**合成**；具体用什么物理量触发由 physicalScene.js 计算后传进来，
 // 于是「碰撞事件 → 声音」之间有一条可审查的数据映射。
+//
+// 损伤阶段影响音色（SOURCE_SCENE.md §7.5）：完整玻璃碰撞明亮清脆；已开裂玻璃碰撞
+// 更闷（低通更低）；裂纹扩展叠加一次高频短促声；破碎瞬态是独立的宽带爆发声；
+// 碎片二次碰撞音色更薄更高（有效质量更小）。视觉破碎与音频共用同一次碰撞/损伤
+// 事件计算结果，不使用互不相关的计时器。
 
 const MAX_VOICES = 8;        // 同时发声的撞击 voice 上限
 const MIN_INTERVAL = 0.022;  // 撞击全局最小间隔（秒），压掉密集接触抖动
@@ -82,8 +87,9 @@ export function createGlassAudio() {
     unlocked = true;
   };
 
-  // strength: 0..1 冲击强度（已由物理侧归一）；velocity: 归一相对速度（决定亮度）；pan: -1..1
-  const impact = ({ strength, velocity, pan }) => {
+  // strength: 0..1 冲击强度；velocity: 归一相对速度（决定亮度）；pan: -1..1；
+  // stage: 当前损伤阶段（影响音色明暗）；shard: 是否为碎片（音色更薄更高）。
+  const impact = ({ strength, velocity, pan, stage = "INTACT", shard = false }) => {
     if (!unlocked || disposed || !ctx || ctx.state !== "running") return;
     if (strength <= 0.02) return;                 // 最小冲击过滤
     const now = ctx.currentTime;
@@ -96,6 +102,9 @@ export function createGlassAudio() {
     const v = Math.min(Math.max(velocity, 0), 1);
     const peak = 0.12 + s * 0.7;
     const dur = 0.05 + s * 0.13;
+    // 已开裂/损伤玻璃更闷（低通下移）；碎片更薄更高（有效质量更小，共振频率更高）
+    const dull = stage === "CRACKED" ? 0.55 : stage === "MICRO_DAMAGED" ? 0.8 : 1.0;
+    const shardMul = shard ? 1.6 : 1.0;
 
     const vGain = ctx.createGain();
     const panner = slidePan ? ctx.createStereoPanner() : null;
@@ -106,10 +115,10 @@ export function createGlassAudio() {
     // 1) 噪声瞬态：撞击的「碎响」，亮度随冲击速度上升
     const nSrc = ctx.createBufferSource();
     nSrc.buffer = noiseBuf;
-    nSrc.playbackRate.value = 0.8 + Math.random() * 0.5;
+    nSrc.playbackRate.value = (0.8 + Math.random() * 0.5) * shardMul;
     const nFilt = ctx.createBiquadFilter();
     nFilt.type = "bandpass";
-    nFilt.frequency.value = 1400 + v * 4200;
+    nFilt.frequency.value = (1400 + v * 4200) * dull * shardMul;
     nFilt.Q.value = 0.9;
     const nGain = ctx.createGain();
     nGain.gain.setValueAtTime(peak, now);
@@ -118,7 +127,7 @@ export function createGlassAudio() {
     nSrc.start(now); nSrc.stop(now + dur + 0.02);
 
     // 2) 玻璃质「叮」：两个高频正弦分音，快速衰减
-    const partials = [2600 + v * 1800, 4300 + v * 2600];
+    const partials = [2600 + v * 1800, 4300 + v * 2600].map(f => f * dull * shardMul);
     partials.forEach((f, i) => {
       const osc = ctx.createOscillator();
       osc.type = "sine";
@@ -132,6 +141,45 @@ export function createGlassAudio() {
     });
 
     setTimeout(() => { activeVoices = Math.max(0, activeVoices - 1); }, (dur + 0.1) * 1000);
+  };
+
+  // 裂纹扩展：短促高频「咔」，叠加在触发它的撞击声之上，不使用独立计时器。
+  const crackTick = (pan = 0) => {
+    if (!unlocked || disposed || !ctx || ctx.state !== "running") return;
+    const now = ctx.currentTime;
+    const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    if (panner) panner.pan.value = Math.max(-1, Math.min(1, pan));
+    const g = ctx.createGain();
+    (panner || g).connect(master);
+    if (panner) g.connect(panner);
+    const osc = ctx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(5200, now);
+    osc.frequency.exponentialRampToValueAtTime(2200, now + 0.05);
+    g.gain.setValueAtTime(0.18, now);
+    g.gain.exponentialRampToValueAtTime(0.0004, now + 0.07);
+    osc.connect(g); osc.start(now); osc.stop(now + 0.08);
+  };
+
+  // 破碎瞬态：独立的宽带爆发声，区别于普通撞击。
+  const fracture = (pan = 0) => {
+    if (!unlocked || disposed || !ctx || ctx.state !== "running") return;
+    const now = ctx.currentTime;
+    const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    if (panner) panner.pan.value = Math.max(-1, Math.min(1, pan));
+    const bus = ctx.createGain();
+    (panner || bus).connect(master);
+    if (panner) bus.connect(panner);
+    const nSrc = ctx.createBufferSource();
+    nSrc.buffer = noiseBuf;
+    const nFilt = ctx.createBiquadFilter();
+    nFilt.type = "highpass";
+    nFilt.frequency.value = 1200;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.75, now);
+    g.gain.exponentialRampToValueAtTime(0.0006, now + 0.28);
+    nSrc.connect(nFilt); nFilt.connect(g); g.connect(bus);
+    nSrc.start(now); nSrc.stop(now + 0.3);
   };
 
   // level: 0..1 滑动强度；pan: -1..1。平滑跟随，避免开关噪声。
@@ -152,5 +200,5 @@ export function createGlassAudio() {
     if (ctx) ctx.close();
   };
 
-  return { unlock, impact, setSlide, suspend, dispose };
+  return { unlock, impact, crackTick, fracture, setSlide, suspend, dispose };
 }

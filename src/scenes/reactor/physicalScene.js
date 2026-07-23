@@ -1,35 +1,40 @@
-// 唯一页面场景：独立玻璃立方体覆盖真三维研究堆模型。
+// 唯一页面场景：完整 Pavia TRIGA 反应堆池系统 + 独立轻水 + 放下并锁定的实体安全
+// 格栅 + 格栅上的玻璃立方体。场景拓扑、会话重置和跨系统耦合见
+// docs/engineering/SOURCE_SCENE.md；连续运行程序见
+// docs/engineering/REACTOR_POOL_SYSTEM.md；反应堆内部结构见
+// docs/engineering/REACTOR_MODEL.md。
 //
-// 玻璃使用 Three.js 网格与 cannon-es 刚体；反应堆由 reactorModel.js 中的独立
-// 三维部件构成。场景不使用平面图片或整面 shader 代替主要物体。
+// 玻璃使用 Three.js 网格与 cannon-es 刚体；格栅本身也是刚体（弹簧+阻尼挂在桥架
+// 锚点上），真正承托玻璃——不再用隐形地平面解释玻璃悬在池口上方。
 //
-// 玻璃物理声音由 glassAudio.js 合成，触发量（冲击速度、切向滑动速度、接触点位置）
-// 全部来自 cannon-es 的真实碰撞/接触数据——见下方 collide 监听与 slide 计算。
-//
-// 已知限制：Three.js 的 transmission 只采样**不透明**物体那一遍渲染，所以玻璃透过
-// 玻璃看不到后面那块玻璃，加性辉光盘也不进折射（燃料棒自发光会进）。单层平铺几乎
-// 看不出来；叠高后上面那块会直接看到反应堆而不是下面那块玻璃。
+// 会话与重置：每次加载/刷新都创建一次新的 physicalScene() 调用，所有状态只存在
+// 于本次调用闭包中；resize/可见性切换只触发 layout()/start()/stop()，不重建场景，
+// 因此天然满足“resize 和标签页切换不得触发新会话”的要求。
 
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import * as CANNON from "cannon-es";
 import { createReactorModel } from "./reactorModel.js";
+import { createWaterSystem } from "./waterSystem.js";
+import { createSessionController } from "./sessionController.js";
 import { createGlassAudio } from "./glassAudio.js";
+import { createReactorAudio } from "./reactorAudio.js";
+import {
+  createDamageState, registerImpact, buildCrackTexture, buildFragmentGeometries
+} from "./glassDamage.js";
 
-const CUBE = 1;                 // 立方体边长（世界单位），所有尺寸都以它为基准
-const FOV = 22;                 // 长焦俯视：仍看得出是正方体，整层又读成俯视的一个平面
-const LIFT_Y = 2.0;             // 拖动时立方体被提到的高度：高过任何堆叠，又不撞到驱动桥
+const CUBE = 1;
+const FOV = 22;
+const LIFT_Y = 2.0;
 const MAX_DPR = 1.5;
+const REDUCE_SCALE = 0.3; // reduceMotion 下削弱脉冲冲量/闪光幅度，仍保留结构可检查性
 
-// 环境贴图：本场景光源在**下方**（发光的轻水反应堆水池），上方几乎全黑。玻璃的立体感几乎
-// 全靠环境反射，给错方向就像塑料——下半球是池子蓝辉光，上半球接近全黑，留两处小
-// 亮斑给棱边高光抓。
 function buildEnvTexture() {
   const W = 96;
   const H = 48;
   const data = new Float32Array(W * H * 4);
   for (let j = 0; j < H; j++) {
-    const theta = ((j + 0.5) / H) * Math.PI;   // 0 = 正上方
+    const theta = ((j + 0.5) / H) * Math.PI;
     const y = Math.cos(theta);
     const down = Math.max(-y, 0);
     const up = Math.max(y, 0);
@@ -50,6 +55,12 @@ function buildEnvTexture() {
   return tex;
 }
 
+function effectiveMass(mA, mB) {
+  if (mA === 0) return mB;
+  if (mB === 0) return mA;
+  return (mA * mB) / (mA + mB);
+}
+
 export function createPhysicalScene({ section, canvas, reduceMotion }) {
   let renderer;
   try {
@@ -61,13 +72,11 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MAX_DPR));
   renderer.setClearColor(0x02070f, 1);
   renderer.toneMapping = THREE.NoToneMapping;
-  if ("transmissionResolutionScale" in renderer) {
-    renderer.transmissionResolutionScale = 0.5; // 折射用的离屏图可低一半分辨率
-  }
+  if ("transmissionResolutionScale" in renderer) renderer.transmissionResolutionScale = 0.5;
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(FOV, 1, 0.5, 200);
-  camera.up.set(0, 0, -1); // 正上方俯视：屏幕的"上"对应世界 -Z
+  camera.up.set(0, 0, -1);
 
   const pmrem = new THREE.PMREMGenerator(renderer);
   const envSrc = buildEnvTexture();
@@ -76,29 +85,36 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   envSrc.dispose();
   pmrem.dispose();
 
-  // 定向光给玻璃棱边一道锐利高光（纯环境反射偏柔）
   const key = new THREE.DirectionalLight(0xdceeff, 1.4);
   key.position.set(-4, 7, -3);
   scene.add(key);
-  // 一点冷色环境光，避免池壁背光面死黑
   scene.add(new THREE.AmbientLight(0x14202e, 0.6));
 
-  // —— 底层：真三维反应堆 ——
+  // —— 会话/连续运行控制器 ——
+  const session = createSessionController({ reduceMotion });
+
+  // —— 反应堆池 + 轻水（轻水作为反应堆 group 的子级，随其整体缩放）——
   const reactor = createReactorModel({ reduceMotion });
   scene.add(reactor.group);
+  const water = createWaterSystem({
+    poolRadius: reactor.poolBounds.radius,
+    poolDepth: reactor.poolBounds.depth,
+    surfaceY: reactor.poolBounds.surfaceY,
+    corePosition: reactor.corePosition,
+    reduceMotion
+  });
+  reactor.group.add(water.group);
 
   // —— 物理世界 ——
   const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -20, 0) });
   world.broadphase = new CANNON.SAPBroadphase(world);
   world.allowSleep = true;
-  world.solver.iterations = 14;   // 更多迭代 → 稳定堆叠、少穿透
+  world.solver.iterations = 14;
   world.solver.tolerance = 0.001;
   const glassPhys = new CANNON.Material("glass");
   const glassContact = new CANNON.ContactMaterial(glassPhys, glassPhys, {
-    friction: 0.45,     // 够摩擦才堆得稳，但玻璃仍偏滑
-    restitution: 0.03,  // 厚玻璃砸在玻璃上几乎不弹，是"闷"的
-    contactEquationStiffness: 1e7,
-    contactEquationRelaxation: 3
+    friction: 0.45, restitution: 0.03,
+    contactEquationStiffness: 1e7, contactEquationRelaxation: 3
   });
   world.addContactMaterial(glassContact);
   world.defaultContactMaterial.friction = 0.45;
@@ -106,11 +122,63 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   world.defaultContactMaterial.contactEquationStiffness = 1e7;
   world.defaultContactMaterial.contactEquationRelaxation = 3;
 
-  const ground = new CANNON.Body({ mass: 0, shape: new CANNON.Plane(), material: glassPhys });
-  ground.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
-  world.addBody(ground);
+  // 走道/屏蔽体上沿静态支承（池口外侧的真实工程结构，见 RP-001）。
+  // 用瓦片拼出的复合刚体，故意跳过池口半径内的区域——那部分的支承完全交给下面
+  // 弹簧悬挂的格栅刚体，避免一张无限平面在格栅下沉时"顶替"格栅成为实际支承面。
+  const walkwaySupport = new CANNON.Body({ mass: 0, material: glassPhys });
+  {
+    const TILE = 1.5;
+    const REACH = 16; // 覆盖已知最宽视口仍留余量
+    const tileShape = new CANNON.Box(new CANNON.Vec3(TILE / 2, 0.05, TILE / 2));
+    for (let tx = -REACH; tx <= REACH; tx += TILE) {
+      for (let tz = -REACH; tz <= REACH; tz += TILE) {
+        if (Math.hypot(tx, tz) < reactor.grating.radius + TILE * 0.75) continue; // 让给格栅
+        walkwaySupport.addShape(tileShape, new CANNON.Vec3(tx, -0.03, tz));
+      }
+    }
+  }
+  world.addBody(walkwaySupport);
 
-  // 四面看不见的墙，把立方体关在画面里。要够高：入场时它们从画面上方落下。
+  // —— RP-003 安全格栅刚体：弹簧+阻尼挂在桥架锚点上，真正承托玻璃 ——
+  const gratingBody = new CANNON.Body({
+    mass: 55, material: glassPhys,
+    shape: new CANNON.Cylinder(reactor.grating.radius, reactor.grating.radius, reactor.grating.thickness, 20),
+    position: new CANNON.Vec3(0, reactor.grating.y, 0),
+    linearDamping: 0.35, angularDamping: 0.55
+  });
+  world.addBody(gratingBody);
+  const bridgeAnchor = new CANNON.Body({ mass: 0, position: new CANNON.Vec3(0, reactor.grating.y, 0) });
+  world.addBody(bridgeAnchor);
+  const MOUNT_R = reactor.grating.radius * 0.7;
+  const springs = [0, 1, 2, 3].map(i => {
+    const a = (i / 4) * Math.PI * 2;
+    const offset = new CANNON.Vec3(Math.cos(a) * MOUNT_R, 0, Math.sin(a) * MOUNT_R);
+    return new CANNON.Spring(bridgeAnchor, gratingBody, {
+      restLength: 0, stiffness: 5200, damping: 90,
+      localAnchorA: offset, localAnchorB: offset
+    });
+  });
+  world.addEventListener("postStep", () => springs.forEach(s => s.applyForce()));
+
+  // applyImpulse() 的第二参数是相对质心的偏移，不是世界坐标；格栅静止位形下质心
+  // 在 (0, grating.y, 0)，所以 TRANS 位置相对质心的偏移就是其 (x, 0, z)。
+  const transOffset = new CANNON.Vec3(reactor.controlRods.TRANS.x, 0, reactor.controlRods.TRANS.z);
+  const GRATING_EJECT_IMPULSE = 3.4;
+  const GRATING_RESEAT_IMPULSE = 1.1;
+
+  // 让格栅的可见网格跟随其弹簧物理体：桥架/格栅的有限刚度振动因此真正可见，
+  // 不只是"玻璃在一个看不见的物理面上弹跳"。gratingBody 在未缩放的原始世界坐标
+  // 系工作，可见网格是 reactor.group（有整体缩放 s）的子级，需要除以 s 换算成局部坐标。
+  const gratingVisual = reactor.grating.visual;
+  function syncGratingVisual() {
+    const s = reactor.group.scale.x || 1;
+    gratingVisual.position.set(gratingBody.position.x / s, gratingBody.position.y / s, gratingBody.position.z / s);
+    gratingVisual.quaternion.set(
+      gratingBody.quaternion.x, gratingBody.quaternion.y, gratingBody.quaternion.z, gratingBody.quaternion.w
+    );
+  }
+
+  // 四面看不见的边界墙：只防止玻璃被拖出可视区域，不承担支承解释（支承已由格栅/走道刚体完成）
   const walls = [];
   for (let i = 0; i < 4; i++) {
     const body = new CANNON.Body({ mass: 0, material: glassPhys });
@@ -119,86 +187,172 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     walls.push(body);
   }
 
-  // 拖动用的"手"：不参与碰撞的静态点，用点对点约束把立方体吊起来。用约束而非直接
-  // 设坐标，立方体才会在手上摆动、推开挡路的邻居——这才有物理手感。
   const hand = new CANNON.Body({
-    mass: 0,
-    shape: new CANNON.Sphere(0.05),
-    collisionFilterGroup: 0,
-    collisionFilterMask: 0
+    mass: 0, shape: new CANNON.Sphere(0.05), collisionFilterGroup: 0, collisionFilterMask: 0
   });
   world.addBody(hand);
 
   // —— 声音 ——
   const audio = createGlassAudio();
+  const reactorAudio = createReactorAudio();
   let audioUnlocked = false;
 
-  // —— 立方体 ——
-  // 棱边略倒圆：现实里没有数学尖棱，而玻璃棱边正是高光最集中处，纯尖棱一眼就假。
-  const geo = new RoundedBoxGeometry(CUBE, CUBE, CUBE, 4, 0.06);
+  const unlockAll = () => {
+    if (audioUnlocked) return;
+    audioUnlocked = true;
+    if (audio) audio.unlock();
+    if (reactorAudio) reactorAudio.unlock();
+    session.unlock();
+  };
 
-  // 几种材质变体：真实玻璃砖分批浇铸，清澈度和料色略有差别。
-  // 不加 clearcoat（清漆是塑料/车漆特征）；衰减距离放长，避免染成实心蓝像有色塑料——
-  // 玻璃首先得是**清**的，体积感靠折射真实几何和棱边高光来体现。
+  // —— 立方体 ——
+  const geo = new RoundedBoxGeometry(CUBE, CUBE, CUBE, 4, 0.06);
   const materials = [0, 1, 2, 3].map(i => new THREE.MeshPhysicalMaterial({
-    color: 0xffffff,
-    metalness: 0,
-    roughness: 0.02 + i * 0.014,
-    transmission: 1,
-    thickness: CUBE * (0.95 + i * 0.1),
-    ior: 1.5,
-    attenuationColor: new THREE.Color(0.74, 0.89, 1.0),
-    attenuationDistance: 9.0 + i * 2.0,
-    specularIntensity: 1,
-    envMapIntensity: 1.4
+    color: 0xffffff, metalness: 0, roughness: 0.02 + i * 0.014, transmission: 1,
+    thickness: CUBE * (0.95 + i * 0.1), ior: 1.5,
+    attenuationColor: new THREE.Color(0.74, 0.89, 1.0), attenuationDistance: 9.0 + i * 2.0,
+    specularIntensity: 1, envMapIntensity: 1.4
   }));
 
-  const cubes = [];   // { mesh, body }
-  const meshes = [];
+  const cubes = [];    // { mesh, body, damage } 可拖拽的完整/受损玻璃
+  const fragments = []; // { mesh, body } 破碎后的碎片
+  const meshes = [];    // 仅完整玻璃参与拾取
+
+  function applyCrackVisual(entry) {
+    const { mesh, damage } = entry;
+    if (damage.stage === "INTACT") return;
+    if (mesh.material === materials[entry.matIndex]) {
+      mesh.material = materials[entry.matIndex].clone();
+    }
+    if (mesh.material.map) mesh.material.map.dispose();
+    const tex = buildCrackTexture(damage.cracks, damage.stage);
+    tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+    mesh.material.map = tex;
+    mesh.material.roughness = Math.min(0.5, mesh.material.roughness + (damage.stage === "CRACKED" ? 0.12 : 0.05));
+    mesh.material.needsUpdate = true;
+  }
+
+  function spawnFragments(entry) {
+    const { mesh, body } = entry;
+    scene.remove(mesh);
+    world.removeBody(body);
+    body.removeEventListener("collide", onCollide);
+    const idx2 = cubes.indexOf(entry);
+    if (idx2 >= 0) cubes.splice(idx2, 1);
+    const midx = meshes.indexOf(mesh);
+    if (midx >= 0) meshes.splice(midx, 1);
+    if (mesh.material !== materials[entry.matIndex]) mesh.material.dispose();
+
+    const shards = buildFragmentGeometries(CUBE, cubes.length + fragments.length + 1);
+    const basePos = body.position;
+    const baseQuat = body.quaternion;
+    const worldCenter = new CANNON.Vec3();
+    shards.forEach(shard => {
+      const mat = materials[entry.matIndex].clone();
+      const fMesh = new THREE.Mesh(shard.geometry, mat);
+      const localVec = new CANNON.Vec3(shard.localCenter.x, shard.localCenter.y, shard.localCenter.z);
+      body.pointToWorldFrame(localVec, worldCenter);
+      fMesh.position.set(worldCenter.x, worldCenter.y, worldCenter.z);
+      fMesh.quaternion.set(baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w);
+      scene.add(fMesh);
+
+      const kick = 1.1 + Math.random() * 0.6;
+      const dir = new CANNON.Vec3(shard.localCenter.x, shard.localCenter.y, shard.localCenter.z);
+      body.vectorToWorldFrame(dir, dir);
+      dir.normalize();
+      const fBody = new CANNON.Body({
+        mass: 1.5 / 8, material: glassPhys,
+        shape: new CANNON.Box(new CANNON.Vec3(shard.halfExtents.x, shard.halfExtents.y, shard.halfExtents.z)),
+        position: new CANNON.Vec3(worldCenter.x, worldCenter.y, worldCenter.z),
+        linearDamping: 0.15, angularDamping: 0.4, sleepSpeedLimit: 0.14, sleepTimeLimit: 0.6
+      });
+      fBody.quaternion.set(baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w);
+      fBody.velocity.set(
+        body.velocity.x + dir.x * kick,
+        body.velocity.y + dir.y * kick + 0.6,
+        body.velocity.z + dir.z * kick
+      );
+      fBody.angularVelocity.copy(body.angularVelocity);
+      fBody.userData = { lastSound: 0, baseAngularDamping: 0.4, isFragment: true };
+      fBody.addEventListener("collide", onCollide);
+      world.addBody(fBody);
+      fragments.push({ mesh: fMesh, body: fBody });
+    });
+
+    if (audio) audio.fracture(THREE.MathUtils.clamp(basePos.x / Math.max(extentX / 2, 0.001), -1, 1));
+  }
 
   const addCube = (x, y, z, matIndex) => {
     const mesh = new THREE.Mesh(geo, materials[matIndex % materials.length]);
     scene.add(mesh);
     const body = new CANNON.Body({
-      mass: 1.5,
-      material: glassPhys,
+      mass: 1.5, material: glassPhys,
       shape: new CANNON.Box(new CANNON.Vec3(CUBE / 2, CUBE / 2, CUBE / 2)),
       position: new CANNON.Vec3(x, y, z),
-      linearDamping: 0.12,
-      angularDamping: 0.35,
-      sleepSpeedLimit: 0.14,
-      sleepTimeLimit: 0.5
+      linearDamping: 0.12, angularDamping: 0.35, sleepSpeedLimit: 0.14, sleepTimeLimit: 0.5
     });
-    body.userData = { lastSound: 0, baseAngularDamping: 0.35 };
-    // 碰撞 → 撞击声：强度/亮度来自法向冲击速度，声像来自接触点世界 x 坐标。
+    body.userData = { lastSound: 0, baseAngularDamping: 0.35, isFragment: false, spawnedAt: performance.now() };
     body.addEventListener("collide", onCollide);
     world.addBody(body);
-    cubes.push({ mesh, body });
+    const entry = { mesh, body, damage: createDamageState(), matIndex: matIndex % materials.length };
+    cubes.push(entry);
     meshes.push(mesh);
     mesh.userData.body = body;
+    mesh.userData.entry = entry;
   };
 
-  // —— 碰撞声 ——
+  // —— 碰撞：撞击声 + 损伤 ——
+  const DAMAGE_MIN_SPEED = 2.4; // 低于此不计入损伤（过滤静止/轻微接触，见 SOURCE_SCENE.md §7.2）
+  // 初始铺层从小高度自由落体的第一次触底速度可能超过损伤阈值，但那是场景初始化
+  // 的复位落位，不是玩家造成的碰撞；用一次性“出生宽限期”豁免，声音仍然照常播放。
+  const SETTLE_GRACE_MS = 1800;
   function onCollide(event) {
-    if (!audioUnlocked || !audio) return;
     const contact = event.contact;
-    // 法向冲击速度：静止接触≈0，真正撞上才大。这是撞击强度的物理来源。
     let vImpact = Math.abs(contact.getImpactVelocityAlongNormal());
-    if (vImpact < 0.7) return;                 // 过滤静止接触的微冲击
     const body = event.target;
-    const now = performance.now();
-    if (now - body.userData.lastSound < 45) return; // 单体节流
-    body.userData.lastSound = now;
-    // 接触点世界 x → 声像
-    const b = contact.bi;
-    const wx = b.position.x + contact.ri.x;
-    const halfX = Math.max(extentX / 2, 0.001);
-    const pan = Math.max(-1, Math.min(1, wx / halfX));
-    audio.impact({
-      strength: THREE.MathUtils.clamp((vImpact - 0.7) / 6.5, 0, 1),
-      velocity: THREE.MathUtils.clamp(vImpact / 8, 0, 1),
-      pan
-    });
+    const other = event.body;
+    const isFragment = !!(body.userData && body.userData.isFragment);
+
+    if (audioUnlocked && audio && vImpact >= 0.7) {
+      const now = performance.now();
+      if (now - body.userData.lastSound >= 45) {
+        body.userData.lastSound = now;
+        const wx = body.position.x + contact.ri.x;
+        const halfX = Math.max(extentX / 2, 0.001);
+        const pan = Math.max(-1, Math.min(1, wx / halfX));
+        const entry = !isFragment ? cubes.find(c => c.body === body) : null;
+        audio.impact({
+          strength: THREE.MathUtils.clamp((vImpact - 0.7) / 6.5, 0, 1),
+          velocity: THREE.MathUtils.clamp(vImpact / 8, 0, 1),
+          pan, stage: entry ? entry.damage.stage : "INTACT", shard: isFragment
+        });
+      }
+    }
+
+    const withinSettleGrace = !isFragment && body.userData &&
+      (performance.now() - body.userData.spawnedAt) < SETTLE_GRACE_MS;
+    if (!isFragment && !withinSettleGrace && vImpact >= DAMAGE_MIN_SPEED) {
+      const entry = cubes.find(c => c.body === body);
+      if (entry) {
+        const em = effectiveMass(body.mass, other.mass);
+        const local = new CANNON.Vec3();
+        body.pointToLocalFrame(new CANNON.Vec3(
+          body.position.x + contact.ri.x, body.position.y + contact.ri.y, body.position.z + contact.ri.z
+        ), local);
+        const result = registerImpact(entry.damage, {
+          normalRelativeSpeed: vImpact, effectiveMass: em,
+          localPoint: { x: local.x, y: local.y, z: local.z }
+        });
+        if (result.cracked && audioUnlocked && audio) {
+          const pan = Math.max(-1, Math.min(1, body.position.x / Math.max(extentX / 2, 0.001)));
+          audio.crackTick(pan);
+        }
+        if (result.changed) {
+          if (entry.damage.stage === "FRACTURED") spawnFragments(entry);
+          else applyCrackVisual(entry);
+        }
+      }
+    }
   }
 
   // —— 尺寸 / 布局 ——
@@ -230,6 +384,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     }
 
     reactor.setScale(shortExtent);
+    water.setCamera(camera.position);
 
     const hx = extentX / 2;
     const hz = extentZ / 2;
@@ -250,8 +405,6 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     return true;
   };
 
-  // 初始铺一层：每块砖**正对自己那格上方**落下，落差小、按离中心距离错开时间，
-  // 于是各就各位铺成一层，而不是从高处乱落砸成一团。
   const GAP = 1.02;
   const populate = () => {
     const nx = Math.max(2, Math.floor(extentX / (CUBE * GAP)));
@@ -289,14 +442,11 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
 
   const moveHand = () => {
     raycaster.setFromCamera(ndc, camera);
-    if (raycaster.ray.intersectPlane(dragPlane, hit)) {
-      hand.position.set(hit.x, hit.y, hit.z);
-    }
+    if (raycaster.ray.intersectPlane(dragPlane, hit)) hand.position.set(hit.x, hit.y, hit.z);
   };
 
   const onPointerDown = event => {
-    // 首次手势解锁音频（浏览器 autoplay 策略要求）
-    if (audio && !audioUnlocked) { audio.unlock(); audioUnlocked = true; }
+    unlockAll();
     if (pointerId !== null) return;
     setNdc(event);
     raycaster.setFromCamera(ndc, camera);
@@ -308,14 +458,13 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     try { canvas.setPointerCapture(pointerId); } catch (e) { /* 合成事件可能抛，无碍 */ }
     dragging = body;
     body.wakeUp();
-    body.angularDamping = 0.8; // 拖动时更稳，不乱转
+    body.angularDamping = 0.8;
 
     const p = hits[0].point;
     const local = new CANNON.Vec3(p.x, p.y, p.z);
     body.pointToLocalFrame(local, local);
 
     hand.position.set(p.x, p.y, p.z);
-    // maxForce 有限：质量 1.5 + 重力 20（重量 30）时，55 抬得起但有明显滞后 = 重量感
     joint = new CANNON.PointToPointConstraint(body, local, hand, new CANNON.Vec3(0, 0, 0), 55);
     world.addConstraint(joint);
     canvas.style.cursor = "grabbing";
@@ -336,13 +485,10 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
 
   const endDrag = event => {
     if (pointerId === null || (event && event.pointerId !== pointerId)) return;
-    if (joint) {
-      world.removeConstraint(joint);
-      joint = null;
-    }
+    if (joint) { world.removeConstraint(joint); joint = null; }
     if (dragging) {
       dragging.angularDamping = dragging.userData.baseAngularDamping;
-      dragging.wakeUp(); // 松手 → 恢复受重力，落下压在别的立方体上
+      dragging.wakeUp();
     }
     dragging = null;
     try { canvas.releasePointerCapture(pointerId); } catch (e) { /* 指针已没了 */ }
@@ -350,12 +496,15 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     canvas.style.cursor = "";
   };
 
+  const onKeyDown = () => unlockAll();
+
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
+  window.addEventListener("keydown", onKeyDown);
 
-  // —— 滑动声：扫描当前接触，取最大切向相对速度作为滑动强度 ——
+  // —— 滑动声：扫描当前接触，取最大切向相对速度 ——
   const relVel = new CANNON.Vec3();
   const tmpA = new CANNON.Vec3();
   const tmpB = new CANNON.Vec3();
@@ -368,27 +517,65 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       const c = contacts[i];
       const bi = c.bi, bj = c.bj;
       if (bi.sleepState === CANNON.Body.SLEEPING && bj.sleepState === CANNON.Body.SLEEPING) continue;
-      // 接触点相对速度：v = vel + angVel × r
       bi.angularVelocity.cross(c.ri, tmpA);
       tmpA.vadd(bi.velocity, tmpA);
       bj.angularVelocity.cross(c.rj, tmpB);
       tmpB.vadd(bj.velocity, tmpB);
       tmpA.vsub(tmpB, relVel);
-      // 去掉法向分量，留切向
       const vn = relVel.dot(c.ni);
-      relVel.x -= vn * c.ni.x;
-      relVel.y -= vn * c.ni.y;
-      relVel.z -= vn * c.ni.z;
+      relVel.x -= vn * c.ni.x; relVel.y -= vn * c.ni.y; relVel.z -= vn * c.ni.z;
       const tan = relVel.length();
-      if (tan > maxTan) {
-        maxTan = tan;
-        panX = bi.position.x + c.ri.x;
-      }
+      if (tan > maxTan) { maxTan = tan; panX = bi.position.x + c.ri.x; }
     }
     const level = THREE.MathUtils.clamp((maxTan - 0.35) / 3.5, 0, 1);
     const halfX = Math.max(extentX / 2, 0.001);
     audio.setSlide(level, Math.max(-1, Math.min(1, panX / halfX)));
   };
+
+  // —— 轻水浮力/阻力耦合：仅对进入池体半径且低于水面的刚体生效（碎片安全网） ——
+  const BUOY_RHO = 26;
+  function applyBuoyancy() {
+    const all = fragments;
+    for (let i = 0; i < all.length; i++) {
+      const body = all[i].body;
+      const r = Math.hypot(body.position.x, body.position.z);
+      if (r > water.poolRadius) continue;
+      const surface = water.heightAt(body.position.x, body.position.z);
+      const half = body.shapes[0].halfExtents ? body.shapes[0].halfExtents.y : 0.1;
+      const submerged = surface - (body.position.y - half);
+      if (submerged <= 0) continue;
+      const depthRatio = THREE.MathUtils.clamp(submerged / (half * 2), 0, 1);
+      const volume = (half * 2) * (body.shapes[0].halfExtents.x * 2) * (body.shapes[0].halfExtents.z * 2);
+      const buoy = BUOY_RHO * volume * depthRatio * 20;
+      body.applyForce(new CANNON.Vec3(0, buoy, 0)); // 力作用于质心，偏移量默认为零
+      body.velocity.scale(0.965, body.velocity);
+      body.angularVelocity.scale(0.9, body.angularVelocity);
+      if (!body.userData.wetted) {
+        body.userData.wetted = true;
+        water.addImpulse(body.position.x, body.position.z, Math.min(1, Math.abs(body.velocity.y) / 6));
+        if (reactorAudio) reactorAudio.waterImpulse(Math.min(1, Math.abs(body.velocity.y) / 6),
+          THREE.MathUtils.clamp(body.position.x / Math.max(extentX / 2, 0.001), -1, 1));
+      }
+    }
+  }
+
+  // —— 会话事件 → 格栅冲量 / 轻水冲量 / 机械声音 ——
+  function handleSessionEvents(events) {
+    const scale = reduceMotion ? REDUCE_SCALE : 1;
+    for (const ev of events) {
+      if (ev.type === "trans_eject_impulse") {
+        gratingBody.wakeUp();
+        gratingBody.applyImpulse(new CANNON.Vec3(0, -GRATING_EJECT_IMPULSE * scale, 0), transOffset);
+        if (reactorAudio) reactorAudio.transEject();
+      } else if (ev.type === "trans_reseat_impulse") {
+        gratingBody.wakeUp();
+        gratingBody.applyImpulse(new CANNON.Vec3(0, GRATING_RESEAT_IMPULSE * scale, 0), transOffset);
+        if (reactorAudio) reactorAudio.transReseat();
+      } else if (ev.type === "trans_underwater_impulse") {
+        water.addImpulse(reactor.corePosition.x, reactor.corePosition.z, 0.8 * scale, 0.6);
+      }
+    }
+  }
 
   // —— 主循环 ——
   let raf = 0;
@@ -402,15 +589,29 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     const dt = Math.min((now - last) / 1000, 0.05);
     last = now;
     if (!reduceMotion) time += dt;
+
+    const events = session.update(dt);
+    handleSessionEvents(events);
+    reactor.update(dt, session.state);
+    water.update(dt, session.state);
+    if (reactorAudio) reactorAudio.update(dt, session.state);
+
     world.step(1 / 60, dt, 4);
-    reactor.update(dt, time);
+    applyBuoyancy();
     computeSlide();
+    syncGratingVisual();
+
     for (let i = 0; i < cubes.length; i++) {
       const { mesh, body } = cubes[i];
       mesh.position.set(body.position.x, body.position.y, body.position.z);
-      mesh.quaternion.set(body.quaternion.x, body.quaternion.y,
-                          body.quaternion.z, body.quaternion.w);
+      mesh.quaternion.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
     }
+    for (let i = 0; i < fragments.length; i++) {
+      const { mesh, body } = fragments[i];
+      mesh.position.set(body.position.x, body.position.y, body.position.z);
+      mesh.quaternion.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
+    }
+
     renderer.render(scene, camera);
     raf = requestAnimationFrame(frame);
   };
@@ -419,20 +620,27 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     if (running || disposed) return;
     running = true;
     last = performance.now();
-    if (audio && audioUnlocked) audio.unlock(); // 回到画面时恢复音频
+    if (audio && audioUnlocked) audio.unlock();
+    if (reactorAudio && audioUnlocked) reactorAudio.unlock();
     raf = requestAnimationFrame(frame);
   };
   const stop = () => {
     running = false;
     cancelAnimationFrame(raf);
     if (audio) audio.suspend();
+    if (reactorAudio) reactorAudio.suspend();
   };
 
   if (!layout()) return null;
   populate();
+  reactor.update(0, session.state);
+  water.update(0, session.state);
   renderer.render(scene, camera);
   section.classList.add("physical-ready");
   start();
+
+  // 供 Playwright/自动化测试读取的只读调试快照（非文字 UI，不影响页面外观）
+  window.__SOURCE_STATE__ = session.state;
 
   let observer = null;
   if ("IntersectionObserver" in window) {
@@ -474,13 +682,18 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       canvas.removeEventListener("pointerup", endDrag);
       canvas.removeEventListener("pointercancel", endDrag);
       canvas.removeEventListener("webglcontextlost", onContextLost);
+      window.removeEventListener("keydown", onKeyDown);
       cubes.forEach(({ body }) => body.removeEventListener("collide", onCollide));
+      fragments.forEach(({ body }) => body.removeEventListener("collide", onCollide));
       if (audio) audio.dispose();
+      if (reactorAudio) reactorAudio.dispose();
       reactor.dispose();
+      water.dispose();
       geo.dispose();
       materials.forEach(m => m.dispose());
       envRT.dispose();
       renderer.dispose();
+      if (window.__SOURCE_STATE__ === session.state) delete window.__SOURCE_STATE__;
     }
   };
 }
