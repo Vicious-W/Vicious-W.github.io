@@ -1,92 +1,17 @@
 <!doctype html>
-<html lang="en">
+<html lang="zxx">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#04101f">
-  <meta name="description" content="Vicious-W — computer science, systems, and machine learning.">
-  <title>Vicious-W</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23e9e4d8'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='22' font-weight='700' text-anchor='middle' fill='%231a1a1a'%3EW%3C/text%3E%3C/svg%3E">
+  <meta name="theme-color" content="#020b16">
+  <link rel="icon" href="data:,">
+  <title></title>
   <link rel="stylesheet" href="/src/styles/main.css">
 </head>
 <body>
-  <header class="site-header">
-    <a class="wordmark" href="#top" aria-label="Vicious-W, back to top">
-      <span>V</span><i></i><span>W</span>
-    </a>
-    <nav aria-label="Primary navigation">
-      <a href="#about">About</a>
-      <a href="#work">Work</a>
-      <a href="#contact">Contact</a>
-    </nav>
-  </header>
-
-  <main id="top">
-    <section class="hero" aria-labelledby="hero-title">
-      <canvas class="reactor-surface" aria-hidden="true"></canvas>
-      <canvas class="glass-surface" aria-hidden="true"></canvas>
-      <div class="hero__copy">
-        <p class="kicker">Computer science · systems · learning</p>
-        <h1 id="hero-title"><span>Vicious</span><span>—W</span></h1>
-      </div>
-
-      <div class="diagram" aria-label="Cantor function">
-        <svg viewBox="0 0 600 600" role="presentation">
-          <g class="cantor__axes">
-            <path d="M50 550H558M50 550V42"/>
-            <path d="M214 544V556M388 544V556M44 300H56M44 50H56"/>
-          </g>
-          <path class="cantor__curve" pathLength="1" data-cantor d="M50 550L214 300H388L550 50"/>
-        </svg>
-        <span class="cantor__zero">0</span>
-        <span class="cantor__one cantor__one--x">1</span>
-        <span class="cantor__one cantor__one--y">1</span>
-      </div>
-    </section>
-
-    <section class="section about" id="about" aria-labelledby="about-title">
-      <header class="section__header">
-        <h2 id="about-title">About</h2>
-      </header>
-      <div class="section__body about__grid">
-        <p class="lead">I study the foundations of computer science and try to turn abstract ideas into working systems.</p>
-        <div class="prose">
-          <p>My current interests sit between algorithms, computer systems, and machine learning. I mostly work in Python and C, with an emphasis on understanding mechanisms rather than collecting tools.</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="section work" id="work" aria-labelledby="work-title">
-      <header class="section__header">
-        <h2 id="work-title">Selected work</h2>
-      </header>
-      <div class="project-list">
-        <a class="project" href="https://github.com/Vicious-W/VKC_Study">
-          <div><h3>VKC_Study</h3><p>Notes and code from C programming study.</p></div>
-        </a>
-        <a class="project" href="https://github.com/Vicious-W/c-learning">
-          <div><h3>c-learning</h3><p>Experiments and exercises from Computer Systems.</p></div>
-        </a>
-      </div>
-    </section>
-
-    <section class="section contact-section" id="contact" aria-labelledby="contact-title">
-      <canvas class="liquid-surface" aria-hidden="true"></canvas>
-      <header class="section__header section__header--dark">
-        <h2 id="contact-title">Contact</h2>
-      </header>
-      <div class="contact-grid">
-        <div class="contact-links">
-          <a href="mailto:vicious.work.sola@gmail.com"><span>Email</span>vicious.work.sola@gmail.com</a>
-          <a href="https://github.com/Vicious-W"><span>GitHub</span>github.com/Vicious-W</a>
-        </div>
-      </div>
-      <footer>
-        <a href="#top">Back to top ↑</a>
-      </footer>
-    </section>
+  <main class="physical-scene">
+    <canvas class="physical-surface" aria-hidden="true"></canvas>
   </main>
-
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

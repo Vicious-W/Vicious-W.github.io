@@ -145,7 +145,6 @@ required_files=(
   docs/guides/PROJECT_COMMAND_MANUAL.md
   docs/methodology/AI_Project_Meta_Method_v2.0_2026-07-23.md
   references/README.md
-  archive/README.md
   .vscode/settings.json
   .agent/next-task.md
   .agent/state.env

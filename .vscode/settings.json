@@ -16,7 +16,6 @@
     "dist": true,
     ".npm-cache": true,
     ".playwright-mcp": true,
-    ".agent/artifacts": true,
-    "archive": true
+    ".agent/artifacts": true
   }
 }

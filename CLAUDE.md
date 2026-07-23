@@ -24,7 +24,7 @@
 - 必要时增加或更新测试、配置、构建脚本和项目文档；
 - 运行 `./scripts/run-validation.sh`，不得把 `NOT CONFIGURED` 描述为通过；
 - 对页面外观或行为的改动，必须启动本地 Vite 服务并使用 Playwright MCP 实际渲染，检查桌面、平板、移动视口和浏览器 console；不得用 Bash Playwright 脚本替代；
-- 每次有实质进展或决策后更新 `PROJECT.md` 第 5 节和第 7 节；
+- 只有当前实现事实、技术结构或下一步发生变化时才精简更新 `PROJECT.md`；
 - 完成后更新 `.agent/implementation-report.md`，写清 Git 边界并停止，等待 Codex 审查。
 
 ## 允许修改
@@ -49,8 +49,8 @@
 - 修改或删除 `.agent/review-history/` 中的 Codex 历史审查；
 - 直接改写 `.agent/latest-review.md` 的审查结论；
 - 修改 `.agent/state.env`、`.agent/next-task.md`、权限配置或 Agent 控制脚本；
-- 修改 `docs/` 方法/指南、`references/` 所有者参考、`archive/` 历史归档或
-  `.vscode/` 共享结构设置，除非所有者明确授权基础设施维护；
+- 修改 `docs/` 方法/指南、`references/` 所有者参考或 `.vscode/` 共享结构设置，
+  除非所有者明确授权基础设施维护；
 - 使用破坏性 Git 命令覆盖用户修改；
 - 自动 push、force push、部署或执行无限重试循环。
 

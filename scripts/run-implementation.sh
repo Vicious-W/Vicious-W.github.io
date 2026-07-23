@@ -125,14 +125,14 @@ PROJECT.md, README.md, the current Git status, and all directly relevant code.
 Implement the active task comprehensively. If the latest Codex verdict is
 CHANGES_REQUIRED, address every valid Blocker and Major first. Make reasonable
 technical decisions within the owner's approved scope; do not invent unrelated
-features. For reactor accuracy, research public authoritative sources and record
-the selected archetype, URLs, modeling choices, and deliberate abstractions in
-PROJECT.md and .agent/implementation-report.md.
+features. For reactor accuracy, use public authoritative sources and record the
+selected archetype, URLs, modeling choices, and deliberate abstractions in
+.agent/implementation-report.md.
 
 You may edit source, styles, tests, package configuration, and project progress
 documentation. The collaboration control plane is protected: do not modify
 PROJECT_SPEC.md, REVIEW_CONTRACT.md, AGENTS.md, CLAUDE.md, .gitignore,
-.claude/, .codex/, .vscode/, docs/, references/, archive/, any .agent/ file
+.claude/, .codex/, .vscode/, docs/, references/, any .agent/ file
 other than implementation-report.md and ignored artifacts, or Agent/validation
 control scripts. Do not stage or commit:
 the outer wrapper creates the Git checkpoint after validation. Never push,
@@ -146,10 +146,12 @@ glass dragging/stacking/audio activation, reactor behavior, responsive layout, a
 browser console. Preserve evidence in ignored .agent/artifacts paths when useful.
 
 Before finishing, replace .agent/implementation-report.md with a complete report
-matching its documented format and update PROJECT.md sections 5 and 7. Report
-passes, failures, NOT CONFIGURED items, unverified areas, remaining risks, and the
-exact handoff focus for Codex. Then stop. Do not merely describe a plan: implement
-and verify as much of the approved task as can be completed safely in this round.
+matching its documented format. Update PROJECT.md only when a current implemented
+fact, technical structure, or immediate next step changed; do not append a
+development diary. Report passes, failures, NOT CONFIGURED items, unverified
+areas, remaining risks, and the exact handoff focus for Codex. Then stop. Do not
+merely describe a plan: implement and verify as much of the approved task as can
+be completed safely in this round.
 
 Base commit at launch: $base_commit
 EOF
@@ -201,7 +203,7 @@ fi
 is_protected_implementation_path() {
   case "$1" in
     README.md|PROJECT_SPEC.md|REVIEW_CONTRACT.md|AGENTS.md|CLAUDE.md|.gitignore) return 0 ;;
-    docs/*|references/*|archive/*|.vscode/*) return 0 ;;
+    docs/*|references/*|.vscode/*) return 0 ;;
     .claude/*|.codex/*) return 0 ;;
     .agent/implementation-report.md|.agent/artifacts/*) return 1 ;;
     .agent/*) return 0 ;;

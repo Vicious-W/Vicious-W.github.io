@@ -1,7 +1,7 @@
 {
   "name": "vicious-w.github.io",
   "version": "1.0.0",
-  "description": "",
+  "description": "Single-page interactive blue physical scene.",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",

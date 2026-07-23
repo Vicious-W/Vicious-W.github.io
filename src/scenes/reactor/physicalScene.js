@@ -1,10 +1,7 @@
-// 第一页表层：一个个**独立的**玻璃立方体，俯视下方真三维的核反应堆重水池。
+// 唯一页面场景：独立玻璃立方体覆盖真三维研究堆模型。
 //
-// 三层结构：
-//   · 表层——这里的玻璃立方体：真实三维网格 + cannon-es 刚体，可抓起/拖动/堆叠；
-//   · 底层——reactorModel.js 的真三维反应堆（池体、堆芯、燃料棒、控制棒、辉光…），
-//     玻璃从上方俯视时会真实折射、遮挡它，改变视角能看出是立体结构；
-//   · reactorScene.js 的原生 WebGL 池面只留作首屏瞬开 / Three.js 失败时的兜底。
+// 玻璃使用 Three.js 网格与 cannon-es 刚体；反应堆由 reactorModel.js 中的独立
+// 三维部件构成。场景不使用平面图片或整面 shader 代替主要物体。
 //
 // 玻璃物理声音由 glassAudio.js 合成，触发量（冲击速度、切向滑动速度、接触点位置）
 // 全部来自 cannon-es 的真实碰撞/接触数据——见下方 collide 监听与 slide 计算。
@@ -53,12 +50,12 @@ function buildEnvTexture() {
   return tex;
 }
 
-export function createGlassCubes({ section, canvas, reduceMotion }) {
+export function createPhysicalScene({ section, canvas, reduceMotion }) {
   let renderer;
   try {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
   } catch (err) {
-    console.error("glassCubes: renderer unavailable", err);
+    console.error("physicalScene: renderer unavailable", err);
     return null;
   }
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MAX_DPR));
@@ -434,7 +431,7 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
   if (!layout()) return null;
   populate();
   renderer.render(scene, camera);
-  section.classList.add("glass-ready");
+  section.classList.add("physical-ready");
   start();
 
   let observer = null;
@@ -461,7 +458,7 @@ export function createGlassCubes({ section, canvas, reduceMotion }) {
   const onContextLost = event => {
     event.preventDefault();
     stop();
-    section.classList.remove("glass-ready");
+    section.classList.remove("physical-ready");
   };
   canvas.addEventListener("webglcontextlost", onContextLost);
 
