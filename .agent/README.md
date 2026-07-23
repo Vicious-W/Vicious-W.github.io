@@ -68,8 +68,9 @@ claude
 推荐提示：
 
 ```text
-阅读 PROJECT_SPEC.md、docs/engineering/REACTOR_MODEL.md、CLAUDE.md、
-REVIEW_CONTRACT.md、PROJECT.md 和 .agent/latest-review.md。你是唯一实现者。
+阅读 PROJECT_SPEC.md、docs/engineering/SOURCE_SCENE.md、
+docs/engineering/REACTOR_MODEL.md、CLAUDE.md、REVIEW_CONTRACT.md、PROJECT.md
+和 .agent/latest-review.md。你是唯一实现者。
 完成我本轮明确的目标，并修复最新审查中的所有 Blocker 和 Major；不得扩大范围或
 降低标准。运行 ./scripts/run-validation.sh；页面外观或行为有变化时用 Playwright
 MCP 验证。完成后更新 .agent/implementation-report.md，给出明确 Git 检查点，然后

@@ -1,6 +1,7 @@
-# Blue Physical Scene
+# SOURCE
 
-单页静态网站。页面无文字，以蓝色为主色，只呈现可交互的三维物理场景。
+单页静态网站。当前唯一场景名为 SOURCE；页面无文字，以蓝色为主色，只呈现可交互
+的三维物理系统。
 
 ## 当前内容
 
@@ -33,6 +34,7 @@ docs/methodology/        项目构建方法论
 
 - `PROJECT.md`：当前实现事实与技术结构；
 - `PROJECT_SPEC.md`：当前目标、范围和验收标准。
+- `docs/engineering/SOURCE_SCENE.md`：SOURCE 生命周期、轻水、玻璃和跨系统物理；
 - `docs/engineering/REACTOR_MODEL.md`：反应堆资料、部件、状态和真实性边界。
 
 Agent 规则：

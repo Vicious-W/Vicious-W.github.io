@@ -4,23 +4,26 @@
 //
 // 构型基线：**Pavia TRIGA Mark II 开放式轻水池研究堆**。选它是因为
 // 它的构图恰好是「从水池正上方俯视堆芯」，而且公开资料充分：
-//   · 堆芯是圆柱形，燃料元件使用同心圆形阵列，而不是压水堆的方形组件棋盘。
+//   · 中央 A 位是辐照套管，B–F 五个同心环共有 90 个元件位置。
 //   · 圆柱形 UZrH 燃料元件（约 3.76 cm 直径），上下各一块铝制栅格板夹持。
-//   · Pavia 构型使用 SHIM、REG、TRANS 三根控制棒，插入/抽出改变反应性。
+//   · Pavia 构型使用位于 C/D/E 环的 SHIM、TRANS、REG 三根控制棒。
 //   · 当前连续石墨反射体环是待资料校正的网页近似。
 //   · 开放水池，切伦科夫辉光集中在燃料棒正上方，偏蓝白/带紫。
 //
 // 公开资料来源：
 //   · General Atomics TRIGA 产品页 https://www.ga.com/fission-energy-systems/triga-products-technologies/
 //   · Pavia TRIGA Mark II 稳态表征 https://arxiv.org/pdf/1503.00873
-//     （堆芯直径 44.6 cm、五个同心燃料环、三根控制棒）
+//   · IAEA / Pavia 控制棒标定
+//     https://nucleus.iaea.org/sites/connect/RRIHpublic/CompendiumDB/Shared%20Documents/Italy/Protocols%20in%20PDF/1_Control_rod_calibration_in_a_TRIGA_reactor.pdf
+//     （A–F 格位、三根控制棒、栅格板、燃料元件、水箱和反射体）
 //   · Oregon State 1.1 MW TRIGA Mark II
 //     https://engineering.oregonstate.edu/NSE/research-innovation/facilities/11-mw-triga-mark-ii-pulsing-research-reactor
 //   · U.S. DOE 切伦科夫辐射说明 https://www.energy.gov/ne/articles/cherenkov-radiation-explained
 //
 // 刻意的抽象（为网页表达服务，不声称工程精度）：
-//   · 当前环位置数按 6n 规则（1+6+12+18+24+30=91）生成，与 Pavia 五环构型不一致；
+//   · 当前按 1+6+12+18+24+30 生成位置，但错误地把中央 A 套管也作为燃料；
 //   · 当前四根控制棒是暂定视觉构型，与 Pavia 三棒构型不一致；
+//   · 其余位置全部作为燃料，尚未按 Pavia 装载图区分石墨元件、源和辐照通道；
 //   · 栅格板不做逐孔布尔运算，用薄板+棒顶穿出表示；
 //   · 尺度做了统一归一（以玻璃立方体边长为基准单位），非真实厘米数；
 //   · 切伦科夫辉光用加性发光盘 + 点光源 + 燃料自发光的组合近似，不做体积光追。
