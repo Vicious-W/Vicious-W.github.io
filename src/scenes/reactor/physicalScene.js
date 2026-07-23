@@ -416,7 +416,11 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       for (let ix = 0; ix < nx; ix++) {
         const x = -extentX / 2 + stepX * (ix + 0.5);
         const z = -extentZ / 2 + stepZ * (iz + 0.5);
-        const rest = CUBE / 2;
+        // 格栅刚体顶面并非 y=0：静止落位高度需加上格栅厚度的一半，否则
+        // reduceMotion 下直接摆放会与格栅重叠，物理求解器会在加载后几帧内把
+        // 立方体"弹"出重叠区，产生 reduceMotion 本应避免的可见位移。
+        const gratingTop = reactor.grating.y + reactor.grating.thickness / 2;
+        const rest = gratingTop + CUBE / 2;
         const dist = Math.hypot(x, z) / Math.hypot(extentX / 2, extentZ / 2);
         const y = reduceMotion ? rest : rest + 1.2 + dist * 3.2;
         addCube(x, y, z, k++);
@@ -582,13 +586,11 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   let running = false;
   let disposed = false;
   let last = 0;
-  let time = 7.0;
 
   const frame = now => {
     if (!running || disposed) return;
     const dt = Math.min((now - last) / 1000, 0.05);
     last = now;
-    if (!reduceMotion) time += dt;
 
     const events = session.update(dt);
     handleSessionEvents(events);

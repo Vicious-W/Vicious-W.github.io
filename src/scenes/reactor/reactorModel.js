@@ -504,7 +504,7 @@ export function createReactorModel({ reduceMotion }) {
     transAsm.position.y = rod.TRANS.pos * CTRL_TRAVEL;
     regAsm.position.y = rod.REG.pos * CTRL_TRAVEL;
 
-    const flashPower = Math.min(1, powerProxy + pulsePowerProxy * 0.6);
+    const flashPower = Math.min(1, powerProxy + pulsePowerProxy * (reduceMotion ? 0.15 : 0.6));
     fuelMeshes.forEach((im, t) => { fuelTierMats[t].emissiveIntensity = fuelTierBase[t] * (0.15 + flashPower * 0.9); });
     coreLight.intensity = 1.2 + flashPower * 15;
 
