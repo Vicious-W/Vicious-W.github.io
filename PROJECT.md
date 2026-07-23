@@ -16,13 +16,13 @@
 - `src/main.js`：加载唯一物理场景；
 - `src/styles/main.css`：全屏画布和无文字页面样式。
 
-当前反应堆参考 TRIGA Mark II 研究堆。模型包含池体、堆芯、燃料元件、栅格、
+当前反应堆参考 Pavia TRIGA Mark II 研究堆。模型包含池体、堆芯、燃料元件、栅格、
 反射体、控制棒、驱动结构、部分冷却/仪器结构和切伦科夫辉光。控制棒状态会影响
 功率代理、辉光和指示部件。
 
 反应堆的资料依据、部件分解、当前近似和逐项验收定义在
-`docs/engineering/REACTOR_MODEL.md`。当前“TRIGA Mark II”与“重水”要求存在
-原型冲突，下一轮反应堆实现前必须由所有者选择保留哪条路线。
+`docs/engineering/REACTOR_MODEL.md`。原型确定为 Pavia TRIGA Mark II，池内介质
+确定为轻水；几何和控制棒构型不得混用其他 TRIGA 设施。
 
 当前玻璃由独立 Three.js 网格和 cannon-es 刚体构成，可以拖拽、碰撞和堆叠。
 声音只在用户手势后启用。
@@ -46,7 +46,7 @@
 
 ## 当前目标
 
-按照 `PROJECT_SPEC.md` 完成玻璃物理、玻璃材质、物理声音、重水系统和反应堆模型。
+按照 `PROJECT_SPEC.md` 完成玻璃物理、玻璃材质、物理声音、轻水系统和反应堆模型。
 
 ## 文档规则
 
