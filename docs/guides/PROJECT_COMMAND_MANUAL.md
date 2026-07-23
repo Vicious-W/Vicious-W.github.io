@@ -12,6 +12,7 @@
 
 - 项目目标、技术背景和历史决策：读 `PROJECT.md`。
 - 当前正式目标、范围和验收标准：读 `PROJECT_SPEC.md`。
+- 反应堆资料、部件、状态和真实性边界：读 `docs/engineering/REACTOR_MODEL.md`。
 - Claude Code 的实现边界：读 `CLAUDE.md`。
 - Codex 的审查边界：读 `AGENTS.md`。
 - 审查等级、报告格式和通过规则：读 `REVIEW_CONTRACT.md`。
@@ -104,9 +105,10 @@ npm run preview
 1. 正式目标已经写入 `PROJECT_SPEC.md`。
 2. 当前执行切片已经写入 `.agent/next-task.md`。
 3. `.agent/state.env` 中任务 ID、状态和轮数与当前目标一致。
-4. Git 工作区完全干净。
-5. Claude、Codex 均已登录，双方的 Playwright MCP 均已注册且健康。
-6. 没有另一个 Agent 循环正在运行。
+4. 任务状态是 `READY` 或 `NEEDS_CHANGES`，不存在尚未解决的所有者决策。
+5. Git 工作区完全干净。
+6. Claude、Codex 均已登录，双方的 Playwright MCP 均已注册且健康。
+7. 没有另一个 Agent 循环正在运行。
 
 第 1～3 项属于“建立新阶段目标”的控制面工作，不应在循环运行中修改。新阶段
 通常应先由项目所有者明确授权一次基础设施/任务配置工作，完成并提交后再启动

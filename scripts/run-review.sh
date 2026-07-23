@@ -160,10 +160,12 @@ Working tree at launch: clean
 Validation status: $validation_status (exit $validation_exit)
 Validation summary: .agent/artifacts/validation/summary.md
 
-Read PROJECT_SPEC.md, REVIEW_CONTRACT.md, AGENTS.md, README.md,
-.agent/implementation-report.md, the specified Git diff, related code/tests, and
-validation evidence. Check scope compliance, bugs, regressions, test adequacy,
-responsive behavior, main flows, and console errors. If the change affects page
+Read PROJECT_SPEC.md, docs/engineering/REACTOR_MODEL.md, REVIEW_CONTRACT.md,
+AGENTS.md, README.md, .agent/implementation-report.md, the specified Git diff,
+related code/tests, and validation evidence. Check scope compliance, bugs,
+regressions, test adequacy, responsive behavior, main flows, and console errors.
+For reactor changes, verify source configuration, independent components, state
+causality, declared approximations, and gap closure. If the change affects page
 appearance or behavior, use Playwright MCP (not a Bash Playwright script) at the
 required viewports when available; otherwise record exactly what is unverified.
 

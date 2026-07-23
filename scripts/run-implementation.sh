@@ -118,16 +118,19 @@ You are Claude Code, the sole implementation Agent for this repository. Execute
 exactly one bounded implementation round for task $active_task_id (round
 $implementation_round of at most $max_rounds).
 
-Read, in order: PROJECT_SPEC.md, CLAUDE.md, REVIEW_CONTRACT.md,
-.agent/next-task.md, .agent/latest-review.md, .agent/implementation-report.md,
-PROJECT.md, README.md, the current Git status, and all directly relevant code.
+Read, in order: PROJECT_SPEC.md, docs/engineering/REACTOR_MODEL.md, CLAUDE.md,
+REVIEW_CONTRACT.md, .agent/next-task.md, .agent/latest-review.md,
+.agent/implementation-report.md, PROJECT.md, README.md, the current Git status,
+and all directly relevant code.
 
 Implement the active task comprehensively. If the latest Codex verdict is
 CHANGES_REQUIRED, address every valid Blocker and Major first. Make reasonable
 technical decisions within the owner's approved scope; do not invent unrelated
-features. For reactor accuracy, use public authoritative sources and record the
-selected archetype, URLs, modeling choices, and deliberate abstractions in
-.agent/implementation-report.md.
+features. For reactor accuracy, follow the protected engineering baseline and
+record the changed component IDs, authoritative sources, geometry, state links,
+deliberate abstractions, verification, and open gap IDs in
+.agent/implementation-report.md. If D-001 or D-002 is unresolved, stop instead
+of mixing incompatible reactor configurations.
 
 You may edit source, styles, tests, package configuration, and project progress
 documentation. The collaboration control plane is protected: do not modify

@@ -1,30 +1,31 @@
-// 唯一页面场景中的真三维开放式水池研究堆。
-// 主要系统分别拥有 Three.js 几何、材质、状态和更新逻辑。
+// 唯一页面场景中的三维开放式水池研究堆原型。
+// 主要系统分别拥有 Three.js 几何、材质、状态和更新逻辑；当前真实性边界与未决
+// 配置见 docs/engineering/REACTOR_MODEL.md。
 //
-// 原型选择：**TRIGA Mark II 型开放式水池研究堆**（General Atomics）。选它是因为
+// 暂定原型：**TRIGA Mark II 型开放式水池研究堆**（General Atomics）。选它是因为
 // 它的构图恰好是「从水池正上方俯视堆芯」，而且公开资料充分：
-//   · 堆芯是圆柱形，燃料元件按同心圆环 A(中心)–G(外) 排布，而不是压水堆那种方形
-//     组件棋盘——圆环阵从上方俯视辨识度最高，也一眼区别于商业堆。
+//   · 堆芯是圆柱形，燃料元件使用同心圆形阵列，而不是压水堆的方形组件棋盘。
 //   · 圆柱形 UZrH 燃料元件（约 3.76 cm 直径），上下各一块铝制栅格板夹持。
-//   · 4 根控制棒位于 C、D 环，插入/抽出改变反应性。
-//   · 堆芯外围是石墨反射体环。
+//   · 控制棒插入/抽出改变反应性，但数量和位置必须由具体设施构型确定。
+//   · 当前连续石墨反射体环是待资料校正的网页近似。
 //   · 开放水池，切伦科夫辉光集中在燃料棒正上方，偏蓝白/带紫。
 //
 // 公开资料来源：
 //   · General Atomics TRIGA 产品页 https://www.ga.com/fission-energy-systems/triga-products-technologies/
-//   · TRIGA Mark II 稳态表征 https://arxiv.org/pdf/1503.00873
-//     （堆芯直径 44.6 cm、上下栅格板间距 64.8 cm、91 个 A–G 环位置）
+//   · Pavia TRIGA Mark II 稳态表征 https://arxiv.org/pdf/1503.00873
+//     （堆芯直径 44.6 cm、五个同心燃料环、三根控制棒）
 //   · Oregon State 1.1 MW TRIGA Mark II
 //     https://engineering.oregonstate.edu/NSE/research-innovation/facilities/11-mw-triga-mark-ii-pulsing-research-reactor
 //   · U.S. DOE 切伦科夫辐射说明 https://www.energy.gov/ne/articles/cherenkov-radiation-explained
 //
 // 刻意的抽象（为网页表达服务，不声称工程精度）：
-//   · 环位置数按 6n 规则（A=1,B=6,C=12,D=18,E=24,F=30，共 91）近似真实排布；
+//   · 当前环位置数按 6n 规则（1+6+12+18+24+30=91）生成，尚未绑定具体设施；
+//   · 当前四根控制棒是暂定视觉构型，与 Pavia 三棒构型不一致；
 //   · 栅格板不做逐孔布尔运算，用薄板+棒顶穿出表示；
 //   · 尺度做了统一归一（以玻璃立方体边长为基准单位），非真实厘米数；
 //   · 切伦科夫辉光用加性发光盘 + 点光源 + 燃料自发光的组合近似，不做体积光追。
 //
-// 运行链（唯一、可解释、机械可信）：
+// 当前视觉状态链（可解释，但不是反应堆动力学计算）：
 //   控制棒缓慢抽出/插入(rodInsertion) → 堆芯功率代理(power) 带迟滞跟随 →
 //   燃料自发光 + 切伦科夫辉光 + 池壁照明点光源 + 桥上功率指示条 同步响应。
 

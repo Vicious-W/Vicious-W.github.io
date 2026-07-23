@@ -1,12 +1,22 @@
 # Active Agent Task
 
 TASK_ID: single-blue-physical-scene-2026-07-23
-TASK_STATUS: READY
-OWNER_APPROVED: 2026-07-23
+TASK_STATUS: NEEDS_OWNER
+OWNER_APPROVED: PENDING_REACTOR_ARCHETYPE_DECISION
 
 ## Objective
 
 完成 `PROJECT_SPEC.md` 定义的唯一无文字物理场景。
+
+## Owner decision required
+
+反应堆工程基线确认当前要求存在两个冲突：
+
+1. 保留 TRIGA Mark II 时，池内介质必须按资料称为轻水；
+2. 保留重水要求时，必须放弃 TRIGA 构型并重新选择真实重水反应堆。
+
+如果保留 TRIGA，还需要确定以哪一座具体设施作为格位和控制棒构型的主要依据。
+详见 `docs/engineering/REACTOR_MODEL.md` 的 D-001、D-002。所有者决定前不得启动实现循环。
 
 ## Required work
 

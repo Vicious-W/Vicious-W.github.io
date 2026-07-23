@@ -7,18 +7,21 @@
 按顺序阅读：
 
 1. `PROJECT_SPEC.md`：唯一正式的目标、范围与验收来源；
-2. `REVIEW_CONTRACT.md`：审查问题的等级、证据和验收约定；
-3. `.agent/latest-review.md`：最近一轮 Codex 审查；
-4. `.agent/implementation-report.md`：上一轮实现交接；
-5. `PROJECT.md`：技术决策、当前状态与历史；
-6. `README.md`：项目目录地图；
-7. 当前 Git 状态、与本轮任务直接相关的代码和测试。
+2. `docs/engineering/REACTOR_MODEL.md`：反应堆工程设计基线和未决冲突；
+3. `REVIEW_CONTRACT.md`：审查问题的等级、证据和验收约定；
+4. `.agent/latest-review.md`：最近一轮 Codex 审查；
+5. `.agent/implementation-report.md`：上一轮实现交接；
+6. `PROJECT.md`：技术决策与当前状态；
+7. `README.md`：项目目录地图；
+8. 当前 Git 状态、与本轮任务直接相关的代码和测试。
 
 开始修改前必须确认工作区中哪些改动属于项目所有者，不得覆盖或删除未提交修改。若目标与 `PROJECT_SPEC.md` 冲突或需要新的产品决定，停止并询问项目所有者。
 
 ## 职责
 
 - 根据 `PROJECT_SPEC.md` 和所有者本轮明确目标实现功能；
+- 反应堆修改必须符合 `docs/engineering/REACTOR_MODEL.md`，并在实现报告中逐项记录
+  资料、部件、状态、近似和仍未关闭的差距 ID；
 - 修复最新审查报告中的有效问题，优先处理 Blocker 和 Major；
 - 选择简单、可维护且符合现有技术路线的实现；
 - 必要时增加或更新测试、配置、构建脚本和项目文档；

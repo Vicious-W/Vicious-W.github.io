@@ -24,13 +24,16 @@ src/
 scripts/                 双 Agent 控制与验证
 .agent/                  当前任务、状态和报告
 references/hero/         第一页玻璃与反应堆参考
-docs/                    指令手册和方法论
+docs/engineering/        物理模型工程设计基线
+docs/guides/             项目指令手册
+docs/methodology/        项目构建方法论
 ```
 
 项目事实和目标：
 
 - `PROJECT.md`：当前实现事实与技术结构；
 - `PROJECT_SPEC.md`：当前目标、范围和验收标准。
+- `docs/engineering/REACTOR_MODEL.md`：反应堆资料、部件、状态和真实性边界。
 
 Agent 规则：
 
