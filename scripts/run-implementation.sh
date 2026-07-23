@@ -5,6 +5,7 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENT_DIR="$ROOT_DIR/.agent"
 ARTIFACT_DIR="$AGENT_DIR/artifacts/implementation"
+RUN_DIR="$AGENT_DIR/artifacts/runs"
 STATE_FILE="$AGENT_DIR/state.env"
 TASK_FILE="$AGENT_DIR/next-task.md"
 REPORT_FILE="$AGENT_DIR/implementation-report.md"
@@ -17,25 +18,76 @@ agent_runtime_init "$ROOT_DIR"
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/run-implementation.sh
+Usage: ./scripts/run-implementation.sh [options]
 
-Runs exactly one non-interactive Claude Code implementation round for the active
-.agent/next-task.md. The working tree must start clean. Claude may edit the
-workspace but may not stage, commit, push, reset, clean, switch branches, or
-deploy. The wrapper validates and creates one local implementation checkpoint.
+Runs exactly one non-interactive IMPLEMENTER round for .agent/next-task.md.
+The executor may edit the allowed workspace but cannot control Git history.
+The neutral wrapper validates and creates one local implementation checkpoint.
+
+Options:
+  --agent claude|codex  Override IMPLEMENTER_AGENT.
+  --model MODEL         Override IMPLEMENTER_MODEL.
+  --effort LEVEL        Override IMPLEMENTER_EFFORT.
 EOF
 }
 
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  usage
-  exit 0
+executor_override=""
+model_override=""
+effort_override=""
+while (( $# > 0 )); do
+  case "$1" in
+    --agent)
+      [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+      executor_override="$2"
+      shift 2
+      ;;
+    --model)
+      [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+      model_override="$2"
+      shift 2
+      ;;
+    --effort)
+      [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+      effort_override="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'Unknown option: %s\n\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -n "$executor_override" ]]; then
+  agent_validate_executor "$executor_override" || exit 2
+  implementer_agent="$executor_override"
+else
+  implementer_agent="$(agent_runtime_executor_config IMPLEMENTER_AGENT claude)" || exit 2
 fi
-if (( $# != 0 )); then
-  usage >&2
-  exit 2
+if [[ -n "$model_override" ]]; then
+  agent_validate_model "$model_override" || exit 2
+  implementer_model="$model_override"
+else
+  implementer_model="$(agent_runtime_model_config IMPLEMENTER_MODEL sonnet)" || exit 2
+fi
+if [[ -n "$effort_override" ]]; then
+  agent_validate_effort "$effort_override" || exit 2
+  implementer_effort="$effort_override"
+else
+  implementer_effort="$(agent_runtime_effort_config IMPLEMENTER_EFFORT high)" || exit 2
 fi
 
-mkdir -p "$ARTIFACT_DIR"
+implementer_timeout="$(agent_runtime_config IMPLEMENTER_TIMEOUT_SECONDS 7200 60 43200)" || exit 2
+heartbeat_seconds="$(agent_runtime_config AGENT_HEARTBEAT_SECONDS 30 5 300)" || exit 2
+termination_grace="$(agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60)" || exit 2
+runner="$ROOT_DIR/scripts/agent-runners/$implementer_agent.sh"
+
+mkdir -p "$ARTIFACT_DIR" "$RUN_DIR"
 
 lock_owned=0
 if [[ "${AGENT_CYCLE_LOCK_HELD:-0}" != "1" ]]; then
@@ -55,29 +107,28 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
-if ! "$ROOT_DIR/scripts/agent-preflight.sh" --implementation-only; then
-  printf 'Claude was not started because preflight failed.\n' >&2
+if ! "$ROOT_DIR/scripts/agent-preflight.sh" \
+  --implementation-only \
+  --implementer-agent "$implementer_agent" \
+  --implementer-model "$implementer_model" \
+  --implementer-effort "$implementer_effort"; then
+  printf 'IMPLEMENTER was not started because preflight failed.\n' >&2
   exit 6
 fi
 
 dirty_status="$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)"
 if [[ -n "$dirty_status" ]]; then
-  printf 'Refusing Claude implementation because the Git working tree is not clean.\n' >&2
+  printf 'Refusing implementation because the Git working tree is not clean.\n' >&2
   printf '%s\n' "$dirty_status" >&2
-  printf 'Create a safe checkpoint first; this script will not discard or absorb pre-existing changes.\n' >&2
+  printf 'Create a safe checkpoint first; this script will not absorb existing changes.\n' >&2
   exit 2
 fi
 
-if ! command -v claude >/dev/null 2>&1; then
-  printf 'claude CLI is not available on PATH.\n' >&2
+if [[ ! -x "$runner" ]]; then
+  printf 'Executor adapter is missing or not executable: %s\n' "$runner" >&2
   exit 127
 fi
 
-claude_timeout="$(agent_runtime_config CLAUDE_TIMEOUT_SECONDS 7200 60 43200)" || exit 2
-heartbeat_seconds="$(agent_runtime_config AGENT_HEARTBEAT_SECONDS 30 5 300)" || exit 2
-termination_grace="$(agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60)" || exit 2
-claude_model="$(agent_runtime_model_config CLAUDE_MODEL sonnet)" || exit 2
-claude_effort="$(agent_runtime_effort_config CLAUDE_EFFORT high)" || exit 2
 agent_runtime_prepare_npm_cache || exit 2
 
 if [[ ! -s "$TASK_FILE" ]]; then
@@ -102,7 +153,7 @@ if [[ "$active_task_status" != "READY" && "$active_task_status" != "NEEDS_CHANGE
   exit 3
 fi
 if (( current_round >= max_rounds )); then
-  printf 'Maximum review rounds reached (%s). Stop and return control to the project owner.\n' "$max_rounds" >&2
+  printf 'Maximum review rounds reached (%s). Return control to the project owner.\n' "$max_rounds" >&2
   exit 3
 fi
 
@@ -110,113 +161,111 @@ implementation_round=$((current_round + 1))
 base_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 base_git_config="$(git -C "$ROOT_DIR" config --local --list --show-origin 2>/dev/null)"
 base_git_refs="$(git -C "$ROOT_DIR" show-ref 2>/dev/null || true)"
+run_id="implementation-r${implementation_round}-$(date -u +'%Y%m%dT%H%M%SZ')-$$"
 prompt_file="$ARTIFACT_DIR/prompt-round-${implementation_round}.md"
-claude_log="$ARTIFACT_DIR/claude-round-${implementation_round}.log"
+agent_log="$ARTIFACT_DIR/${implementer_agent}-round-${implementation_round}.log"
+manifest_file="$RUN_DIR/${run_id}.env"
+
+agent_write_run_manifest \
+  "$manifest_file" "$run_id" "$active_task_id" "$implementation_round" \
+  IMPLEMENTER "$implementer_agent" "$implementer_model" "$implementer_effort" \
+  workspace-write-no-git "$implementer_timeout" "$base_commit" PENDING \
+  .agent/implementation-report.md
 
 cat >"$prompt_file" <<EOF
-You are Claude Code, the sole implementation Agent for this repository. Execute
-exactly one bounded implementation round for task $active_task_id (round
-$implementation_round of at most $max_rounds).
+You are one bounded Agent invocation with the explicitly assigned role
+IMPLEMENTER. Your executor is $implementer_agent, model is $implementer_model,
+and effort is $implementer_effort. Do not infer a role from the executor name
+and do not switch roles.
 
-Read, in order: PROJECT_SPEC.md, docs/engineering/SOURCE_SCENE.md,
+Task: $active_task_id
+Round: $implementation_round of at most $max_rounds
+Base commit: $base_commit
+Run manifest: ${manifest_file#"$ROOT_DIR/"}
+
+Read, in order: PROJECT.md, AGENT_PROTOCOL.md, .agent/roles/IMPLEMENTER.md,
+PROJECT_SPEC.md, docs/engineering/SOURCE_SCENE.md,
 docs/engineering/REACTOR_POOL_SYSTEM.md, docs/engineering/REACTOR_MODEL.md,
-CLAUDE.md, REVIEW_CONTRACT.md, .agent/next-task.md, .agent/latest-review.md,
-.agent/implementation-report.md, PROJECT.md, README.md, the current Git status,
-and all directly relevant code.
+REVIEW_CONTRACT.md, .agent/next-task.md, .agent/latest-review.md,
+.agent/implementation-report.md, README.md, the current Git status, and all
+directly relevant code.
 
-Implement the active task comprehensively. If the latest Codex verdict is
+Implement the active task comprehensively. If the latest verdict is
 CHANGES_REQUIRED, address every valid Blocker and Major first. Make reasonable
-technical decisions within the owner's approved scope; do not invent unrelated
-features. Follow the protected SOURCE scene and reactor-pool baselines. Record the
-continuous operation phases, session reset, water coupling, grating support,
-glass damage/fracture, audio activation, changed RP-* and reactor component IDs,
-authoritative sources, geometry, state links, source/proxy labels, deliberate
-abstractions, verification, and open gap IDs in .agent/implementation-report.md.
-If a newly discovered source conflict would change a locked owner decision, stop
-instead of inventing product behavior or mixing incompatible configurations.
+technical decisions inside the owner's approved scope; do not invent unrelated
+features. Follow the protected SOURCE and reactor-pool baselines. Record
+continuous operation, session reset, water coupling, grating support, glass
+damage/fracture, audio activation, changed RP-* and reactor component IDs,
+sources, geometry, state links, proxy labels, deliberate abstractions,
+verification, and open gap IDs in .agent/implementation-report.md.
 
-You may edit source, styles, tests, package configuration, and project progress
-documentation. The collaboration control plane is protected: do not modify
-PROJECT_SPEC.md, REVIEW_CONTRACT.md, AGENTS.md, CLAUDE.md, .gitignore,
-.claude/, .codex/, .vscode/, docs/, references/, any .agent/ file
-other than implementation-report.md and ignored artifacts, or Agent/validation
-control scripts. Do not stage or commit:
-the outer wrapper creates the Git checkpoint after validation. Never push,
-deploy, reset, clean, rebase, switch branches, delete owner files, inspect secret
-stores, or expose credentials.
+You may edit source, styles, tests, package configuration, and current progress
+facts. The collaboration control plane is protected: do not modify
+PROJECT_SPEC.md, AGENT_PROTOCOL.md, REVIEW_CONTRACT.md, AGENTS.md, CLAUDE.md,
+.gitignore, .claude/, .codex/, .vscode/, docs/, references/, .agent/roles/,
+any .agent/ file other than implementation-report.md and ignored artifacts, or
+Agent/validation control scripts. Do not stage or commit. Never push, deploy,
+reset, clean, rebase, switch branches, inspect secret stores, expose credentials,
+or start another Agent.
 
-Run ./scripts/run-validation.sh. Because this task changes page appearance and
-behavior, start/reuse the local Vite preview and use Playwright MCP—not a Bash
-Playwright script—to exercise the required desktop, tablet, and mobile viewports,
-page/session reset, first-interaction activation, continuous reactor-pool
-operation, the millisecond pulse, grating/bridge and water response, post-pulse
-heat transfer, full-power equilibrium, glass dragging/stacking/damage/fracture,
-audio activation, responsive layout, and browser console. Preserve evidence in
-ignored .agent/artifacts paths when useful.
+Run ./scripts/run-validation.sh. For page appearance or behavior changes, use
+Playwright MCP—not a Bash Playwright script—to exercise the required viewports,
+session reset, first-interaction activation, reactor-pool operation and pulse,
+water response, glass interactions, audio activation, responsive layout, and
+browser console. Preserve useful evidence only in ignored artifact paths.
 
-Before finishing, replace .agent/implementation-report.md with a complete report
-matching its documented format. Update PROJECT.md only when a current implemented
-fact, technical structure, or immediate next step changed; do not append a
-development diary. Report passes, failures, NOT CONFIGURED items, unverified
-areas, remaining risks, and the exact handoff focus for Codex. Then stop. Do not
-merely describe a plan: implement and verify as much of the approved task as can
-be completed safely in this round.
-
-Base commit at launch: $base_commit
+Replace .agent/implementation-report.md with a complete report. Include
+"- Implementer runtime: $implementer_agent / $implementer_model / $implementer_effort"
+in its metadata. Report passes, failures, NOT CONFIGURED items, unverified areas,
+remaining risks, and the exact handoff focus for the next REVIEWER. Then stop;
+the neutral wrapper will verify, validate, and create the Git checkpoint.
 EOF
 
-printf 'Starting Claude Code implementation round %s/%s for %s\n' "$implementation_round" "$max_rounds" "$active_task_id"
-printf 'Claude model policy: %s (effort %s)\n' "$claude_model" "$claude_effort"
+printf 'Starting IMPLEMENTER round %s/%s for %s\n' \
+  "$implementation_round" "$max_rounds" "$active_task_id"
+printf 'Runtime: %s / %s / %s\n' \
+  "$implementer_agent" "$implementer_model" "$implementer_effort"
 
-prompt_text="$(<"$prompt_file")"
 run_agent_process \
-  "Claude implementation round $implementation_round/$max_rounds" \
-  "$claude_timeout" "$heartbeat_seconds" "$termination_grace" "$claude_log" -- \
-  claude --print \
-    --model "$claude_model" \
-    --effort "$claude_effort" \
-    --permission-mode dontAsk \
-    --no-session-persistence \
-    --output-format text \
-    --allowedTools "Read(./**),Edit(./**),Glob,Grep,Bash(./scripts/run-validation.sh),Bash(npm run *),Bash(npm install *),Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git rev-parse *),Bash(git ls-files *),Bash(rg *),Bash(find *),Bash(sed *),Bash(ls *),Bash(curl http://localhost:*),Bash(curl http://127.0.0.1:*),WebSearch,WebFetch,mcp__playwright__*" \
-    --disallowedTools "Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git reset *),Bash(git clean *),Bash(git checkout *),Bash(git switch *),Bash(git rebase *),Bash(git rm *),Bash(rm -rf *),Bash(sudo *),Bash(env),Bash(printenv *),Task,Agent" \
-    -- "$prompt_text"
-claude_exit=$?
+  "IMPLEMENTER ($implementer_agent) round $implementation_round/$max_rounds" \
+  "$implementer_timeout" "$heartbeat_seconds" "$termination_grace" "$agent_log" -- \
+  "$runner" IMPLEMENTER "$implementer_model" "$implementer_effort" "$prompt_file" -
+implementer_exit=$?
 
-if (( claude_exit != 0 )); then
-  agent_record_stop CLAUDE "$AGENT_RUN_REASON" "$claude_exit" "$claude_log"
-  printf 'Claude Code stopped (exit %s, reason %s). Changes, if any, were left untouched for inspection.\n' \
-    "$claude_exit" "$AGENT_RUN_REASON" >&2
-  printf 'Log: %s\n' "$claude_log" >&2
-  exit "$claude_exit"
+if (( implementer_exit != 0 )); then
+  agent_record_stop IMPLEMENTER "$AGENT_RUN_REASON" "$implementer_exit" "$agent_log"
+  printf 'IMPLEMENTER stopped (exit %s, reason %s). Changes were left for inspection.\n' \
+    "$implementer_exit" "$AGENT_RUN_REASON" >&2
+  printf 'Log: %s\n' "$agent_log" >&2
+  exit "$implementer_exit"
 fi
 
 if [[ "$(git -C "$ROOT_DIR" rev-parse HEAD)" != "$base_commit" ]]; then
-  agent_record_stop CLAUDE GIT_HISTORY_CHANGED 4 "$claude_log"
-  printf 'Claude changed Git history despite the boundary. Stopping without further mutation.\n' >&2
+  agent_record_stop IMPLEMENTER GIT_HISTORY_CHANGED 4 "$agent_log"
+  printf 'IMPLEMENTER changed Git history. Stopping without further mutation.\n' >&2
   exit 4
 fi
 current_git_config="$(git -C "$ROOT_DIR" config --local --list --show-origin 2>/dev/null)"
 current_git_refs="$(git -C "$ROOT_DIR" show-ref 2>/dev/null || true)"
 if [[ "$current_git_config" != "$base_git_config" || "$current_git_refs" != "$base_git_refs" ]]; then
-  agent_record_stop CLAUDE GIT_CONTROL_PLANE_CHANGED 4 "$claude_log"
-  printf 'Claude changed local Git configuration or refs. Stopping without staging.\n' >&2
+  agent_record_stop IMPLEMENTER GIT_CONTROL_PLANE_CHANGED 4 "$agent_log"
+  printf 'IMPLEMENTER changed local Git configuration or refs.\n' >&2
   exit 4
 fi
 if ! git -C "$ROOT_DIR" diff --cached --quiet --; then
-  agent_record_stop CLAUDE PRESTAGED_CHANGES 4 "$claude_log"
-  printf 'Claude staged changes despite the boundary. Stopping without altering the index.\n' >&2
+  agent_record_stop IMPLEMENTER PRESTAGED_CHANGES 4 "$agent_log"
+  printf 'IMPLEMENTER staged changes despite the boundary.\n' >&2
   exit 4
 fi
 
 is_protected_implementation_path() {
   case "$1" in
-    README.md|PROJECT_SPEC.md|REVIEW_CONTRACT.md|AGENTS.md|CLAUDE.md|.gitignore) return 0 ;;
-    docs/*|references/*|.vscode/*) return 0 ;;
+    README.md|PROJECT_SPEC.md|AGENT_PROTOCOL.md|REVIEW_CONTRACT.md|AGENTS.md|CLAUDE.md|.gitignore) return 0 ;;
+    docs/*|references/*|.vscode/*|.agent/roles/*) return 0 ;;
     .claude/*|.codex/*) return 0 ;;
     .agent/implementation-report.md|.agent/artifacts/*) return 1 ;;
     .agent/*) return 0 ;;
-    scripts/agent-*.sh|scripts/generate-cycle-summary.sh|scripts/run-implementation.sh|scripts/run-review.sh|scripts/run-validation.sh|scripts/test-agent-runtime.sh|scripts/lib/agent-runtime.sh) return 0 ;;
+    scripts/agent-*.sh|scripts/agent-runners/*|scripts/generate-cycle-summary.sh|scripts/run-implementation.sh|scripts/run-review.sh|scripts/run-validation.sh|scripts/test-agent-runtime.sh|scripts/lib/agent-runtime.sh) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -225,7 +274,7 @@ protected_violation=0
 while IFS= read -r -d '' changed_path; do
   [[ -n "$changed_path" ]] || continue
   if is_protected_implementation_path "$changed_path"; then
-    printf 'Claude modified protected control-plane file: %s\n' "$changed_path" >&2
+    printf 'IMPLEMENTER modified protected control-plane file: %s\n' "$changed_path" >&2
     protected_violation=1
   fi
 done < <(
@@ -233,22 +282,29 @@ done < <(
   git -C "$ROOT_DIR" ls-files --others --exclude-standard -z
 )
 if (( protected_violation != 0 )); then
-  agent_record_stop CLAUDE POLICY_VIOLATION 4 "$claude_log"
-  printf 'Stopping before validation or staging. Protected changes were left untouched for owner inspection.\n' >&2
+  agent_record_stop IMPLEMENTER POLICY_VIOLATION 4 "$agent_log"
+  printf 'Stopping before validation or staging. Changes remain for owner inspection.\n' >&2
   exit 4
 fi
 
 implementation_status="$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)"
 if [[ -z "$implementation_status" ]]; then
-  agent_record_stop CLAUDE NO_REPOSITORY_CHANGES 5 "$claude_log"
-  printf 'Claude completed without producing any repository changes. No checkpoint created.\n' >&2
+  agent_record_stop IMPLEMENTER NO_REPOSITORY_CHANGES 5 "$agent_log"
+  printf 'IMPLEMENTER produced no repository changes. No checkpoint created.\n' >&2
   exit 5
 fi
 
 if git -C "$ROOT_DIR" diff --quiet -- "$REPORT_FILE" || \
    grep -Fq 'IMPLEMENTATION_STATUS: NOT_REPORTED' "$REPORT_FILE"; then
-  agent_record_stop CLAUDE IMPLEMENTATION_REPORT_MISSING 5 "$claude_log"
-  printf 'Claude did not replace the implementation report. Changes were left uncommitted.\n' >&2
+  agent_record_stop IMPLEMENTER IMPLEMENTATION_REPORT_MISSING 5 "$agent_log"
+  printf 'IMPLEMENTER did not replace the implementation report.\n' >&2
+  exit 5
+fi
+
+if ! grep -Fq -- "- Implementer runtime: $implementer_agent / $implementer_model / $implementer_effort" \
+  "$REPORT_FILE"; then
+  agent_record_stop IMPLEMENTER IMPLEMENTATION_RUNTIME_MISSING 5 "$agent_log"
+  printf 'Implementation report does not record the assigned runtime.\n' >&2
   exit 5
 fi
 
@@ -263,10 +319,26 @@ fi
 {
   printf '\n## Automation wrapper result\n\n'
   printf -- '- Base commit: `%s`\n' "$base_commit"
-  printf -- '- Claude process: PASS (exit 0)\n'
+  printf -- '- Implementer runtime: `%s / %s / %s`\n' \
+    "$implementer_agent" "$implementer_model" "$implementer_effort"
+  printf -- '- Agent process: PASS (exit 0)\n'
   printf -- '- Unified validation: %s (exit %s)\n' "$validation_status" "$validation_exit"
   printf -- '- Checkpoint: created by `scripts/run-implementation.sh` after this report\n'
 } >>"$REPORT_FILE"
+
+state_tmp="$AGENT_DIR/state.env.tmp"
+while IFS= read -r state_line; do
+  case "$state_line" in
+    LAST_IMPLEMENTER_AGENT=*|LAST_IMPLEMENTER_MODEL=*|LAST_IMPLEMENTER_EFFORT=*) ;;
+    *) printf '%s\n' "$state_line" ;;
+  esac
+done <"$STATE_FILE" >"$state_tmp"
+{
+  printf 'LAST_IMPLEMENTER_AGENT=%s\n' "$implementer_agent"
+  printf 'LAST_IMPLEMENTER_MODEL=%s\n' "$implementer_model"
+  printf 'LAST_IMPLEMENTER_EFFORT=%s\n' "$implementer_effort"
+} >>"$state_tmp"
+mv "$state_tmp" "$STATE_FILE"
 
 if ! git -C "$ROOT_DIR" add --all; then
   agent_record_stop WRAPPER CHECKPOINT_PERMISSION 4 "$ARTIFACT_DIR/git-commit-round-${implementation_round}.log"
@@ -278,29 +350,27 @@ if git -C "$ROOT_DIR" diff --cached --quiet; then
   exit 5
 fi
 
-commit_message="agent: implementation round $implementation_round"
 git -C "$ROOT_DIR" \
   -c core.hooksPath=/dev/null \
   -c commit.gpgSign=false \
-  commit -m "$commit_message" \
+  commit -m "agent: implementation round $implementation_round" \
   >"$ARTIFACT_DIR/git-commit-round-${implementation_round}.log" 2>&1
 commit_exit=$?
 if (( commit_exit != 0 )); then
   commit_reason="$(agent_classify_log "$ARTIFACT_DIR/git-commit-round-${implementation_round}.log")"
   agent_record_stop WRAPPER "$commit_reason" "$commit_exit" "$ARTIFACT_DIR/git-commit-round-${implementation_round}.log"
-  printf 'Could not create implementation checkpoint (exit %s). Staged changes were preserved.\n' "$commit_exit" >&2
-  printf 'Log: %s\n' "$ARTIFACT_DIR/git-commit-round-${implementation_round}.log" >&2
+  printf 'Could not create implementation checkpoint (exit %s).\n' "$commit_exit" >&2
   exit "$commit_exit"
 fi
 
 result_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)" ]]; then
-  printf 'Implementation checkpoint was created but the working tree is not clean. Stopping.\n' >&2
+  printf 'Implementation checkpoint exists but the working tree is not clean.\n' >&2
   git -C "$ROOT_DIR" status --short >&2
   exit 4
 fi
 
 agent_clear_stop
-printf 'Claude implementation checkpoint: %s\n' "$result_commit"
+printf 'IMPLEMENTER checkpoint: %s\n' "$result_commit"
 printf 'Unified validation before checkpoint: %s\n' "$validation_status"
-printf 'Claude log: %s\n' "$claude_log"
+printf 'Runtime log: %s\n' "$agent_log"

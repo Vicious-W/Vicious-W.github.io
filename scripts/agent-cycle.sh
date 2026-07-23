@@ -17,19 +17,28 @@ usage() {
 Usage: ./scripts/agent-cycle.sh <command> [args]
 
 Commands:
-  preflight              Verify permissions/auth/MCP/checkpoint readiness only;
-                         never starts either Agent.
-  cycle                  Claude implement -> validate -> commit -> Codex review;
-                         repeat serially until PASS or the three-round limit.
-  implement              Run one Claude implementation round and local checkpoint.
+  preflight [options]    Verify configured executors, permissions and readiness;
+                         never starts an Agent.
+  cycle [options]        IMPLEMENTER -> validate/checkpoint -> REVIEWER; repeat
+                         serially until PASS or the bounded round limit.
+  implement [options]    Run one IMPLEMENTER round and local checkpoint.
   validate               Run the unified configured checks.
-  review [target base]   Run one read-only Codex review.
-  status                 Show Git, task, validation, and handoff state.
-  summary                Generate and print a concise report of all rounds in
-                         the current/recent task cycle.
+  review [options]       Run one read-only REVIEWER round.
+  status                 Show Git, task, validation, handoff and runtime state.
+  summary                Print the concise report for current/recent rounds.
   archive                Archive latest-review.md if not already archived.
 
-The automatic cycle never runs both Agents concurrently and never pushes,
+Cycle options:
+  --implementer, --implementer-agent claude|codex
+  --implementer-model MODEL
+  --implementer-effort low|medium|high|xhigh|max
+  --reviewer, --reviewer-agent claude|codex
+  --reviewer-model MODEL
+  --reviewer-effort low|medium|high|xhigh|max
+
+Defaults come from .agent/runtime.env. Roles are not tied to executors: the same
+executor may fill both roles in separate fresh processes, and roles may be
+reversed. The workflow never runs two Agents concurrently and never pushes,
 deploys, resets, cleans, switches branches, rebases, or retries without a limit.
 EOF
 }
@@ -78,7 +87,7 @@ commit_review_handoff() {
   git -C "$ROOT_DIR" \
     -c core.hooksPath=/dev/null \
     -c commit.gpgSign=false \
-    commit -m "agent: codex review round $round" \
+    commit -m "agent: review round $round" \
     >"$ROOT_DIR/.agent/artifacts/review/git-commit-round-${round}.log" 2>&1
 }
 
@@ -91,10 +100,64 @@ shift
 
 case "$command_name" in
   cycle)
-    if (( $# != 0 )); then
-      usage >&2
-      exit 2
-    fi
+    implementer_agent="$(agent_runtime_executor_config IMPLEMENTER_AGENT claude)" || exit 2
+    implementer_model="$(agent_runtime_model_config IMPLEMENTER_MODEL sonnet)" || exit 2
+    implementer_effort="$(agent_runtime_effort_config IMPLEMENTER_EFFORT high)" || exit 2
+    reviewer_agent="$(agent_runtime_executor_config REVIEWER_AGENT codex)" || exit 2
+    reviewer_model="$(agent_runtime_model_config REVIEWER_MODEL gpt-5.6-sol)" || exit 2
+    reviewer_effort="$(agent_runtime_effort_config REVIEWER_EFFORT high)" || exit 2
+
+    while (( $# > 0 )); do
+      case "$1" in
+        --implementer|--implementer-agent)
+          [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+          implementer_agent="$2"
+          shift 2
+          ;;
+        --implementer-model)
+          [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+          implementer_model="$2"
+          shift 2
+          ;;
+        --implementer-effort)
+          [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+          implementer_effort="$2"
+          shift 2
+          ;;
+        --reviewer|--reviewer-agent)
+          [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+          reviewer_agent="$2"
+          shift 2
+          ;;
+        --reviewer-model)
+          [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+          reviewer_model="$2"
+          shift 2
+          ;;
+        --reviewer-effort)
+          [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+          reviewer_effort="$2"
+          shift 2
+          ;;
+        --help|-h)
+          usage
+          exit 0
+          ;;
+        *)
+          printf 'Unknown cycle option: %s\n\n' "$1" >&2
+          usage >&2
+          exit 2
+          ;;
+      esac
+    done
+
+    agent_validate_executor "$implementer_agent" || exit 2
+    agent_validate_model "$implementer_model" || exit 2
+    agent_validate_effort "$implementer_effort" || exit 2
+    agent_validate_executor "$reviewer_agent" || exit 2
+    agent_validate_model "$reviewer_model" || exit 2
+    agent_validate_effort "$reviewer_effort" || exit 2
+
     if ! agent_acquire_lock "$LOCK_DIR" 'automatic cycle'; then
       exit 2
     fi
@@ -111,8 +174,20 @@ case "$command_name" in
     }
     trap cycle_cleanup EXIT
 
-    if ! "$ROOT_DIR/scripts/agent-preflight.sh"; then
-      printf 'Automatic cycle stopped at preflight; neither Agent was started.\n' >&2
+    printf 'Cycle configuration\n'
+    printf '  IMPLEMENTER: %s / %s / %s\n' \
+      "$implementer_agent" "$implementer_model" "$implementer_effort"
+    printf '  REVIEWER:    %s / %s / %s\n' \
+      "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
+
+    if ! "$ROOT_DIR/scripts/agent-preflight.sh" \
+      --implementer-agent "$implementer_agent" \
+      --implementer-model "$implementer_model" \
+      --implementer-effort "$implementer_effort" \
+      --reviewer-agent "$reviewer_agent" \
+      --reviewer-model "$reviewer_model" \
+      --reviewer-effort "$reviewer_effort"; then
+      printf 'Automatic cycle stopped at preflight; no Agent was started.\n' >&2
       exit 6
     fi
 
@@ -128,26 +203,36 @@ case "$command_name" in
         exit 0
       fi
       if (( current_round >= max_rounds )); then
-        printf 'Maximum review rounds reached (%s). Returning control to the project owner.\n' "$max_rounds" >&2
+        printf 'Maximum review rounds reached (%s). Returning control to the owner.\n' \
+          "$max_rounds" >&2
         exit 3
       fi
 
-      printf '\n=== Claude implementation round %s/%s ===\n' "$((current_round + 1))" "$max_rounds"
-      AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-implementation.sh"
+      printf '\n=== IMPLEMENTER (%s) round %s/%s ===\n' \
+        "$implementer_agent" "$((current_round + 1))" "$max_rounds"
+      AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-implementation.sh" \
+        --agent "$implementer_agent" \
+        --model "$implementer_model" \
+        --effort "$implementer_effort"
       implementation_exit=$?
       if (( implementation_exit != 0 )); then
-        printf 'Automatic cycle stopped during Claude implementation (exit %s).\n' "$implementation_exit" >&2
+        printf 'Cycle stopped during IMPLEMENTER (exit %s).\n' "$implementation_exit" >&2
         exit "$implementation_exit"
       fi
 
       implementation_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
       base_commit="$(git -C "$ROOT_DIR" rev-parse "$implementation_commit^")"
 
-      printf '\n=== Codex review round %s/%s ===\n' "$((current_round + 1))" "$max_rounds"
-      AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-review.sh" "$implementation_commit" "$base_commit"
+      printf '\n=== REVIEWER (%s) round %s/%s ===\n' \
+        "$reviewer_agent" "$((current_round + 1))" "$max_rounds"
+      AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-review.sh" \
+        --agent "$reviewer_agent" \
+        --model "$reviewer_model" \
+        --effort "$reviewer_effort" \
+        "$implementation_commit" "$base_commit"
       review_exit=$?
       if (( review_exit != 0 )); then
-        printf 'Automatic cycle stopped during Codex review (exit %s).\n' "$review_exit" >&2
+        printf 'Cycle stopped during REVIEWER (exit %s).\n' "$review_exit" >&2
         exit "$review_exit"
       fi
 
@@ -156,14 +241,12 @@ case "$command_name" in
       commit_review_handoff "$reviewed_round"
       handoff_exit=$?
       if (( handoff_exit != 0 )); then
-        printf 'Automatic cycle stopped while checkpointing the review (exit %s).\n' "$handoff_exit" >&2
+        printf 'Cycle stopped while checkpointing review (exit %s).\n' "$handoff_exit" >&2
         exit "$handoff_exit"
       fi
 
-      review_checkpoint="$(git -C "$ROOT_DIR" rev-parse HEAD)"
-      printf 'Review checkpoint: %s\n' "$review_checkpoint"
+      printf 'Review checkpoint: %s\n' "$(git -C "$ROOT_DIR" rev-parse HEAD)"
       printf 'Verdict: %s\n' "$verdict"
-
       if [[ "$verdict" == "PASS" ]]; then
         printf 'Automatic Agent cycle completed successfully.\n'
         exit 0
@@ -187,44 +270,34 @@ case "$command_name" in
     exec "$ROOT_DIR/scripts/run-review.sh" "$@"
     ;;
   status)
-    if (( $# != 0 )); then
-      usage >&2
-      exit 2
-    fi
+    if (( $# != 0 )); then usage >&2; exit 2; fi
     printf 'Git status\n'
     git -C "$ROOT_DIR" status --short --branch
+    printf '\nDefault role configuration\n'
+    sed -n '1,24p' "$ROOT_DIR/.agent/runtime.env"
     printf '\nAgent state\n'
-    sed -n '1,140p' "$STATE_FILE"
+    sed -n '1,160p' "$STATE_FILE"
     printf '\nActive task\n'
     sed -n '1,24p' "$ROOT_DIR/.agent/next-task.md"
     printf '\nLatest review status\n'
-    grep -E '^(REVIEW_STATUS|VERDICT):' "$ROOT_DIR/.agent/latest-review.md" || printf 'No status marker found.\n'
+    grep -E '^(REVIEW_STATUS|VERDICT):' "$ROOT_DIR/.agent/latest-review.md" || \
+      printf 'No status marker found.\n'
     if [[ -f "$ROOT_DIR/.agent/artifacts/validation/summary.md" ]]; then
       printf '\nLatest validation\n'
       sed -n '1,14p' "$ROOT_DIR/.agent/artifacts/validation/summary.md"
     fi
     if [[ -f "$ROOT_DIR/.agent/artifacts/runtime/last-stop.env" ]]; then
       printf '\nLatest automatic stop\n'
-      sed -n '1,12p' "$ROOT_DIR/.agent/artifacts/runtime/last-stop.env"
-    fi
-    if [[ -f "$ROOT_DIR/.agent/artifacts/cycle/latest-summary.md" ]]; then
-      printf '\nLatest cycle summary\n'
-      printf '%s\n' '.agent/artifacts/cycle/latest-summary.md'
+      sed -n '1,14p' "$ROOT_DIR/.agent/artifacts/runtime/last-stop.env"
     fi
     ;;
   summary)
-    if (( $# != 0 )); then
-      usage >&2
-      exit 2
-    fi
+    if (( $# != 0 )); then usage >&2; exit 2; fi
     summary_path="$("$SUMMARY_SCRIPT")" || exit $?
-    sed -n '1,320p' "$summary_path"
+    sed -n '1,360p' "$summary_path"
     ;;
   archive)
-    if (( $# != 0 )); then
-      usage >&2
-      exit 2
-    fi
+    if (( $# != 0 )); then usage >&2; exit 2; fi
     latest="$ROOT_DIR/.agent/latest-review.md"
     history="$ROOT_DIR/.agent/review-history"
     if ! grep -Eq '^VERDICT: (PASS|CHANGES_REQUIRED)$' "$latest"; then

@@ -82,6 +82,50 @@ agent_runtime_model_config() {
   printf '%s\n' "$value"
 }
 
+agent_validate_executor() {
+  case "$1" in
+    claude|codex) ;;
+    *)
+      printf 'Unsupported Agent executor: %s (expected claude or codex).\n' "$1" >&2
+      return 2
+      ;;
+  esac
+}
+
+agent_runtime_executor_config() {
+  local key="$1"
+  local default_value="$2"
+  local config_file="$AGENT_RUNTIME_ROOT/.agent/runtime.env"
+  local value=""
+
+  if [[ -f "$config_file" ]]; then
+    value="$(sed -n "s/^${key}=//p" "$config_file" | head -n 1)"
+  fi
+  [[ -n "$value" ]] || value="$default_value"
+  agent_validate_executor "$value" || return 2
+  printf '%s\n' "$value"
+}
+
+agent_validate_model() {
+  local value="$1"
+  if [[ ! "$value" =~ ^[[:alnum:]][[:alnum:]._:/-]{0,127}$ ]]; then
+    printf 'Invalid model value: %s; expected a model alias or slug.\n' "$value" >&2
+    return 2
+  fi
+}
+
+agent_validate_effort() {
+  local value="$1"
+  case "$value" in
+    low|medium|high|xhigh|max) ;;
+    *)
+      printf 'Invalid effort value: %s; expected low, medium, high, xhigh, or max.\n' \
+        "$value" >&2
+      return 2
+      ;;
+  esac
+}
+
 agent_runtime_effort_config() {
   local key="$1"
   local default_value="$2"
@@ -102,6 +146,40 @@ agent_runtime_effort_config() {
       ;;
   esac
   printf '%s\n' "$value"
+}
+
+agent_write_run_manifest() {
+  local manifest_path="$1"
+  local run_id="$2"
+  local task_id="$3"
+  local round="$4"
+  local role="$5"
+  local executor="$6"
+  local model="$7"
+  local effort="$8"
+  local permission_profile="$9"
+  shift 9
+  local timeout_seconds="$1"
+  local base_commit="$2"
+  local target_commit="$3"
+  local expected_output="$4"
+
+  mkdir -p "$(dirname "$manifest_path")"
+  {
+    printf 'RUN_ID=%s\n' "$run_id"
+    printf 'TASK_ID=%s\n' "$task_id"
+    printf 'ROUND=%s\n' "$round"
+    printf 'ROLE=%s\n' "$role"
+    printf 'EXECUTOR=%s\n' "$executor"
+    printf 'MODEL=%s\n' "$model"
+    printf 'EFFORT=%s\n' "$effort"
+    printf 'PERMISSION_PROFILE=%s\n' "$permission_profile"
+    printf 'TIMEOUT_SECONDS=%s\n' "$timeout_seconds"
+    printf 'BASE_COMMIT=%s\n' "$base_commit"
+    printf 'TARGET_COMMIT=%s\n' "$target_commit"
+    printf 'EXPECTED_OUTPUT=%s\n' "$expected_output"
+    printf 'STARTED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  } >"$manifest_path"
 }
 
 agent_process_start_ticks() {

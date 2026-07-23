@@ -1,6 +1,8 @@
-# Codex 审查契约
+# 正式审查契约
 
-本文件规定 Codex 正式审查的证据要求、严重等级、固定报告格式和终止条件。所有结论必须关联 `PROJECT_SPEC.md` 或项目所有者本轮明确要求。
+本文件规定 `REVIEWER` 正式审查的证据要求、严重等级、固定报告格式和终止条件。
+它适用于任何被明确分配审查角色的 Agent 执行器。所有结论必须关联
+`PROJECT_SPEC.md` 或项目所有者本轮明确要求。
 
 ## 审查输入与隔离
 
@@ -13,7 +15,9 @@
 - `./scripts/run-validation.sh` 的最新结果；
 - 与改动相关的代码、diff、测试和浏览器证据。
 
-Codex 使用只读沙箱检查仓库，只允许由外层审查脚本写入审查报告、归档、状态和本地 artifacts。若工作区不干净、目标提交不明确或存在覆盖用户修改的风险，应停止正式审查。
+审查 Agent 使用只读沙箱检查仓库，只允许由外层审查脚本写入审查报告、归档、
+状态和本地 artifacts。若工作区不干净、目标提交不明确或存在覆盖用户修改的风险，
+应停止正式审查。
 
 ## 严重等级
 
@@ -93,10 +97,11 @@ VERDICT: CHANGES_REQUIRED
 `.agent/latest-review.md` 必须使用以下结构；没有问题的等级写 `None.`，不得省略章节。
 
 ```markdown
-# Codex Review
+# Agent Review
 
 ## Review metadata
 
+- Reviewer runtime: <executor> / <model> / <effort>
 - Reviewed commit: <full sha>
 - Compared against: <full sha>
 - Review date: <ISO-8601>
@@ -184,6 +189,8 @@ None.
 ## 归档与终止
 
 - 每次完成审查后，同时更新 `.agent/latest-review.md` 并在 `.agent/review-history/` 新增不可改写的归档。
-- Claude Code 不得修改历史审查；Codex 不得重写旧历史，只能在新报告中说明旧问题状态。
-- 最大自动协作轮数为 3；`agent-cycle.sh cycle` 按“Claude 实现 → 验证 → 本地提交 → Codex 只读审查”严格串行运行，PASS、达到轮数、相同问题反复、需要产品决策或任何流程错误时立即停止。
+- 实现者不得修改历史审查；审查者不得重写旧历史，只能在新报告中说明旧问题状态。
+- 最大自动协作轮数为 3；`agent-cycle.sh cycle` 按“IMPLEMENTER → 验证 →
+  本地提交 → REVIEWER 只读审查”严格串行运行。实际执行器由调用配置决定。
+  PASS、达到轮数、相同问题反复、需要产品决策或任何流程错误时立即停止。
 - 达到最大轮数、连续两轮出现同一未解决问题、需要改变目标或产品决策、需要凭据/付款/外部授权、验证环境不可靠、Git 状态不安全时，停止并交还项目所有者。

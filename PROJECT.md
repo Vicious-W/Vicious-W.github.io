@@ -43,6 +43,15 @@
 - 静态构建，可部署到 GitHub Pages；
 - 无后端、数据库或运行时密钥。
 
+## Agent 协作结构
+
+- Agent 默认身份为 `GENERAL`，专用身份为 `IMPLEMENTER` 与 `REVIEWER`；
+- 角色不与 Claude Code 或 Codex 绑定，父脚本可为每个角色指定执行器、模型和
+  effort；
+- 当前默认配置仍是 Claude Code 实现、Codex 审查；
+- 实现和审查使用全新进程严格串行，审查阶段只读；
+- 每次专用调用在 `.agent/artifacts/runs/` 留下实际运行配置。
+
 ## 建模规则
 
 - 主要物体必须有真实三维几何结构，不能用平面图片或背景图代替；

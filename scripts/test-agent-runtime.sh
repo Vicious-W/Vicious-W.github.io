@@ -5,6 +5,8 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_DIR="$ROOT_DIR/.agent/artifacts/runtime-test"
 LOCK_TEST_DIR="$TEST_DIR/test.lock"
+MANIFEST_TEST="$TEST_DIR/test-manifest.env"
+PROMPT_TEST="$TEST_DIR/test-prompt.md"
 
 # shellcheck source=scripts/lib/agent-runtime.sh
 source "$ROOT_DIR/scripts/lib/agent-runtime.sh"
@@ -75,6 +77,46 @@ else
   printf 'PASS  active lock blocked a second acquisition\n'
 fi
 agent_release_lock "$LOCK_TEST_DIR"
+
+if agent_validate_executor claude && agent_validate_executor codex && \
+   ! agent_validate_executor unknown >/dev/null 2>&1; then
+  printf 'PASS  executor validation accepts supported adapters only\n'
+else
+  printf 'FAIL  executor validation did not enforce the supported set\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+if agent_validate_model gpt-5.6-sol && agent_validate_model opus-4.1 && \
+   ! agent_validate_model 'bad model' >/dev/null 2>&1 && \
+   agent_validate_effort high && ! agent_validate_effort extreme >/dev/null 2>&1; then
+  printf 'PASS  model and effort values are validated as inert configuration\n'
+else
+  printf 'FAIL  model or effort validation produced an unexpected result\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+agent_write_run_manifest \
+  "$MANIFEST_TEST" test-run test-task 1 IMPLEMENTER claude sonnet high \
+  workspace-write-no-git 600 base-sha PENDING .agent/implementation-report.md
+if grep -Fqx 'ROLE=IMPLEMENTER' "$MANIFEST_TEST" && \
+   grep -Fqx 'EXECUTOR=claude' "$MANIFEST_TEST" && \
+   grep -Fqx 'PERMISSION_PROFILE=workspace-write-no-git' "$MANIFEST_TEST"; then
+  printf 'PASS  run manifest records role, executor and permission profile\n'
+else
+  printf 'FAIL  run manifest is missing required identity fields\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+printf 'test prompt\n' >"$PROMPT_TEST"
+for adapter in claude codex; do
+  if "$ROOT_DIR/scripts/agent-runners/$adapter.sh" \
+    INVALID test-model high "$PROMPT_TEST" - >/dev/null 2>&1; then
+    printf 'FAIL  %s adapter accepted an invalid role\n' "$adapter" >&2
+    failure_count=$((failure_count + 1))
+  else
+    printf 'PASS  %s adapter rejects invalid roles without starting an Agent\n' "$adapter"
+  fi
+done
 
 if (( failure_count != 0 )); then
   printf 'Runtime supervision smoke test failed: %s case(s).\n' "$failure_count" >&2

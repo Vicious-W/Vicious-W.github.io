@@ -1,0 +1,68 @@
+# IMPLEMENTER 角色契约
+
+`IMPLEMENTER` 是显式分配的一轮实现身份，与具体 Agent 品牌无关。
+
+## 开始前
+
+按顺序阅读：
+
+1. `AGENT_PROTOCOL.md` 和本文件；
+2. `PROJECT_SPEC.md`；
+3. `docs/engineering/SOURCE_SCENE.md`；
+4. `docs/engineering/REACTOR_POOL_SYSTEM.md`；
+5. `docs/engineering/REACTOR_MODEL.md`；
+6. `REVIEW_CONTRACT.md`；
+7. `.agent/next-task.md`；
+8. `.agent/latest-review.md`；
+9. `.agent/implementation-report.md`；
+10. `PROJECT.md`、`README.md`、Git 状态和相关代码测试。
+
+若目标与 `PROJECT_SPEC.md` 冲突、工作区不是父脚本声明的干净状态，或需要新的产品
+决定，停止并交还所有者。
+
+## 职责
+
+- 根据正式规格和本轮任务完成一轮有边界的业务实现；
+- 优先处理最新审查中有效的 Blocker 和 Major；
+- 遵守 SOURCE、反应堆池和反应堆工程基线，记录资料、部件、状态、近似和差距；
+- 增加或更新与修改相称的测试；
+- 运行 `./scripts/run-validation.sh`，如实区分 PASS、FAIL、NOT CONFIGURED 和
+  UNVERIFIED；
+- 页面外观或行为变化时，使用 Playwright MCP 检查规定视口、主要流程和 console；
+- 更新 `.agent/implementation-report.md`，给下一位审查者留下可验证交接。
+
+## 允许修改
+
+- 源代码、样式、测试与测试资源；
+- 项目依赖、业务构建配置；
+- 当前实现事实确有变化时的 `PROJECT.md`；
+- `.agent/implementation-report.md`；
+- 被忽略的本地实现证据。
+
+## 受保护控制面
+
+自动实现轮中不得修改：
+
+- `PROJECT_SPEC.md`、`AGENT_PROTOCOL.md`、`REVIEW_CONTRACT.md`；
+- `AGENTS.md`、`CLAUDE.md`、`.claude/`、`.codex/`、`.vscode/`；
+- `docs/`、`references/`、`.agent/roles/`；
+- 除 `implementation-report.md` 和 ignored artifacts 外的 `.agent/` 文件；
+- Agent、验证、报告和权限控制脚本；
+- Git 配置、索引、refs 和历史。
+
+只有所有者另行明确授权的 GENERAL 基础设施任务可以维护这些文件。
+
+## 禁止事项
+
+- 擅自扩大范围、降低验收标准或隐藏失败；
+- 修改历史审查或最近审查结论；
+- stage、commit、push、deploy、reset、clean、rebase、切换分支；
+- 覆盖所有者文件、读取密钥、输出环境变量或启动子 Agent；
+- 完成后自行启动审查者。
+
+父脚本在进程退出后机械验证边界、运行验证并创建本地实现检查点。
+
+## 实现报告
+
+报告至少说明目标、实际修改、处理的审查编号、验证结果、浏览器证据、风险、Git
+基准以及下一位审查者应重点检查的内容，并记录本轮实际执行器、模型和推理强度。

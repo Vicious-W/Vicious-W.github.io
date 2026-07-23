@@ -38,11 +38,12 @@ docs/methodology/        项目构建方法论
 - `docs/engineering/REACTOR_POOL_SYSTEM.md`：完整反应堆池、环境设备和连续运行；
 - `docs/engineering/REACTOR_MODEL.md`：反应堆资料、部件、状态和真实性边界。
 
-Agent 规则：
+Agent 协作：
 
-- `CLAUDE.md`：实现者；
-- `AGENTS.md`：审查者；
-- `REVIEW_CONTRACT.md`：审查格式和通过规则。
+- `AGENT_PROTOCOL.md`：角色、执行器、权限和身份分配总协议；
+- `.agent/roles/`：`GENERAL`、`IMPLEMENTER`、`REVIEWER` 三种角色契约；
+- `AGENTS.md`、`CLAUDE.md`：Codex 与 Claude Code 的薄入口，不再绑定角色；
+- `REVIEW_CONTRACT.md`：适用于任意审查执行器的报告和通过规则。
 
 ## 命令
 
@@ -55,5 +56,9 @@ npm run build
 ./scripts/agent-cycle.sh cycle
 ./scripts/agent-cycle.sh summary
 ```
+
+默认循环仍采用 Claude Code 实现、Codex 审查，但可在启动时交换角色、改用同一种
+执行器或显式指定各自模型与 effort。直接进入项目而未指定专用角色的 Agent 默认
+为 `GENERAL`。
 
 详细说明见 `docs/guides/PROJECT_COMMAND_MANUAL.md`。

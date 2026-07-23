@@ -5,6 +5,7 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENT_DIR="$ROOT_DIR/.agent"
 ARTIFACT_DIR="$AGENT_DIR/artifacts/review"
+RUN_DIR="$AGENT_DIR/artifacts/runs"
 STATE_FILE="$AGENT_DIR/state.env"
 LATEST_REVIEW="$AGENT_DIR/latest-review.md"
 HISTORY_DIR="$AGENT_DIR/review-history"
@@ -17,29 +18,92 @@ agent_runtime_init "$ROOT_DIR"
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/run-review.sh [target-commit] [base-commit]
+Usage: ./scripts/run-review.sh [options] [target-commit] [base-commit]
 
 Defaults:
   target-commit  HEAD
   base-commit    target-commit^ (or the empty tree for an initial commit)
 
-The working tree must be completely clean. The script runs validation, launches
-one Codex process in a read-only sandbox, validates the final report format, then
-updates .agent/latest-review.md and appends a history file.
+Options:
+  --agent claude|codex  Override REVIEWER_AGENT.
+  --model MODEL         Override REVIEWER_MODEL.
+  --effort LEVEL        Override REVIEWER_EFFORT.
+
+The tree must be clean. The wrapper runs validation, starts one REVIEWER with a
+read-only profile, validates the report, then installs and archives it.
 EOF
 }
 
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  usage
-  exit 0
-fi
-
-if (( $# > 2 )); then
+executor_override=""
+model_override=""
+effort_override=""
+positional=()
+while (( $# > 0 )); do
+  case "$1" in
+    --agent)
+      [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+      executor_override="$2"
+      shift 2
+      ;;
+    --model)
+      [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+      model_override="$2"
+      shift 2
+      ;;
+    --effort)
+      [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+      effort_override="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      while (( $# > 0 )); do positional+=("$1"); shift; done
+      ;;
+    -*)
+      printf 'Unknown option: %s\n\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      positional+=("$1")
+      shift
+      ;;
+  esac
+done
+if (( ${#positional[@]} > 2 )); then
   usage >&2
   exit 2
 fi
 
-mkdir -p "$ARTIFACT_DIR" "$HISTORY_DIR"
+if [[ -n "$executor_override" ]]; then
+  agent_validate_executor "$executor_override" || exit 2
+  reviewer_agent="$executor_override"
+else
+  reviewer_agent="$(agent_runtime_executor_config REVIEWER_AGENT codex)" || exit 2
+fi
+if [[ -n "$model_override" ]]; then
+  agent_validate_model "$model_override" || exit 2
+  reviewer_model="$model_override"
+else
+  reviewer_model="$(agent_runtime_model_config REVIEWER_MODEL gpt-5.6-sol)" || exit 2
+fi
+if [[ -n "$effort_override" ]]; then
+  agent_validate_effort "$effort_override" || exit 2
+  reviewer_effort="$effort_override"
+else
+  reviewer_effort="$(agent_runtime_effort_config REVIEWER_EFFORT high)" || exit 2
+fi
+
+reviewer_timeout="$(agent_runtime_config REVIEWER_TIMEOUT_SECONDS 3600 60 43200)" || exit 2
+heartbeat_seconds="$(agent_runtime_config AGENT_HEARTBEAT_SECONDS 30 5 300)" || exit 2
+termination_grace="$(agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60)" || exit 2
+runner="$ROOT_DIR/scripts/agent-runners/$reviewer_agent.sh"
+
+mkdir -p "$ARTIFACT_DIR" "$HISTORY_DIR" "$RUN_DIR"
 
 lock_owned=0
 if [[ "${AGENT_CYCLE_LOCK_HELD:-0}" != "1" ]]; then
@@ -63,8 +127,12 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
-if ! "$ROOT_DIR/scripts/agent-preflight.sh" --review-only; then
-  printf 'Codex was not started because preflight failed.\n' >&2
+if ! "$ROOT_DIR/scripts/agent-preflight.sh" \
+  --review-only \
+  --reviewer-agent "$reviewer_agent" \
+  --reviewer-model "$reviewer_model" \
+  --reviewer-effort "$reviewer_effort"; then
+  printf 'REVIEWER was not started because preflight failed.\n' >&2
   exit 6
 fi
 
@@ -72,23 +140,18 @@ dirty_status="$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)"
 if [[ -n "$dirty_status" ]]; then
   printf 'Refusing formal review because the Git working tree is not clean.\n' >&2
   printf '%s\n' "$dirty_status" >&2
-  printf 'Commit or otherwise resolve the changes yourself; this script will not modify them.\n' >&2
+  printf 'Resolve the changes yourself; this script will not modify them.\n' >&2
   exit 2
 fi
 
-if ! command -v codex >/dev/null 2>&1; then
-  printf 'codex CLI is not available on PATH.\n' >&2
+if [[ ! -x "$runner" ]]; then
+  printf 'Executor adapter is missing or not executable: %s\n' "$runner" >&2
   exit 127
 fi
 
-codex_timeout="$(agent_runtime_config CODEX_TIMEOUT_SECONDS 3600 60 43200)" || exit 2
-heartbeat_seconds="$(agent_runtime_config AGENT_HEARTBEAT_SECONDS 30 5 300)" || exit 2
-termination_grace="$(agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60)" || exit 2
-codex_model="$(agent_runtime_model_config CODEX_MODEL gpt-5.6-sol)" || exit 2
-codex_effort="$(agent_runtime_effort_config CODEX_REASONING_EFFORT high)" || exit 2
 agent_runtime_prepare_npm_cache || exit 2
 
-target_input="${1:-HEAD}"
+target_input="${positional[0]:-HEAD}"
 if ! target_commit="$(git -C "$ROOT_DIR" rev-parse --verify "$target_input^{commit}" 2>/dev/null)"; then
   printf 'Target is not a valid commit: %s\n' "$target_input" >&2
   exit 2
@@ -96,14 +159,13 @@ fi
 
 head_commit="$(git -C "$ROOT_DIR" rev-parse --verify HEAD)"
 if [[ "$target_commit" != "$head_commit" ]]; then
-  printf 'Target commit must be the currently checked-out HEAD so validation matches the reviewed code.\n' >&2
+  printf 'Target must be checked-out HEAD so validation matches the reviewed code.\n' >&2
   printf 'HEAD:   %s\nTarget: %s\n' "$head_commit" "$target_commit" >&2
-  printf 'Use a separate clean worktree if you need to review another commit.\n' >&2
   exit 2
 fi
 
-if [[ -n "${2:-}" ]]; then
-  base_input="$2"
+if [[ -n "${positional[1]:-}" ]]; then
+  base_input="${positional[1]}"
   if ! base_commit="$(git -C "$ROOT_DIR" rev-parse --verify "$base_input^{commit}" 2>/dev/null)"; then
     printf 'Base is not a valid commit: %s\n' "$base_input" >&2
     exit 2
@@ -120,18 +182,19 @@ last_reviewed_commit="$(sed -n 's/^LAST_REVIEWED_COMMIT=//p' "$STATE_FILE" 2>/de
 last_verdict="$(sed -n 's/^LAST_REVIEW_VERDICT=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 active_task_id="$(sed -n 's/^ACTIVE_TASK_ID=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 active_task_status="$(sed -n 's/^ACTIVE_TASK_STATUS=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
+last_implementer_agent="$(sed -n 's/^LAST_IMPLEMENTER_AGENT=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
+last_implementer_model="$(sed -n 's/^LAST_IMPLEMENTER_MODEL=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
+last_implementer_effort="$(sed -n 's/^LAST_IMPLEMENTER_EFFORT=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 
 [[ "$current_round" =~ ^[0-9]+$ ]] || current_round=0
 [[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || max_rounds=3
 
-# A commit after a successful review starts a new bounded cycle automatically.
-# After CHANGES_REQUIRED the counter intentionally continues across fix commits.
-if [[ "$last_verdict" == "PASS" && -n "$last_reviewed_commit" && "$target_commit" != "$last_reviewed_commit" ]]; then
+if [[ "$last_verdict" == "PASS" && -n "$last_reviewed_commit" && \
+      "$target_commit" != "$last_reviewed_commit" ]]; then
   current_round=0
 fi
-
 if (( current_round >= max_rounds )); then
-  printf 'Maximum review rounds reached (%s). Stop and ask the project owner how to proceed.\n' "$max_rounds" >&2
+  printf 'Maximum review rounds reached (%s). Ask the project owner how to proceed.\n' "$max_rounds" >&2
   exit 3
 fi
 next_round=$((current_round + 1))
@@ -142,87 +205,99 @@ if "$ROOT_DIR/scripts/run-validation.sh"; then
 else
   validation_exit=$?
   validation_status="FAIL"
-  printf 'Validation failed (exit %s); Codex will review and report the evidence.\n' "$validation_exit" >&2
+  printf 'Validation failed (exit %s); REVIEWER will report the evidence.\n' "$validation_exit" >&2
 fi
 
 review_tmp="$(mktemp /tmp/vicious-review.XXXXXX.md)"
+run_id="review-r${next_round}-$(date -u +'%Y%m%dT%H%M%SZ')-$$"
 prompt_file="$ARTIFACT_DIR/prompt-round-${next_round}.md"
-codex_log="$ARTIFACT_DIR/codex-round-${next_round}.log"
+agent_log="$ARTIFACT_DIR/${reviewer_agent}-round-${next_round}.log"
+manifest_file="$RUN_DIR/${run_id}.env"
+
+agent_write_run_manifest \
+  "$manifest_file" "$run_id" "$active_task_id" "$next_round" \
+  REVIEWER "$reviewer_agent" "$reviewer_model" "$reviewer_effort" \
+  read-only "$reviewer_timeout" "$base_commit" "$target_commit" \
+  .agent/latest-review.md
 
 cat >"$prompt_file" <<EOF
-You are the independent Codex reviewer for this repository, not the implementer.
-This is one bounded review invocation. Do not edit any repository file and do not
-attempt to call Codex recursively. The sandbox is read-only.
+You are one bounded Agent invocation with the explicitly assigned role REVIEWER,
+not IMPLEMENTER. Your executor is $reviewer_agent, model is $reviewer_model, and
+effort is $reviewer_effort. Do not infer a role from the executor name, switch
+roles, edit repository files, or start another Agent. The review profile is
+read-only and this invocation has no prior-role session.
 
-Review target commit: $target_commit
+Task: $active_task_id
+Round: $next_round of at most $max_rounds
+Review target: $target_commit
 Compare against: $base_commit
 Working tree at launch: clean
-Validation status: $validation_status (exit $validation_exit)
+Validation: $validation_status (exit $validation_exit)
 Validation summary: .agent/artifacts/validation/summary.md
+Run manifest: ${manifest_file#"$ROOT_DIR/"}
 
-Read PROJECT_SPEC.md, docs/engineering/SOURCE_SCENE.md,
+Read PROJECT.md, AGENT_PROTOCOL.md, .agent/roles/REVIEWER.md,
+PROJECT_SPEC.md, docs/engineering/SOURCE_SCENE.md,
 docs/engineering/REACTOR_POOL_SYSTEM.md, docs/engineering/REACTOR_MODEL.md,
-REVIEW_CONTRACT.md, AGENTS.md, README.md, .agent/implementation-report.md, the
-specified Git diff, related code/tests, and validation evidence. Check scope
-compliance, bugs, regressions, test adequacy, responsive behavior, main flows, and
-console errors. For SOURCE changes, verify first-interaction activation, the
-continuous operation controller, session reset, cross-system causality, grating
-support, water response, glass damage/fracture, audio activation, and locked owner
-decisions. For reactor-pool changes, verify RP-* structures and connections,
-low-power pulse preconditions, millisecond pulse timing, mechanical/water/thermal
-load paths, post-pulse heat transfer, full-power equilibrium, source/proxy labels,
-declared approximations, and gap closure. For core changes, verify source
-configuration and independent components. If the change affects page appearance
-or behavior, use Playwright MCP (not a Bash Playwright script) at the required
-viewports when available; otherwise record exactly what is unverified.
+REVIEW_CONTRACT.md, README.md, .agent/implementation-report.md, the specified
+Git diff, related code/tests, and validation evidence.
+
+Check scope compliance, bugs, regressions, test adequacy, responsive behavior,
+main flows, and console errors. For SOURCE changes, verify first-interaction
+activation, continuous operation, session reset, cross-system causality, grating,
+water, glass damage/fracture, audio, and locked decisions. For reactor-pool
+changes, verify RP-* structures and connections, pulse preconditions and timing,
+mechanical/water/thermal load paths, equilibrium, source/proxy labels,
+approximations, and gap closure. Use Playwright MCP at required viewports for
+page changes when safely available; otherwise record exactly what is unverified.
 
 Do not introduce requirements outside PROJECT_SPEC.md. Every finding must have
 evidence, impact, reproduction, expected/actual behavior, and objective acceptance
 criteria. Minor and Suggestion items do not block passing.
 
-Keep every required Markdown section heading and machine-readable marker exactly
-as specified by REVIEW_CONTRACT.md, but write the report prose and finding titles
-in Simplified Chinese so the project owner can read the handoff directly. Keep
-code identifiers, commands, paths, and VERDICT values unchanged.
-
-Output only the complete Markdown report matching REVIEW_CONTRACT.md. Include all
-required sections and exactly one standalone line containing either
-VERDICT: PASS or VERDICT: CHANGES_REQUIRED. Do not wrap the report in a code fence.
+Output only the complete Markdown report specified by REVIEW_CONTRACT.md, in
+Simplified Chinese except identifiers, commands, paths, and VERDICT values.
+The first heading must be "# Agent Review". Under "## Review metadata", include
+exactly this line:
+- Reviewer runtime: $reviewer_agent / $reviewer_model / $reviewer_effort
+Keep all required sections and exactly one standalone VERDICT: PASS or
+VERDICT: CHANGES_REQUIRED line. Do not wrap the report in a code fence.
 EOF
 
-review_prompt="$(<"$prompt_file")"
-printf 'Codex model policy: %s (reasoning effort %s)\n' "$codex_model" "$codex_effort"
+printf 'Starting REVIEWER round %s/%s\n' "$next_round" "$max_rounds"
+printf 'Runtime: %s / %s / %s\n' "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
 run_agent_process \
-  "Codex review round $next_round/$max_rounds" \
-  "$codex_timeout" "$heartbeat_seconds" "$termination_grace" "$codex_log" -- \
-  codex exec \
-    --cd "$ROOT_DIR" \
-    --model "$codex_model" \
-    --sandbox read-only \
-    --ephemeral \
-    --color never \
-    -c 'approval_policy="never"' \
-    -c "model_reasoning_effort=\"$codex_effort\"" \
-    --output-last-message "$review_tmp" \
-    "$review_prompt"
-codex_exit=$?
-if (( codex_exit != 0 )); then
-  agent_record_stop CODEX "$AGENT_RUN_REASON" "$codex_exit" "$codex_log"
-  printf 'Codex review process stopped (exit %s, reason %s). Previous review was preserved.\n' \
-    "$codex_exit" "$AGENT_RUN_REASON" >&2
-  printf 'Log: %s\n' "$codex_log" >&2
-  exit "$codex_exit"
+  "REVIEWER ($reviewer_agent) round $next_round/$max_rounds" \
+  "$reviewer_timeout" "$heartbeat_seconds" "$termination_grace" "$agent_log" -- \
+  "$runner" REVIEWER "$reviewer_model" "$reviewer_effort" "$prompt_file" "$review_tmp"
+reviewer_exit=$?
+if (( reviewer_exit != 0 )); then
+  agent_record_stop REVIEWER "$AGENT_RUN_REASON" "$reviewer_exit" "$agent_log"
+  printf 'REVIEWER stopped (exit %s, reason %s). Previous review was preserved.\n' \
+    "$reviewer_exit" "$AGENT_RUN_REASON" >&2
+  printf 'Log: %s\n' "$agent_log" >&2
+  exit "$reviewer_exit"
 fi
 
 if [[ ! -s "$review_tmp" ]]; then
-  printf 'Codex produced no final report. Previous review was preserved.\n' >&2
+  printf 'REVIEWER produced no final report. Previous review was preserved.\n' >&2
+  exit 4
+fi
+if ! grep -Fqx '# Agent Review' "$review_tmp"; then
+  printf 'Review report does not use the required title.\n' >&2
+  install -m 0644 "$review_tmp" "$ARTIFACT_DIR/candidate-invalid.md"
+  exit 4
+fi
+if ! grep -Fqx -- "- Reviewer runtime: $reviewer_agent / $reviewer_model / $reviewer_effort" \
+  "$review_tmp"; then
+  printf 'Review report does not record the assigned runtime.\n' >&2
+  install -m 0644 "$review_tmp" "$ARTIFACT_DIR/candidate-invalid.md"
   exit 4
 fi
 
 verdict_count="$(grep -Ec '^VERDICT: (PASS|CHANGES_REQUIRED)$' "$review_tmp" || true)"
 if [[ "$verdict_count" != "1" ]]; then
-  printf 'Codex report does not contain exactly one valid standalone VERDICT.\n' >&2
-  printf 'Candidate report preserved at %s/candidate-invalid.md\n' "$ARTIFACT_DIR" >&2
+  printf 'Review report does not contain exactly one valid VERDICT.\n' >&2
   install -m 0644 "$review_tmp" "$ARTIFACT_DIR/candidate-invalid.md"
   exit 4
 fi
@@ -239,10 +314,9 @@ required_sections=(
   "## Unverified areas"
   "## Required next actions"
 )
-
 for section in "${required_sections[@]}"; do
   if ! grep -Fqx "$section" "$review_tmp"; then
-    printf 'Codex report is missing required section: %s\n' "$section" >&2
+    printf 'Review report is missing required section: %s\n' "$section" >&2
     install -m 0644 "$review_tmp" "$ARTIFACT_DIR/candidate-invalid.md"
     exit 4
   fi
@@ -257,7 +331,6 @@ fi
 short_commit="$(git -C "$ROOT_DIR" rev-parse --short=12 "$target_commit")"
 archive_name="$(date -u +"%Y-%m-%d")_round-$(printf '%02d' "$next_round")_${short_commit}.md"
 archive_path="$HISTORY_DIR/$archive_name"
-
 if [[ -e "$archive_path" ]]; then
   printf 'Archive already exists; refusing to overwrite: %s\n' "$archive_path" >&2
   exit 4
@@ -276,10 +349,17 @@ state_tmp="$AGENT_DIR/state.env.tmp"
   printf 'LAST_REVIEW_VERDICT=%s\n' "$verdict"
   printf 'LAST_VALIDATION_STATUS=%s\n' "$validation_status"
   printf 'MAX_ROUNDS=%s\n' "$max_rounds"
+  printf 'LAST_IMPLEMENTER_AGENT=%s\n' "$last_implementer_agent"
+  printf 'LAST_IMPLEMENTER_MODEL=%s\n' "$last_implementer_model"
+  printf 'LAST_IMPLEMENTER_EFFORT=%s\n' "$last_implementer_effort"
+  printf 'LAST_REVIEWER_AGENT=%s\n' "$reviewer_agent"
+  printf 'LAST_REVIEWER_MODEL=%s\n' "$reviewer_model"
+  printf 'LAST_REVIEWER_EFFORT=%s\n' "$reviewer_effort"
 } >"$state_tmp"
 mv "$state_tmp" "$STATE_FILE"
 
 agent_clear_stop
 printf 'Review complete: %s\n' "$verdict"
+printf 'Runtime: %s / %s / %s\n' "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
 printf 'Latest report: %s\n' "$LATEST_REVIEW"
 printf 'Archive: %s\n' "$archive_path"
