@@ -136,11 +136,17 @@ if (( check_implementation == 1 )); then check_command claude; fi
 if (( check_review == 1 )); then check_command codex; fi
 
 required_files=(
+  README.md
   PROJECT_SPEC.md
   AGENTS.md
   CLAUDE.md
   REVIEW_CONTRACT.md
   PROJECT.md
+  docs/guides/PROJECT_COMMAND_MANUAL.md
+  docs/methodology/AI_Project_Meta_Method_v2.0_2026-07-23.md
+  references/README.md
+  archive/README.md
+  .vscode/settings.json
   .agent/next-task.md
   .agent/state.env
   .agent/runtime.env

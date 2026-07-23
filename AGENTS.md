@@ -26,8 +26,9 @@ Codex 的常规身份是独立审查者，不是业务代码实现者。
 2. `REVIEW_CONTRACT.md`：问题等级、报告格式与终止条件；
 3. `.agent/implementation-report.md`：Claude Code 本轮交接；
 4. 当前 Git 状态、指定提交及其 diff；
-5. 与修改相关的代码、测试和自动化结果；
-6. `PROJECT.md`：仅在需要技术背景或历史决策时阅读。
+5. `README.md`：项目目录地图；
+6. 与修改相关的代码、测试和自动化结果；
+7. `PROJECT.md`：仅在需要技术背景或历史决策时阅读。
 
 若上述信息相互冲突，以项目所有者最新明确指令为最高优先级，其次是 `PROJECT_SPEC.md`。不得把 `PROJECT.md` 中已经标记为历史或被推翻的路线重新当成当前要求。
 

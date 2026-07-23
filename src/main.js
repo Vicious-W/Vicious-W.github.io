@@ -1,4 +1,4 @@
-import { createReactorScene } from "./reactorScene.js";
+import { createReactorScene } from "./scenes/reactor/reactorScene.js";
 
 const root = document.documentElement;
 const cantorPath = document.querySelector("[data-cantor]");
@@ -20,7 +20,7 @@ if (heroSection && reactorCanvas) {
 // 所以先让原生 WebGL 的池面顶上，等这一层就绪再淡入接管。加载失败就停在池面上。
 if (heroSection && glassCanvas) {
   const startGlass = () => {
-    import("./glassCubes.js").then(({ createGlassCubes }) => {
+    import("./scenes/reactor/glassCubes.js").then(({ createGlassCubes }) => {
       const glass = createGlassCubes({ section: heroSection, canvas: glassCanvas, reduceMotion });
       // 玻璃层里也画了池底，底层画布再逐帧重绘就是白费一份 GPU
       if (glass && reactor && reactor.suspend) reactor.suspend();
@@ -63,7 +63,7 @@ if (liquidSection && liquidCanvas) {
   const startPond = () => {
     if (pondStarted) return;
     pondStarted = true;
-    import("./pondScene.js").then(({ createPondScene }) => {
+    import("./scenes/pond/pondScene.js").then(({ createPondScene }) => {
       createPondScene({
         section: liquidSection,
         canvas: liquidCanvas,

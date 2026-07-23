@@ -4,10 +4,10 @@ Thumbs.db
 desktop.ini
 
 # 编辑器 / IDE
-# 不带斜杠：这里误落进来的 .idea / .vscode 是**空文件**而不是目录，
-# 只写 `.idea/` 这种目录写法匹配不到它们。
+# VS Code 只提交用于保持项目视图整洁的共享设置。
 .idea
-.vscode
+.vscode/*
+!.vscode/settings.json
 
 # Claude Code 本地配置（不应提交，仅本机）
 .claude/settings.local.json

@@ -120,7 +120,7 @@ $implementation_round of at most $max_rounds).
 
 Read, in order: PROJECT_SPEC.md, CLAUDE.md, REVIEW_CONTRACT.md,
 .agent/next-task.md, .agent/latest-review.md, .agent/implementation-report.md,
-PROJECT.md, the current Git status, and all directly relevant code.
+PROJECT.md, README.md, the current Git status, and all directly relevant code.
 
 Implement the active task comprehensively. If the latest Codex verdict is
 CHANGES_REQUIRED, address every valid Blocker and Major first. Make reasonable
@@ -132,8 +132,9 @@ PROJECT.md and .agent/implementation-report.md.
 You may edit source, styles, tests, package configuration, and project progress
 documentation. The collaboration control plane is protected: do not modify
 PROJECT_SPEC.md, REVIEW_CONTRACT.md, AGENTS.md, CLAUDE.md, .gitignore,
-.claude/, .codex/, any .agent/ file other than implementation-report.md and
-ignored artifacts, or Agent/validation control scripts. Do not stage or commit:
+.claude/, .codex/, .vscode/, docs/, references/, archive/, any .agent/ file
+other than implementation-report.md and ignored artifacts, or Agent/validation
+control scripts. Do not stage or commit:
 the outer wrapper creates the Git checkpoint after validation. Never push,
 deploy, reset, clean, rebase, switch branches, delete owner files, inspect secret
 stores, or expose credentials.
@@ -199,7 +200,8 @@ fi
 
 is_protected_implementation_path() {
   case "$1" in
-    PROJECT_SPEC.md|REVIEW_CONTRACT.md|AGENTS.md|CLAUDE.md|.gitignore) return 0 ;;
+    README.md|PROJECT_SPEC.md|REVIEW_CONTRACT.md|AGENTS.md|CLAUDE.md|.gitignore) return 0 ;;
+    docs/*|references/*|archive/*|.vscode/*) return 0 ;;
     .claude/*|.codex/*) return 0 ;;
     .agent/implementation-report.md|.agent/artifacts/*) return 1 ;;
     .agent/*) return 0 ;;

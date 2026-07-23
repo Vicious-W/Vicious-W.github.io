@@ -2,6 +2,9 @@
 
 本目录是 Claude Code（实现者）与 Codex（审查者）之间的正式交接面。临时聊天不是项目状态来源。
 
+面向项目所有者的命令速查位于
+`docs/guides/PROJECT_COMMAND_MANUAL.md`；本文件只解释双 Agent 交接面本身。
+
 ## 文件职责
 
 - `latest-review.md`：Codex 最近一次正式审查；由 Codex/审查脚本替换。
@@ -41,7 +44,8 @@
 ./scripts/test-agent-runtime.sh
 ```
 
-它只启动三个假的 shell 子进程，分别模拟成功、权限拒绝和超时。
+它只启动假的 shell 子进程，模拟成功、权限拒绝、额度失败和超时，并检查活动锁与
+陈旧锁处理；不会调用真实 Claude 或 Codex。
 
 ## 分步入口
 

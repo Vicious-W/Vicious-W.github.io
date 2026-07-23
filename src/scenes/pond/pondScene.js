@@ -1,9 +1,9 @@
 import * as THREE from "three";
-import pondLandscapeUrl from "./assets/pond/pond-base-landscape.webp";
-import pondPortraitUrl from "./assets/pond/pond-base-portrait.webp";
-import fishMedakaUrl from "./assets/pond/fish-medaka-v2.webp";
-import skyLandscapeUrl from "./assets/pond/sky-reflection-landscape.webp";
-import skyPortraitUrl from "./assets/pond/sky-reflection-portrait.webp";
+import pondLandscapeUrl from "../../assets/pond/pond-base-landscape.webp";
+import pondPortraitUrl from "../../assets/pond/pond-base-portrait.webp";
+import fishMedakaUrl from "../../assets/pond/fish-medaka-v2.webp";
+import skyLandscapeUrl from "../../assets/pond/sky-reflection-landscape.webp";
+import skyPortraitUrl from "../../assets/pond/sky-reflection-portrait.webp";
 
 const vertexShader = `
   varying vec2 vUv;

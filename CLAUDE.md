@@ -11,7 +11,8 @@
 3. `.agent/latest-review.md`：最近一轮 Codex 审查；
 4. `.agent/implementation-report.md`：上一轮实现交接；
 5. `PROJECT.md`：技术决策、当前状态与历史；
-6. 当前 Git 状态、与本轮任务直接相关的代码和测试。
+6. `README.md`：项目目录地图；
+7. 当前 Git 状态、与本轮任务直接相关的代码和测试。
 
 开始修改前必须确认工作区中哪些改动属于项目所有者，不得覆盖或删除未提交修改。若目标与 `PROJECT_SPEC.md` 冲突或需要新的产品决定，停止并询问项目所有者。
 
@@ -48,6 +49,8 @@
 - 修改或删除 `.agent/review-history/` 中的 Codex 历史审查；
 - 直接改写 `.agent/latest-review.md` 的审查结论；
 - 修改 `.agent/state.env`、`.agent/next-task.md`、权限配置或 Agent 控制脚本；
+- 修改 `docs/` 方法/指南、`references/` 所有者参考、`archive/` 历史归档或
+  `.vscode/` 共享结构设置，除非所有者明确授权基础设施维护；
 - 使用破坏性 Git 命令覆盖用户修改；
 - 自动 push、force push、部署或执行无限重试循环。
 

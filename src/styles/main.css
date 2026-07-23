@@ -283,7 +283,7 @@ h1 span:last-child {
 
 .about::before {
   opacity: 0.62;
-  background: url("texture-sketch-paper.webp") center / cover no-repeat;
+  background: url("../assets/textures/texture-sketch-paper.webp") center / cover no-repeat;
   filter: grayscale(1) contrast(1.38);
   mix-blend-mode: soft-light;
 }
@@ -336,7 +336,7 @@ h1 span:last-child {
   opacity: 0.68;
   background:
     linear-gradient(105deg, rgba(15, 39, 25, 0.3), rgba(48, 76, 52, 0.08)),
-    url("texture-forest-floor.webp") center / cover no-repeat;
+    url("../assets/textures/texture-forest-floor.webp") center / cover no-repeat;
   filter: saturate(0.72) contrast(1.05) brightness(0.78);
   mix-blend-mode: luminosity;
 }
@@ -394,7 +394,7 @@ h1 span:last-child {
   padding-bottom: 34px;
   color: var(--paper-light);
   background-color: #0a5f91;
-  background-image: url("./src/assets/pond/sky-reflection-landscape.webp");
+  background-image: url("../assets/pond/sky-reflection-landscape.webp");
   background-position: center;
   background-repeat: no-repeat;
   background-size: cover;
@@ -498,7 +498,7 @@ h1 span:last-child {
 
 @media (max-aspect-ratio: 4 / 5) {
   .contact-section {
-    background-image: url("./src/assets/pond/sky-reflection-portrait.webp");
+    background-image: url("../assets/pond/sky-reflection-portrait.webp");
   }
 }
 
@@ -516,7 +516,7 @@ h1 span:last-child {
   .about__grid { grid-template-columns: 1fr; }
   .contact-section {
     min-height: 100svh;
-    background-image: url("./src/assets/pond/sky-reflection-portrait.webp");
+    background-image: url("../assets/pond/sky-reflection-portrait.webp");
     background-position: center;
   }
   .contact-section::after {
