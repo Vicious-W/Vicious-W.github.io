@@ -3,9 +3,9 @@
 IMPLEMENTATION_STATUS: REPORTED
 
 - Task: `source-reactor-pool-physics-2026-07-23`
-- Formal-cycle position: owner-directed checkpoint outside the numbered cycle; formal
-  review remains round 1 of at most 3 but is paused pending resolution of the manual-versus-
-  automatic operation conflict recorded in `PROJECT.md`
+- Formal-cycle position: owner-directed checkpoint outside the numbered cycle; the owner
+  resolved the operation decision as AUTO + MANUAL coexistence, so the next formal work is
+  implementation round 1 of at most 3
 - Base commit: `014c287ab5ea10b09acde8f5fb9f3fd469b3b0f5`
 - Checkpoint commit: `d139c6e73b9e5c2c3bbc304afa1a6a3cea2e0b6b`
   (`checkpoint: preserve owner-directed SOURCE expansion`)
@@ -34,6 +34,9 @@ Collected explicitly before implementing:
 - **Control mode: full manual operation.** The console drives a live reactor model
   (startup → withdraw rods to critical → raise power → fire a pulse → SCRAM). The old
   forced automatic 8-phase program is **removed**, not merely bypassed.
+- **Subsequent owner decision:** retain this complete MANUAL path and add AUTO for users
+  who do not operate the console. AUTO and MANUAL must share one physical state and use
+  exclusive control ownership; this decision is the next implementation scope.
 - **Console controls: all four groups** — START/SCRAM, three control rods withdraw/insert,
   pulse fire, coolant pump / mode.
 - **Lab scope: all four** — room shell, console area, plant equipment, personnel safety
