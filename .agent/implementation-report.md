@@ -3,16 +3,19 @@
 IMPLEMENTATION_STATUS: REPORTED
 
 - Task: `source-reactor-pool-physics-2026-07-23`
-- Round: 3 of at most 3 (owner-directed scope expansion)
+- Formal-cycle position: owner-directed checkpoint outside the numbered cycle; the next
+  formal review is round 1 of at most 3
 - Base commit: `014c287ab5ea10b09acde8f5fb9f3fd469b3b0f5`
-- Working tree at handoff: dirty (uncommitted; the neutral wrapper creates the checkpoint,
-  IMPLEMENTER does not stage/commit)
+- Checkpoint commit: `d139c6e73b9e5c2c3bbc304afa1a6a3cea2e0b6b`
+  (`checkpoint: preserve owner-directed SOURCE expansion`)
+- Working tree at checkpoint: clean
 - Implementer runtime: claude / opus-4.8 / (interactive owner-directed session)
 
 ## 1. Context for this round
 
-Round 2 unblocked browser verification and fixed three severe defects (kept in §7 for
-history). This round the owner directed a **scope expansion** with four requirements:
+Earlier owner-directed work unblocked browser verification and fixed three severe defects
+(kept in §7 for history). This checkpoint records a further **scope expansion** with four
+requirements:
 
 1. The scene was only the reactor pool + glass on a black void. Build a **real reactor
    laboratory** around it, fully modeled in 3-D with realistic physical processes, and add
