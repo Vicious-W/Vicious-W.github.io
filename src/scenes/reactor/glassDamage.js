@@ -12,9 +12,17 @@ import { ConvexGeometry } from "three/examples/jsm/geometries/ConvexGeometry.js"
 
 export const STAGES = ["INTACT", "MICRO_DAMAGED", "CRACKED", "FRACTURED"];
 
-const E_THRESHOLD = 0.85;      // 最低损伤冲击能量代理（低于此不损伤）
-const DAMAGE_K = 0.15;         // 调低后中等冲击需要多次累积才会跨阶段，见 .agent/artifacts/node-check.mjs
-const FRACTURE_INSTANT = 6.2;  // 单次超强冲击可直接破碎
+// —— 阈值标定（世界单位：g = 20，玻璃立方体质量 1.5，边长 1）——
+// 立方体撞静止结构（格栅/走道）时 effectiveMass = 1.5，故 e = 0.75·v²；
+// 自由落体高度 d 对应 v = sqrt(40·d)，于是 e = 30·d。参照点：
+//   落 0.4 → e≈12（阈值，拖起后正常松手不该掉耐久）
+//   落 1.5 → e≈45（明显摔一下，掉约 1/3 耐久）
+//   落 4.0 → e≈120（狠摔，一次直接碎）
+// 早前的 0.85 / 6.2 标定意味着"落 0.21 m 即刻粉碎"，会让整场玻璃在加载后
+// 自行连锁破碎（本轮浏览器验证实测）。
+const E_THRESHOLD = 12;        // 最低损伤冲击能量代理（低于此不损伤）
+const DAMAGE_K = 0.010;        // 约 3 次"落 1.5"级撞击走完 INTACT→FRACTURED
+const FRACTURE_INSTANT = 120;  // 单次超强冲击可直接破碎
 const MAX_CRACKS = 7;
 
 // impactEnergy = 0.5 * effectiveMass * normalRelativeSpeed^2（SOURCE_SCENE.md §7.2 的最低代理）
@@ -58,7 +66,7 @@ export function registerImpact(damage, contact) {
   if (damage.stage === "CRACKED" || damage.stage === "MICRO_DAMAGED") {
     const u = 0.5 + contact.localPoint.x + contact.localPoint.z * 0.3;
     const v = 0.5 + contact.localPoint.y + contact.localPoint.z * 0.3;
-    damage.cracks.push({ u, v, mag: Math.min(1, e / 3) });
+    damage.cracks.push({ u, v, mag: Math.min(1, e / 60) }); // 与新能量标定同步
     if (damage.cracks.length > MAX_CRACKS) damage.cracks.shift();
     cracked = true;
   }

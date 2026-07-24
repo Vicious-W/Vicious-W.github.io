@@ -90,7 +90,9 @@ export function createReactorModel({ reduceMotion }) {
   const bridgeMat = track(new THREE.MeshStandardMaterial({ color: 0x323b44, metalness: 0.7, roughness: 0.55 }));
   const thimbleMat = track(new THREE.MeshStandardMaterial({ color: 0x44525c, metalness: 0.75, roughness: 0.5 }));
   const pneumaticMat = track(new THREE.MeshStandardMaterial({ color: 0x4a4038, metalness: 0.6, roughness: 0.5 }));
-  const cableMat = track(new THREE.MeshStandardMaterial({ color: 0x141414, metalness: 0.1, roughness: 0.7 }));
+  // 近黑的电缆在中灰厂房里会退化成"硬黑线"，看起来像渲染缺陷；改成深灰橡胶护套 +
+  // 少量金属感，远处才读得出是电缆而不是划痕。
+  const cableMat = track(new THREE.MeshStandardMaterial({ color: 0x2c3138, metalness: 0.3, roughness: 0.6 }));
   const conduitMat = track(new THREE.MeshStandardMaterial({ color: 0x6a7078, metalness: 0.75, roughness: 0.4 }));
   const gratingBarMat = track(new THREE.MeshStandardMaterial({ color: 0x9fb0bb, metalness: 0.85, roughness: 0.32 }));
   const gratingBackingMat = track(new THREE.MeshPhysicalMaterial({
@@ -519,22 +521,22 @@ export function createReactorModel({ reduceMotion }) {
     applyStatic(sessionState);
   };
 
-  const setScale = shortExtent => {
-    const s = THREE.MathUtils.clamp(shortExtent / 8, 0.55, 1.2);
-    group.scale.setScalar(s);
-  };
-
   const dispose = () => {
     disposables.forEach(d => { if (d && d.dispose) d.dispose(); });
     group.clear();
   };
 
+  // 反应堆模型不再随视口缩放：物理体与可见几何共用同一套世界坐标，取景完全交给
+  // 相机距离。此前 group.scale 会让物理格栅半径（固定 3.4）与可见格栅（缩放后）
+  // 对不上，窄视口下玻璃会浮在没有格栅的位置。
   return {
     group,
     update,
-    setScale,
     dispose,
     grating: { radius: POOL_RADIUS, y: GRATE_Y, thickness: 0.16, visual: gratingGroup, restY: GRATE_Y },
+    // RP-001 上部作业面：池口与栏杆之间的环形走道（可见几何在 y = -0.02），
+    // 栏杆立于 railRadius，是玻璃向外的真实边界。
+    deck: { innerRadius: POOL_RADIUS, outerRadius: WALK_R, y: -0.02, railRadius: WALK_R - 0.08, railHeight: 0.58 },
     bridgeAnchor: { y: BRIDGE_Y },
     corePosition: { x: 0, y: CORE_TOP, z: 0 },
     poolBounds: { radius: POOL_RADIUS, depth: POOL_DEPTH, surfaceY: WATER_SURFACE_Y, floorY: -POOL_DEPTH },

@@ -1,292 +1,330 @@
-// SOURCE 会话与连续运行控制器。
+// SOURCE 反应堆运行控制器 —— 由操作员手动驱动的实时反应堆模型。
 //
-// 定义 REACTOR_POOL_SYSTEM.md §4 的八个可测试阶段：
-//   INTERLOCKED_RESET → AUXILIARIES_READY → LOW_POWER_APPROACH → PULSE_ARMED
-//   → PULSE → POST_PULSE_HEAT_TRANSFER → STEADY_POWER_ASCENT → FULL_POWER_EQUILIBRIUM
+// 本模块只负责“反应堆状态如何随操作员指令和物理反馈演化”，不接触 three.js /
+// cannon-es 对象；reactorModel、waterSystem、controlConsole、physicalScene 读取
+// 本模块产出的状态并各自渲染/求解。
 //
-// 本模块只负责“状态如何演化”，不接触 three.js / cannon-es 对象；reactorModel、
-// waterSystem、physicalScene 读取本模块产出的状态并各自渲染/求解。
+// —— 物理层级（教育性视觉代理，不是核工程计算，但保持真实的因果结构）——
 //
-// 求解层级标签（REACTOR_POOL_SYSTEM.md §8）：
-//   - 棒位是明确的目标追踪运动（TUNED_PRESENTATION：把资料给出的真实速度/时长压缩到
-//     网页可观察的秒级，但顺序、方向和相对快慢关系不变）；
-//   - reactivityProxy/powerProxy/temperatureProxy/coolantFlowProxy 是一阶弛豫代理
-//     （REALTIME_PROXY，不是点堆动力学或热工水力求解）；
-//   - PULSE 的功率峰值使用解析闭式高斯函数，在阶段内的任意采样时刻都能算出正确值，
-//     不依赖逐帧积分，因此不会因帧率变化丢失峰值或改变脉冲能量（毫秒脉冲层）；
-//   - 脉冲注入燃料的总能量在阶段切换时一次性以闭式常数加入，同样不随帧率变化。
+// 1. 反应性（美元 $ = ρ/β）：
+//      ρ$ = 控制棒价值 - 停堆负偏置 - 燃料温度负反馈
+//    控制棒用真实的 S 形积分价值曲线 sc(p)=p-sin(2πp)/2π（微分价值在行程中段最大）。
+//    SHIM+REG 全提也低于瞬发临界（1$），即靠这两根棒无法把堆推到瞬发临界——真实
+//    研究堆的安全特性；只有 TRANS 气动弹出才能越过瞬发临界产生脉冲。
 //
-// 所有数值都是教育性视觉代理，不是核工程计算结果。
+// 2. 点堆动力学（单缓发组，按 $ 归一化，固定子步长积分，帧率无关）：
+//      dn/dt = P*(ρ$-1)*n + λ*C + S
+//      dC/dt = P*n - λ*C
+//    ρ$<1（瞬发临界以下）时反应堆周期由缓发中子决定（数秒量级，稳定可控）；
+//    ρ$≈0 时功率保持；ρ$>0 时按周期上升；SCRAM 使 ρ$ 深负、功率快速下降。
+//    时间常数经 TUNED_PRESENTATION 压缩到网页可观察的秒级，因果顺序不变。
+//
+// 3. UZrH 瞬发负温度反馈：燃料温度升高→ρ$ 下降，功率自限——研究堆固有安全性，
+//    也是脉冲能自终止的原因（SOURCE_VERIFIED 方向，REALTIME_PROXY 幅度）。
+//
+// 4. 脉冲：PULSE 模式下从低功率近临界点火，TRANS 气动弹出瞬间注入 >1$ 的正反应性，
+//    用 Fuchs–Nordheim 绝热脉冲模型的解析形式给出功率尖峰（峰高、宽度、释放能量都
+//    随越瞬发临界的反应性变化），沉积的燃料能量经负反馈在毫秒内终止脉冲。解析求值，
+//    不做刚性 ODE 积分，帧率无关。
+//
+// 5. 热工：燃料→池水传热 + 自然对流/泵驱动的池水散热；池水温度代理驱动切伦科夫和
+//    自然对流着色。
 
 import * as THREE from "three";
 
 const clamp = THREE.MathUtils.clamp;
 
-export const PHASES = [
-  "INTERLOCKED_RESET",
-  "AUXILIARIES_READY",
-  "LOW_POWER_APPROACH",
-  "PULSE_ARMED",
-  "PULSE",
-  "POST_PULSE_HEAT_TRANSFER",
-  "STEADY_POWER_ASCENT",
-  "FULL_POWER_EQUILIBRIUM"
-];
+// 运行模式（供控制台/调试读取）
+export const MODES = ["SHUTDOWN", "OPERATE", "PULSE"];
 
-// 阶段时长（秒）。INTERLOCKED_RESET 和 FULL_POWER_EQUILIBRIUM 为 Infinity（等待
-// 外部事件/无限期保持）。数值是 TUNED_PRESENTATION：把资料记录的真实时间尺度
-// （棒以 0.5 cm/s 抽出需要数分钟、池水升温需要数小时）压缩到可观察的秒级，但保持
-// 「棒位变化快于功率响应，功率响应快于池水整体升温」的相对时间尺度顺序。
-const DURATIONS = {
-  INTERLOCKED_RESET: Infinity,
-  AUXILIARIES_READY: 2.2,
-  LOW_POWER_APPROACH: 5.5,
-  PULSE_ARMED: 1.4,
-  PULSE: 1.0,
-  POST_PULSE_HEAT_TRANSFER: 4.5,
-  STEADY_POWER_ASCENT: 6.0,
-  FULL_POWER_EQUILIBRIUM: Infinity
-};
+// —— 点堆动力学常量（$ 归一化，TUNED_PRESENTATION 时间尺度）——
+const PROMPT_RATE = 8.0;   // β/Λ 的代理 (1/s)，决定瞬发响应速度
+const LAMBDA = 0.8;        // 缓发前驱核衰变常数代理 (1/s)，压缩自 ~0.08 以加快可观察响应
+const SOURCE = 1.2e-5;     // 中子源项：保证停堆时有可观测的源功率（启动源）
+const KIN_SUBSTEP = 1 / 240; // 固定子步长，保证低帧率下积分稳定、结果帧率无关
 
-// —— 棒物理常量（REALTIME_PROXY，压缩自 §3.2 的 0.5 cm/s 齿条速度与 TRANS 气动行程）——
-const SHIM_SPEED = 1 / 5.0;      // 全行程秒数（LOW_POWER_APPROACH 内完成粗抽）
-const REG_SPEED = 1 / 5.5;
-const SHIM_ASCENT_SPEED = 1 / 7.0;
-const REG_ASCENT_SPEED = 1 / 2.2;
-const TRANS_EJECT_TIME = 0.12;   // TRANS 气动瞬发抽出耗时（秒），刻意远快于其余棒
-const TRANS_DWELL = 0.15;        // 抽出到底后的短暂停留
-const TRANS_REINSERT_TIME = 1.1; // 安全逻辑控制下的插入回位
+// —— 控制棒（美元价值）——
+const ROD_BIAS = 3.2;      // 全棒插入时的停堆负偏置（$）；SHIM+REG 全提=3.7>bias 可达临界
+const ROD_WORTH = { SHIM: 2.5, REG: 1.2, TRANS: 3.0 }; // 各棒满行程积分价值（$）
+// 手动驱动速率（行程分数/秒，TUNED_PRESENTATION，压缩自 ~0.5 cm/s 齿条）
+const ROD_DRIVE_RATE = 0.14;
+const SCRAM_RATE = 3.0;    // SCRAM/停堆插棒速率（远快于手动提棒）
+// TRANS 气动脉冲时序（秒）
+const TRANS_EJECT_TIME = 0.12;
+const TRANS_DWELL = 0.15;
+const TRANS_REINSERT_TIME = 1.1;
 
-// —— 反应性/功率模型常量（REALTIME_PROXY）——
-const R_SHIM = 0.7;
-const R_REG = 0.3;
-const CRIT_THRESHOLD = 0.40;      // 低于此反应性代理不产生可观察稳态功率
-const REF_REACTIVITY = 0.795;     // 250 kW 运行棒位对应的参考反应性代理
-const FEEDBACK_GAIN = 0.35;       // UZrH 负温度反馈（方向为 SOURCE_VERIFIED，幅度为 REALTIME_PROXY）
-const POWER_LAG = 0.9;            // powerProxy 追踪 target 的弛豫速率 (1/s)
-const LOW_POWER_TARGET = 0.00035; // 脉冲前功率上限代理，< 100 W / 250 kW 的资料约束
+// —— 温度反馈与热工 ——
+const ALPHA_FB = 0.70;     // UZrH 负温度反馈系数（$/单位燃料温度代理）
+const K_HEAT = 0.30;       // 功率→燃料温升（较小→满功率燃料不过热，留出功率空间）
+const K_FT = 0.60;         // 燃料→池水导热
+const K_COOL = 0.42;       // 池水→冷源排热，随冷却流量增强（泵/自然对流驱动）
+const PUMP_FLOW = 0.6;     // 一回路泵开时的强制流量代理
+const NATCIRC = 0.28;      // 自然对流系数（随燃料-池水温差增强）
+const POOL_AMBIENT = 0.12; // 池水环境基线温度代理
 
-const FUEL_RATE = 0.6;
-const POOL_RATE = 0.05;
-const FLOW_RATE = 0.4;
-const PULSE_FUEL_BUMP = 0.62;     // 闭式脉冲能量注入燃料代理的固定增量
-
-// PULSE 阶段内解析高斯（对相位内实时秒 t 求值，不做逐帧积分）
-const PULSE_T0 = TRANS_EJECT_TIME + TRANS_DWELL * 0.3;
-const PULSE_SIGMA = 0.045;
-
-function gaussian(t, t0, sigma) {
-  const d = (t - t0) / sigma;
-  return Math.exp(-0.5 * d * d);
-}
-
-function moveToward(current, target, maxDelta) {
-  const d = target - current;
-  if (Math.abs(d) <= maxDelta) return target;
-  return current + Math.sign(d) * maxDelta;
+// S 形积分棒价值：p=0→0，p=1→1，微分价值在中段最大
+function rodShape(p) {
+  return clamp(p - Math.sin(2 * Math.PI * p) / (2 * Math.PI), 0, 1);
 }
 
 export function createSessionController({ reduceMotion } = {}) {
   const state = {
-    phase: "INTERLOCKED_RESET",
-    phaseElapsed: 0,
+    // 会话
     unlocked: false,
     sceneClockRunning: false,
-    gratingLocked: true, // S-003：格栅始终放下并锁定，本轮运行程序不解锁它
+    gratingLocked: true,       // S-003：格栅始终放下并锁定
+
+    // 运行
+    mode: "SHUTDOWN",
+    scrammed: true,            // 加载即停堆（联锁），首次交互只解锁时钟/音频，不启堆
+    pumpOn: false,
+
+    // 控制棒：pos 行程分数 0..1，vel 手动驱动速度
     rod: {
-      SHIM: { pos: 0, target: 0 },
-      TRANS: { pos: 0, target: 0 },
-      REG: { pos: 0, target: 0 }
+      SHIM: { pos: 0, target: 0, vel: 0 },
+      TRANS: { pos: 0, target: 0, vel: 0 },
+      REG: { pos: 0, target: 0, vel: 0 }
     },
-    reactivityProxy: 0,
-    powerProxy: 0,          // 0..1 归一化，代表 0..250 kW 稳态标度
-    pulsePowerProxy: 0,      // 0..1 归一化，代表 0..250 MW 脉冲标度（独立通道，见模块顶部注释）
+
+    // 反应堆物理
+    reactivityProxy: -ROD_BIAS, // 净反应性（$），供控制台仪表
+    rodReactivity: 0,           // 仅控制棒贡献（$）
+    powerProxy: 0,              // 稳态功率通道 0..~1.1，代表 0..250 kW
+    pulsePowerProxy: 0,         // 脉冲功率通道 0..1，代表 0..250 MW（独立标度）
+    period: Infinity,           // 反应堆周期代理（s），供仪表（正=上升，负=下降）
     fuelTemperatureProxy: 0,
-    poolTemperatureProxy: 0.15,
-    coolantFlowProxy: 0.1,
+    poolTemperatureProxy: POOL_AMBIENT,
+    coolantFlowProxy: 0.0,
+
+    // 脉冲
     pulseId: 0,
     pulseArmed: false,
-    scramState: "none",
-    transPulseClock: null // PULSE 进入后开始计时，跨越 PULSE→POST_PULSE 边界
+    pulse: null                // { clock, peak, sigma, t0, deposited }
   };
 
-  // 事件队列：unlock() 和 update() 都可能 emit；update() 在末尾“取走并清空”，
-  // 这样 unlock() 内产生的首个 phase_enter 事件不会在下一次 update() 开头被提前清掉。
+  // 点堆内部量（n 与 powerProxy 同步，C 为缓发前驱代理）
+  let nPop = 0;
+  let cPrec = 0;
+  let kinAccum = 0;
+
   let pendingEvents = [];
   const emit = (type, payload) => pendingEvents.push({ type, ...payload });
+  const drain = () => { const out = pendingEvents; pendingEvents = []; return out; };
 
-  const enterPhase = (name) => {
-    state.phase = name;
-    state.phaseElapsed = 0;
-    emit("phase_enter", { phase: name });
-    if (name === "PULSE") {
-      state.pulseId += 1;
-      state.transPulseClock = 0;
-      emit("pulse_start", { pulseId: state.pulseId });
-    }
-    if (name === "PULSE_ARMED") state.pulseArmed = true;
-    if (name === "POST_PULSE_HEAT_TRANSFER") state.pulseArmed = false;
-  };
-
+  // —— 首次交互门：解锁音频/时钟，但不启堆（仍停堆等待操作员）——
   const unlock = () => {
     if (state.unlocked) return;
     state.unlocked = true;
     state.sceneClockRunning = true;
-    enterPhase("AUXILIARIES_READY");
+    emit("unlocked", {});
   };
 
+  // —— 操作员指令 ——
+  const startup = () => {
+    // 复位联锁并进入运行准备：清除 SCRAM，转入 OPERATE。棒仍在，由操作员提出。
+    if (!state.unlocked) return;
+    state.scrammed = false;
+    if (state.mode === "SHUTDOWN") state.mode = "OPERATE";
+    emit("startup", {});
+  };
+
+  const scram = () => {
+    state.scrammed = true;
+    state.mode = "SHUTDOWN";
+    state.pulseArmed = false;
+    for (const k in state.rod) { state.rod[k].vel = 0; state.rod[k].target = 0; }
+    emit("scram", {});
+  };
+
+  const setMode = (mode) => {
+    if (state.scrammed || !state.unlocked) return;
+    if (mode !== "OPERATE" && mode !== "PULSE") return;
+    // 进入脉冲模式前不改变棒位；只有点火时才弹 TRANS。
+    state.mode = mode;
+    state.pulseArmed = mode === "PULSE";
+    emit("mode", { mode });
+  };
+
+  const pumpToggle = () => {
+    state.pumpOn = !state.pumpOn;
+    emit("pump", { on: state.pumpOn });
+  };
+
+  // 手动棒驱动：dir=+1 提出，-1 插入；松开调用 rodStop
+  const rodStart = (name, dir) => {
+    if (state.scrammed || !state.rod[name]) return;
+    if (name === "TRANS" && state.mode === "PULSE") return; // 脉冲模式 TRANS 由气动机构控制
+    state.rod[name].vel = dir * ROD_DRIVE_RATE;
+  };
+  const rodStop = (name) => { if (state.rod[name]) state.rod[name].vel = 0; };
+
+  // 脉冲点火：仅 PULSE 模式、未停堆、低功率、TRANS 在座时允许
+  const pulseFire = () => {
+    if (state.mode !== "PULSE" || state.scrammed) return;
+    if (state.pulse) return;                       // 已有脉冲进行中
+    if (state.powerProxy > 0.06) return;           // 必须从低功率触发（资料约束）
+    if (state.rod.TRANS.pos > 0.02) return;        // TRANS 必须在座
+    // 弹出瞬间的越瞬发临界反应性（$）：当前棒反应性 + TRANS 满价值 - 1（瞬发临界）
+    const rodNow = rodReactivityOf(state.rod);
+    const rhoInsert = rodNow + ROD_WORTH.TRANS - ROD_BIAS
+      - ALPHA_FB * state.fuelTemperatureProxy;      // 净 ρ$（含反馈）
+    const excess = Math.max(0.05, rhoInsert - 1);   // 越瞬发临界的 $ 数
+    // Fuchs–Nordheim 定性关系：峰高随 excess² 增长、脉宽随 excess 收窄、
+    // 释放能量随 excess 增长（都归一化到可观察范围）。
+    state.pulse = {
+      clock: 0,
+      t0: TRANS_EJECT_TIME + TRANS_DWELL * 0.35,
+      peak: clamp(0.25 + 0.32 * excess * excess, 0, 1),
+      sigma: clamp(0.075 / (0.6 + excess), 0.02, 0.09),
+      fuelBump: clamp(0.28 + 0.16 * excess, 0, 0.9),
+      deposited: false
+    };
+    state.pulseId += 1;
+    emit("pulse_start", { pulseId: state.pulseId, excess });
+  };
+
+  function rodReactivityOf(rod) {
+    return ROD_WORTH.SHIM * rodShape(rod.SHIM.pos)
+      + ROD_WORTH.REG * rodShape(rod.REG.pos)
+      + ROD_WORTH.TRANS * rodShape(rod.TRANS.pos);
+  }
+
+  // —— 每帧：棒运动 ——
   function stepRods(dt) {
     const r = state.rod;
-    switch (state.phase) {
-      case "AUXILIARIES_READY": {
-        // 机构确认动作：小幅摆动确认后回零，不构成真正棒位变化。
-        const p = clamp(state.phaseElapsed / DURATIONS.AUXILIARIES_READY, 0, 1);
-        const twitch = Math.sin(p * Math.PI) * 0.03;
-        r.SHIM.pos = twitch; r.REG.pos = twitch * 0.6; r.TRANS.pos = 0;
-        break;
+    if (state.scrammed) {
+      for (const k in r) r[k].pos = Math.max(0, r[k].pos - SCRAM_RATE * dt);
+      return;
+    }
+    // 手动驱动（TRANS 在脉冲模式由气动时序接管）
+    for (const k in r) {
+      if (k === "TRANS" && state.pulse) continue;
+      if (r[k].vel !== 0) r[k].pos = clamp(r[k].pos + r[k].vel * dt, 0, 1);
+    }
+    // TRANS 气动时序（脉冲进行中）
+    if (state.pulse) {
+      const t = state.pulse.clock;
+      if (t < TRANS_EJECT_TIME) {
+        r.TRANS.pos = clamp(t / TRANS_EJECT_TIME, 0, 1);
+      } else if (t < TRANS_EJECT_TIME + TRANS_DWELL) {
+        r.TRANS.pos = 1;
+      } else {
+        const rt = (t - TRANS_EJECT_TIME - TRANS_DWELL) / TRANS_REINSERT_TIME;
+        r.TRANS.pos = clamp(1 - rt, 0, 1);
       }
-      case "LOW_POWER_APPROACH": {
-        r.SHIM.target = 0.5;
-        r.REG.target = 0.35;
-        r.SHIM.pos = moveToward(r.SHIM.pos, r.SHIM.target, SHIM_SPEED * dt);
-        r.REG.pos = moveToward(r.REG.pos, r.REG.target, REG_SPEED * dt);
-        r.TRANS.pos = 0;
-        break;
-      }
-      case "PULSE_ARMED": {
-        // 其余棒保持不动；TRANS 只做压力就绪的视觉确认（不改变棒位）。
-        r.TRANS.pos = 0;
-        break;
-      }
-      case "PULSE": {
-        const t = state.transPulseClock;
-        if (t < TRANS_EJECT_TIME) {
-          r.TRANS.pos = clamp(t / TRANS_EJECT_TIME, 0, 1);
-        } else if (t < TRANS_EJECT_TIME + TRANS_DWELL) {
-          r.TRANS.pos = 1;
-        } else {
-          const rt = (t - TRANS_EJECT_TIME - TRANS_DWELL) / TRANS_REINSERT_TIME;
-          r.TRANS.pos = clamp(1 - rt, 0, 1);
-        }
-        break;
-      }
-      case "POST_PULSE_HEAT_TRANSFER": {
-        if (state.transPulseClock !== null) {
-          const t = state.transPulseClock;
-          const rt = (t - TRANS_EJECT_TIME - TRANS_DWELL) / TRANS_REINSERT_TIME;
-          r.TRANS.pos = clamp(1 - rt, 0, 1);
-          if (rt >= 1) state.transPulseClock = null;
-        }
-        break;
-      }
-      case "STEADY_POWER_ASCENT": {
-        r.SHIM.target = 0.9;
-        const fine = 0.55 + Math.sin(state.phaseElapsed * 1.6) * 0.08;
-        r.REG.target = fine;
-        r.SHIM.pos = moveToward(r.SHIM.pos, r.SHIM.target, SHIM_ASCENT_SPEED * dt);
-        r.REG.pos = moveToward(r.REG.pos, r.REG.target, REG_ASCENT_SPEED * dt);
-        r.TRANS.pos = 0;
-        break;
-      }
-      case "FULL_POWER_EQUILIBRIUM": {
-        r.SHIM.target = 0.9 + Math.sin(state.phaseElapsed * 0.05) * 0.01;
-        const fine = 0.55 + Math.sin(state.phaseElapsed * 0.9) * 0.05;
-        r.REG.target = fine;
-        r.SHIM.pos = moveToward(r.SHIM.pos, r.SHIM.target, SHIM_ASCENT_SPEED * dt * 0.4);
-        r.REG.pos = moveToward(r.REG.pos, r.REG.target, REG_ASCENT_SPEED * dt);
-        r.TRANS.pos = 0;
-        break;
-      }
-      default:
-        break;
+    } else if (state.mode !== "PULSE") {
+      // OPERATE 下 TRANS 保持在座
+      r.TRANS.pos = Math.max(0, r.TRANS.pos - SCRAM_RATE * dt);
     }
   }
 
-  function stepThermalAndPower(dt) {
-    const r = state.rod;
-    state.reactivityProxy = R_SHIM * r.SHIM.pos + R_REG * r.REG.pos - FEEDBACK_GAIN * state.fuelTemperatureProxy;
+  // —— 点堆动力学（固定子步长）——
+  function stepKinetics() {
+    const rodR = rodReactivityOf(state.rod);
+    state.rodReactivity = rodR;
+    // 脉冲进行中，稳态通道的反应性不含 TRANS 的爆发贡献（脉冲走独立解析通道），
+    // 用在座 SHIM/REG + 反馈评估稳态背景。
+    const rodSteady = state.pulse
+      ? ROD_WORTH.SHIM * rodShape(state.rod.SHIM.pos) + ROD_WORTH.REG * rodShape(state.rod.REG.pos)
+      : rodR;
+    const rho = rodSteady - ROD_BIAS - ALPHA_FB * state.fuelTemperatureProxy; // $
+    state.reactivityProxy = rho;
 
-    let powerTarget;
-    if (state.phase === "LOW_POWER_APPROACH" || state.phase === "PULSE_ARMED") {
-      const p = clamp(state.phaseElapsed / DURATIONS[state.phase], 0, 1);
-      powerTarget = LOW_POWER_TARGET * (state.phase === "LOW_POWER_APPROACH" ? p : 1);
-    } else if (state.phase === "PULSE" || state.phase === "AUXILIARIES_READY" || state.phase === "INTERLOCKED_RESET") {
-      powerTarget = 0;
+    // 单缓发组点堆，$ 归一化，显式欧拉 @ 固定子步长
+    const dn = (PROMPT_RATE * (rho - 1) * nPop + LAMBDA * cPrec + SOURCE) * KIN_SUBSTEP;
+    const dc = (PROMPT_RATE * nPop - LAMBDA * cPrec) * KIN_SUBSTEP;
+    nPop = Math.max(0, nPop + dn);
+    cPrec = Math.max(0, cPrec + dc);
+    // 稳态功率通道上限，避免 OPERATE 下数值意外发散
+    nPop = Math.min(nPop, 1.4);
+  }
+
+  // —— 脉冲解析通道 ——
+  function stepPulse(dt) {
+    if (!state.pulse) {
+      // 脉冲通道自然衰减到 0
+      state.pulsePowerProxy += (0 - state.pulsePowerProxy) * clamp(6 * dt, 0, 1);
+      return;
+    }
+    const p = state.pulse;
+    p.clock += dt;
+    const d = (p.clock - p.t0) / p.sigma;
+    state.pulsePowerProxy = p.peak * Math.exp(-0.5 * d * d);
+    // 峰后一次性沉积燃料能量→负反馈（脉冲自终止的物理来源）
+    if (!p.deposited && p.clock >= p.t0) {
+      state.fuelTemperatureProxy += p.fuelBump;
+      p.deposited = true;
+      emit("pulse_energy_deposited", { amount: p.fuelBump });
+    }
+    // 机械/水体耦合事件（经桥架/格栅传给玻璃，见 physicalScene）
+    if (!p._eject && p.clock >= TRANS_EJECT_TIME) {
+      p._eject = true;
+      emit("trans_eject_impulse", { magnitude: 1 });
+      emit("trans_underwater_impulse", { magnitude: 1 });
+    }
+    const seatT = TRANS_EJECT_TIME + TRANS_DWELL + TRANS_REINSERT_TIME;
+    if (!p._reseat && p.clock >= seatT) {
+      p._reseat = true;
+      emit("trans_reseat_impulse", { magnitude: 0.35 });
+    }
+    if (p.clock >= seatT + 0.4) {
+      state.pulse = null;
+      state.pulsePowerProxy = 0;
+      emit("pulse_end", { pulseId: state.pulseId });
+    }
+  }
+
+  // —— 热工 ——
+  function stepThermal(dt) {
+    state.powerProxy = nPop;
+
+    const flow = (state.pumpOn ? PUMP_FLOW : 0)
+      + NATCIRC * clamp(state.fuelTemperatureProxy - state.poolTemperatureProxy, 0, 1);
+    state.coolantFlowProxy += (clamp(flow, 0, 1) - state.coolantFlowProxy) * clamp(2.5 * dt, 0, 1);
+
+    // 燃料温度：功率加热 - 向池水导热（脉冲的一次性沉积在 stepPulse 里已加）
+    const qFuelToPool = K_FT * (state.fuelTemperatureProxy - state.poolTemperatureProxy);
+    const dTfuel = (K_HEAT * state.powerProxy - qFuelToPool) * dt;
+    state.fuelTemperatureProxy = Math.max(0, state.fuelTemperatureProxy + dTfuel);
+
+    // 池水温度：从燃料导入的热 - 经冷却回路排到冷源（排热速率随冷却流量增强，
+    // 这才是泵/自然对流的真实作用：把池水的热带走。开泵→排热增强→池水更凉→燃料更凉
+    // →功率略升，是正确的因果链）。
+    const qPoolToSink = K_COOL * (0.2 + state.coolantFlowProxy) * (state.poolTemperatureProxy - POOL_AMBIENT);
+    const dTpool = (qFuelToPool - qPoolToSink) * dt;
+    state.poolTemperatureProxy = clamp(state.poolTemperatureProxy + dTpool, POOL_AMBIENT * 0.5, 1.2);
+  }
+
+  // 反应堆周期代理（供仪表）：由稳态功率的对数变化率估计
+  let lastPower = 0;
+  function updatePeriod(dt) {
+    const p = state.powerProxy;
+    if (p > 1e-4 && lastPower > 1e-4 && dt > 0) {
+      const rate = (Math.log(p) - Math.log(lastPower)) / dt;
+      state.period = Math.abs(rate) < 1e-3 ? Infinity : 1 / rate;
     } else {
-      const raw = (state.reactivityProxy - CRIT_THRESHOLD) / (REF_REACTIVITY - CRIT_THRESHOLD);
-      powerTarget = Math.pow(clamp(raw, 0, 1.05), 1.4);
+      state.period = Infinity;
     }
-    state.powerProxy += (powerTarget - state.powerProxy) * clamp(POWER_LAG * dt, 0, 1);
-
-    // 脉冲功率通道：只在 PULSE 阶段由解析高斯驱动，闭式求值不依赖帧率。
-    if (state.phase === "PULSE" && state.transPulseClock !== null) {
-      state.pulsePowerProxy = gaussian(state.transPulseClock, PULSE_T0, PULSE_SIGMA);
-    } else {
-      state.pulsePowerProxy += (0 - state.pulsePowerProxy) * clamp(4 * dt, 0, 1);
-    }
-
-    const fuelTarget = state.powerProxy * 0.5;
-    state.fuelTemperatureProxy += (fuelTarget - state.fuelTemperatureProxy) * clamp(FUEL_RATE * dt, 0, 1);
-
-    const poolTarget = clamp(0.15 + state.powerProxy * 0.6 - state.coolantFlowProxy * 0.15, 0.1, 0.85);
-    state.poolTemperatureProxy += (poolTarget - state.poolTemperatureProxy) * clamp(POOL_RATE * dt, 0, 1);
-
-    const ascentActive = state.phase === "STEADY_POWER_ASCENT" || state.phase === "FULL_POWER_EQUILIBRIUM";
-    const flowTarget = 0.12 + clamp(state.fuelTemperatureProxy - state.poolTemperatureProxy, 0, 1) * 0.5
-      + (ascentActive ? 0.35 : 0);
-    state.coolantFlowProxy += (flowTarget - state.coolantFlowProxy) * clamp(FLOW_RATE * dt, 0, 1);
+    lastPower = p;
   }
-
-  function checkTransition() {
-    const dur = DURATIONS[state.phase];
-    if (dur === Infinity) return;
-    if (state.phaseElapsed < dur) return;
-    const idx = PHASES.indexOf(state.phase);
-    if (idx < 0 || idx >= PHASES.length - 1) return;
-    enterPhase(PHASES[idx + 1]);
-  }
-
-  const drain = () => { const out = pendingEvents; pendingEvents = []; return out; };
 
   const update = (dt) => {
     if (!state.unlocked) return drain();
-    state.phaseElapsed += dt;
-    if (state.transPulseClock !== null) state.transPulseClock += dt;
-
-    // 脉冲事件：机构反力经桥架/格栅传给玻璃，只在 TRANS 抽出瞬间触发一次固定冲量，
-    // 不给玻璃随机速度。回位到座时再触发一次较小的止挡冲量。
-    if (state.phase === "PULSE" && state.transPulseClock !== null) {
-      if (!state._ejectFired && state.transPulseClock >= TRANS_EJECT_TIME) {
-        state._ejectFired = true;
-        emit("trans_eject_impulse", { magnitude: 1 });
-        emit("trans_underwater_impulse", { magnitude: 1 });
-      }
-    } else {
-      state._ejectFired = false;
-    }
-    if (state.transPulseClock !== null) {
-      const seatT = TRANS_EJECT_TIME + TRANS_DWELL + TRANS_REINSERT_TIME;
-      if (!state._reseatFired && state.transPulseClock >= seatT) {
-        state._reseatFired = true;
-        emit("trans_reseat_impulse", { magnitude: 0.35 });
-      }
-    } else {
-      state._reseatFired = false;
-    }
 
     stepRods(dt);
-    stepThermalAndPower(dt);
 
-    if (state.phase === "PULSE" && state.transPulseClock !== null &&
-        !state._energyDeposited && state.transPulseClock >= DURATIONS.PULSE * 0.6) {
-      // 闭式脉冲能量：一次性加入，不随积分步长变化（毫秒脉冲层，独立于渲染帧率）。
-      state.fuelTemperatureProxy += PULSE_FUEL_BUMP;
-      state._energyDeposited = true;
-      emit("pulse_energy_deposited", { amount: PULSE_FUEL_BUMP });
+    // 点堆用固定子步长积分（稳定、帧率无关）
+    kinAccum = Math.min(kinAccum + dt, KIN_SUBSTEP * 40);
+    while (kinAccum >= KIN_SUBSTEP) {
+      stepKinetics();
+      kinAccum -= KIN_SUBSTEP;
     }
-    if (state.phase !== "PULSE") state._energyDeposited = false;
 
-    checkTransition();
+    stepPulse(dt);
+    stepThermal(dt);
+    updatePeriod(dt);
+
     return drain();
   };
 
@@ -294,6 +332,14 @@ export function createSessionController({ reduceMotion } = {}) {
     state,
     unlock,
     update,
+    // 操作员指令 API（由控制台点击调用）
+    startup,
+    scram,
+    setMode,
+    pumpToggle,
+    rodStart,
+    rodStop,
+    pulseFire,
     isReduceMotion: () => !!reduceMotion
   };
 }

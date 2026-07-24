@@ -231,8 +231,6 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
 
   const setCamera = camPos => { waterMat.uniforms.uCamPos.value.copy(camPos); };
 
-  const setScale = () => {}; // 水体几何随反应堆整体 group 缩放（由父级 scale 处理）
-
   const dispose = () => {
     disposables.forEach(d => { if (d && d.dispose) d.dispose(); });
     group.clear();
@@ -242,7 +240,6 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
     group,
     update,
     setCamera,
-    setScale,
     dispose,
     addImpulse,
     heightAt,
