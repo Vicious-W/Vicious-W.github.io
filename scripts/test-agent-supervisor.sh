@@ -7,6 +7,9 @@ TEST_DIR="$ROOT_DIR/.agent/artifacts/supervisor-test"
 FAKE_CYCLE="$TEST_DIR/fake-cycle.sh"
 COUNT_FILE="$TEST_DIR/count"
 ARGS_FILE="$TEST_DIR/second-args"
+FAKE_SUMMARY="$TEST_DIR/fake-summary.sh"
+SUMMARY_CAPTURE="$TEST_DIR/summary-state.env"
+TEST_REVIEW_BASE="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 STOP_FILE="$ROOT_DIR/.agent/artifacts/runtime/last-stop.env"
 STOP_BACKUP="$TEST_DIR/last-stop.backup"
 STATE_FILE="$ROOT_DIR/.agent/artifacts/supervisor/state.env"
@@ -59,6 +62,7 @@ if (( count == 1 )); then
     printf 'STOP_REASON=USAGE_OR_BILLING_LIMIT\n'
     printf 'EXIT_CODE=1\n'
     printf 'LOG_FILE=.agent/artifacts/supervisor-test/fake.log\n'
+    printf 'BASE_COMMIT=%s\n' "$TEST_REVIEW_BASE"
   } >"$STOP_FILE"
   exit 1
 fi
@@ -67,7 +71,14 @@ exit 0
 EOF
 chmod +x "$FAKE_CYCLE"
 
+cat >"$FAKE_SUMMARY" <<EOF
+#!/usr/bin/env bash
+cp "$STATE_FILE" "$SUMMARY_CAPTURE"
+EOF
+chmod +x "$FAKE_SUMMARY"
+
 AGENT_SUPERVISOR_CYCLE_COMMAND="$FAKE_CYCLE" \
+AGENT_SUPERVISOR_SUMMARY_COMMAND="$FAKE_SUMMARY" \
 AGENT_SUPERVISOR_NO_SLEEP=1 \
 AGENT_SUPERVISOR_SKIP_RECOVERY=1 \
 AGENT_SUPERVISOR_ALLOW_DIRTY_TEST=1 \
@@ -100,10 +111,22 @@ else
   printf 'FAIL  supervisor did not preserve the interrupted REVIEWER stage\n' >&2
   failure_count=$((failure_count + 1))
 fi
+if grep -Fq -- "--review-base $TEST_REVIEW_BASE" "$ARGS_FILE" 2>/dev/null; then
+  printf 'PASS  reviewer quota stop preserved its exact comparison base\n'
+else
+  printf 'FAIL  supervisor did not preserve the REVIEWER comparison base\n' >&2
+  failure_count=$((failure_count + 1))
+fi
 if grep -Fqx 'SUPERVISOR_STATUS=COMPLETE' "$STATE_FILE" 2>/dev/null; then
   printf 'PASS  supervisor persisted the final COMPLETE state\n'
 else
   printf 'FAIL  supervisor final state is not COMPLETE\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+if grep -Fqx 'SUPERVISOR_STATUS=COMPLETE' "$SUMMARY_CAPTURE" 2>/dev/null; then
+  printf 'PASS  final summary sees the persisted COMPLETE supervisor state\n'
+else
+  printf 'FAIL  final summary ran before the COMPLETE state was persisted\n' >&2
   failure_count=$((failure_count + 1))
 fi
 

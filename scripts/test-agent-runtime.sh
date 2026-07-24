@@ -7,11 +7,30 @@ TEST_DIR="$ROOT_DIR/.agent/artifacts/runtime-test"
 LOCK_TEST_DIR="$TEST_DIR/test.lock"
 MANIFEST_TEST="$TEST_DIR/test-manifest.env"
 PROMPT_TEST="$TEST_DIR/test-prompt.md"
+FAKE_BIN="$TEST_DIR/fake-bin"
+FAKE_DATE_COUNTER="$TEST_DIR/fake-date-counter"
 
 # shellcheck source=scripts/lib/agent-runtime.sh
 source "$ROOT_DIR/scripts/lib/agent-runtime.sh"
 agent_runtime_init "$ROOT_DIR"
 mkdir -p "$TEST_DIR"
+mkdir -p "$FAKE_BIN"
+
+cat >"$FAKE_BIN/date" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == "+%s" ]]; then
+  count=0
+  [[ -f "$AGENT_FAKE_DATE_COUNTER" ]] &&
+    count="$(sed -n '1p' "$AGENT_FAKE_DATE_COUNTER")"
+  count=$((count + 10000))
+  printf '%s\n' "$count" >"$AGENT_FAKE_DATE_COUNTER"
+  printf '%s\n' "$count"
+  exit 0
+fi
+exec /usr/bin/date "$@"
+EOF
+chmod +x "$FAKE_BIN/date"
+rm -f -- "$FAKE_DATE_COUNTER"
 
 failure_count=0
 
@@ -45,6 +64,12 @@ expect_result() {
 expect_result 0 SUCCESS success \
   run_agent_process 'fake success child' 5 1 1 "$TEST_DIR/success.log" -- \
   bash -c 'sleep 3; printf "completed normally\n"'
+
+PATH="$FAKE_BIN:$PATH" AGENT_FAKE_DATE_COUNTER="$FAKE_DATE_COUNTER" \
+expect_result 0 SUCCESS suspend-safe-wall-clock \
+  run_agent_process 'fake suspended-clock child' 5 1 1 \
+  "$TEST_DIR/suspend-safe-wall-clock.log" -- \
+  bash -c 'sleep 3; printf "completed across a wall-clock jump\n"'
 
 expect_result 13 PERMISSION permission-failure \
   run_agent_process 'fake permission child' 5 1 1 "$TEST_DIR/permission.log" -- \

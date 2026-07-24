@@ -273,6 +273,10 @@ run_agent_process \
 reviewer_exit=$?
 if (( reviewer_exit != 0 )); then
   agent_record_stop REVIEWER "$AGENT_RUN_REASON" "$reviewer_exit" "$agent_log"
+  {
+    printf 'BASE_COMMIT=%s\n' "$base_commit"
+    printf 'TARGET_COMMIT=%s\n' "$target_commit"
+  } >>"$AGENT_DIR/artifacts/runtime/last-stop.env"
   printf 'REVIEWER stopped (exit %s, reason %s). Previous review was preserved.\n' \
     "$reviewer_exit" "$AGENT_RUN_REASON" >&2
   printf 'Log: %s\n' "$agent_log" >&2

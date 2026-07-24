@@ -356,9 +356,14 @@ run_agent_process() {
   mkdir -p "$(dirname "$log_file")"
   : >"$log_file"
 
-  local started_at now elapsed next_heartbeat log_bytes child_exit timed_out=0
-  started_at="$(date +%s)"
-  next_heartbeat=$((started_at + heartbeat_seconds))
+  # Count completed supervision ticks rather than wall-clock seconds. WSL and
+  # laptops can be suspended for hours; wall time jumps across that pause even
+  # though the Agent did no work. A tick counter keeps the timeout tied to time
+  # during which this supervisor was actually scheduled and observing the child.
+  local poll_seconds=2
+  local elapsed=0
+  local next_heartbeat="$heartbeat_seconds"
+  local log_bytes child_exit timed_out=0
   AGENT_ACTIVE_GRACE_SECONDS="$grace_seconds"
 
   setsid "$@" </dev/null >"$log_file" 2>&1 &
@@ -369,9 +374,6 @@ run_agent_process() {
     "$(date -u +'%H:%M:%SZ')" "$label" "$AGENT_ACTIVE_PID" "$timeout_seconds"
 
   while kill -0 "$AGENT_ACTIVE_PID" 2>/dev/null; do
-    now="$(date +%s)"
-    elapsed=$((now - started_at))
-
     if (( elapsed >= timeout_seconds )); then
       timed_out=1
       printf '[%s] %s reached its %ss timeout; terminating its process group.\n' \
@@ -380,19 +382,19 @@ run_agent_process() {
       break
     fi
 
-    if (( now >= next_heartbeat )); then
+    if (( elapsed >= next_heartbeat )); then
       log_bytes="$(wc -c <"$log_file" | tr -d '[:space:]')"
       printf '[%s] %s is still running (%ss elapsed, %s log bytes).\n' \
         "$(date -u +'%H:%M:%SZ')" "$label" "$elapsed" "${log_bytes:-0}"
-      next_heartbeat=$((now + heartbeat_seconds))
+      next_heartbeat=$((elapsed + heartbeat_seconds))
     fi
-    sleep 2
+    sleep "$poll_seconds"
+    elapsed=$((elapsed + poll_seconds))
   done
 
   wait "$AGENT_ACTIVE_PID" 2>/dev/null
   child_exit=$?
-  now="$(date +%s)"
-  AGENT_RUN_ELAPSED_SECONDS=$((now - started_at))
+  AGENT_RUN_ELAPSED_SECONDS="$elapsed"
   AGENT_ACTIVE_PID=""
   AGENT_ACTIVE_PGID=""
 

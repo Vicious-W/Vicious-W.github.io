@@ -250,8 +250,27 @@ agent-supervisor.sh：跨额度窗口、恢复次数、定时等待、异常交�
 ./scripts/agent-cycle.sh status
 ```
 
+若所有者在正式 cycle 之外形成了一个已经验证的实现检查点，可以直接从审查阶段
+开始，但必须保留完整比较基准：
+
+```bash
+./scripts/agent-cycle.sh supervise \
+  --start-stage reviewer \
+  --review-base <实现开始前的提交> \
+  --reviewer claude --reviewer-model sonnet --reviewer-effort max
+```
+
+`--review-base` 会一直随 REVIEWER 的额度中断恢复传递，避免恢复后错误地只审查
+`HEAD^..HEAD`。若 `.agent/state.env` 已记录 `LAST_IMPLEMENTATION_BASE_COMMIT`，
+可以省略该参数。
+
 `SCHEDULED` 和 `WAITING_FOR_QUOTA` 表示没有 AI Agent 在运行；`RUNNING` 表示正在
 执行一个有界 cycle；`COMPLETE` 或 `STOPPED` 是终态。
+
+单个 Agent 的 timeout 只累计监督循环实际运行的轮询时间。Windows 睡眠或 WSL
+暂停期间 Agent 没有工作，这段墙上时间不计入 timeout；恢复后继续累计。supervisor
+会先写入 `COMPLETE`、`STOPPED` 或 `WAITING_FOR_QUOTA`，再重新生成简报，因此简报
+看到的是同一事件的最终外层状态。
 
 `--start-at` 默认也作为固定额度窗口锚点。例如首次恢复为 10:42、窗口为 5 小时，
 后续会对齐 15:42、20:42，而不是从 Agent 实际中断时刻再等待整整 5 小时。首次
@@ -401,7 +420,7 @@ cat .agent/artifacts/runtime/last-stop.env
 | `AUTHENTICATION` | 登录或令牌失效 | 在普通终端恢复对应 CLI 登录 |
 | `PERMISSION` | 角色所需能力未授权 | 只调整确有需要的最小权限 |
 | `MCP_OR_BROWSER` | Playwright 或浏览器不可用 | 修复注册/浏览器后重新预检 |
-| `TIMEOUT` | 超过单轮硬时限 | 检查日志，拆小任务或合理调时限 |
+| `TIMEOUT` | 超过单轮活跃监督时限 | 检查日志，拆小任务或合理调时限；系统休眠不计入 |
 | `POLICY_VIOLATION` | 实现者触碰控制面 | 检查保留现场，不自动提交 |
 | 达到 `MAX_ROUNDS` | 纠错上限到达 | 阅读简报，由所有者决定 |
 | 达到 `MAX_QUOTA_RESUMES` | 额度恢复次数上限 | 停止并由所有者调整计划 |

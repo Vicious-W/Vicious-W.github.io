@@ -36,6 +36,8 @@ Role options:
   --monitor-effort LEVEL
 
 Recovery options:
+  --start-stage ROLE     Start at implementer or reviewer; default implementer.
+  --review-base COMMIT   Required comparison base for an owner-checkpoint review.
   --start-at DATE        Wait before the first cycle attempt; accepted by `date -d`.
                          Also becomes the fixed quota-window anchor by default.
   --quota-anchor DATE    Fixed quota reset anchor; defaults to --start-at.
@@ -68,6 +70,7 @@ state_write() {
     printf 'IMPLEMENTER=%s/%s/%s\n' "$implementer_agent" "$implementer_model" "$implementer_effort"
     printf 'REVIEWER=%s/%s/%s\n' "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
     printf 'MONITOR=%s/%s/%s\n' "$monitor_agent" "$monitor_model" "$monitor_effort"
+    printf 'REVIEW_BASE=%s\n' "${review_base:-}"
     printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   } >"$tmp"
   mv "$tmp" "$STATE_FILE"
@@ -76,6 +79,12 @@ state_write() {
 event_record() {
   mkdir -p "$ARTIFACT_DIR"
   printf '%s\t%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$1" >>"$EVENT_LOG"
+}
+
+refresh_cycle_summary() {
+  local cycle_exit="${1:-}"
+  local summary_command="${AGENT_SUPERVISOR_SUMMARY_COMMAND:-$ROOT_DIR/scripts/generate-cycle-summary.sh}"
+  "$summary_command" "$cycle_exit" >/dev/null 2>&1 || true
 }
 
 stop_value() {
@@ -209,6 +218,8 @@ supervisor_heartbeat="$(agent_runtime_config SUPERVISOR_HEARTBEAT_SECONDS 300 30
 first_resume_at=""
 start_at=""
 quota_anchor_at=""
+start_stage="implementer"
+review_base=""
 
 while (( $# > 0 )); do
   case "$1" in
@@ -221,6 +232,8 @@ while (( $# > 0 )); do
     --monitor) monitor_agent="${2:-}"; shift 2 ;;
     --monitor-model) monitor_model="${2:-}"; shift 2 ;;
     --monitor-effort) monitor_effort="${2:-}"; shift 2 ;;
+    --start-stage) start_stage="${2:-}"; shift 2 ;;
+    --review-base) review_base="${2:-}"; shift 2 ;;
     --start-at) start_at="${2:-}"; shift 2 ;;
     --quota-anchor) quota_anchor_at="${2:-}"; shift 2 ;;
     --resume-at) first_resume_at="${2:-}"; shift 2 ;;
@@ -242,6 +255,19 @@ agent_validate_model "$monitor_model" || exit 2
 agent_validate_effort "$monitor_effort" || exit 2
 [[ "$quota_wait" =~ ^[0-9]+$ && "$quota_wait" -ge 60 ]] || { printf 'Invalid quota wait.\n' >&2; exit 2; }
 [[ "$max_resumes" =~ ^[1-9][0-9]*$ ]] || { printf 'Invalid max resumes.\n' >&2; exit 2; }
+case "$start_stage" in
+  implementer|reviewer) ;;
+  *) printf 'Invalid --start-stage: %s\n' "$start_stage" >&2; exit 2 ;;
+esac
+if [[ -n "$review_base" ]]; then
+  if [[ "$start_stage" != "reviewer" ]]; then
+    printf '%s\n' '--review-base requires --start-stage reviewer.' >&2
+    exit 2
+  fi
+  review_base="$(
+    git -C "$ROOT_DIR" rev-parse --verify "$review_base^{commit}" 2>/dev/null
+  )" || { printf 'Invalid --review-base commit.\n' >&2; exit 2; }
+fi
 
 first_resume_epoch=""
 start_epoch=""
@@ -283,6 +309,7 @@ handle_signal() {
   state_write STOPPED "${next_stage:-UNKNOWN}" "${attempt:-0}" \
     "${quota_resumes:-0}" "" "$signal_exit" "SIGNAL_$signal_name"
   event_record "supervisor interrupted by $signal_name"
+  refresh_cycle_summary "$signal_exit"
   exit "$signal_exit"
 }
 trap 'handle_signal 130 INT' INT
@@ -309,7 +336,7 @@ cycle_args=(
 
 attempt=0
 quota_resumes=0
-next_stage="implementer"
+next_stage="$start_stage"
 event_record "supervisor started"
 
 if [[ -n "$start_epoch" && "$start_epoch" -gt "$(date +%s)" ]]; then
@@ -326,11 +353,16 @@ while true; do
   printf '\n=== Supervisor attempt %s; start stage %s ===\n' "$attempt" "$next_stage"
 
   rm -f -- "$STOP_FILE"
-  "$cycle_command" "${cycle_args[@]}" --start-stage "$next_stage"
+  cycle_attempt_args=("${cycle_args[@]}" --start-stage "$next_stage")
+  if [[ "$next_stage" == "reviewer" && -n "$review_base" ]]; then
+    cycle_attempt_args+=(--review-base "$review_base")
+  fi
+  "$cycle_command" "${cycle_attempt_args[@]}"
   cycle_exit=$?
   if (( cycle_exit == 0 )); then
     state_write COMPLETE COMPLETE "$attempt" "$quota_resumes" "" 0 SUCCESS
     event_record "supervisor completed"
+    refresh_cycle_summary 0
     printf 'Supervised Agent rotation completed.\n'
     exit 0
   fi
@@ -345,6 +377,7 @@ while true; do
     if (( quota_resumes >= max_resumes )); then
       state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
         "$cycle_exit" MAX_QUOTA_RESUMES
+      refresh_cycle_summary "$cycle_exit"
       printf 'Maximum quota resumes reached (%s).\n' "$max_resumes" >&2
       exit 3
     fi
@@ -357,10 +390,33 @@ while true; do
           --log-file "$(stop_value LOG_FILE)" \
           --agent "$monitor_agent" --model "$monitor_model" --effort "$monitor_effort" || true
       fi
+      refresh_cycle_summary "$cycle_exit"
       exit 4
     fi
 
     quota_resumes=$((quota_resumes + 1))
+    resume_stage="${stop_stage,,}"
+    case "$resume_stage" in
+      implementer|reviewer) ;;
+      *) resume_stage="implementer" ;;
+    esac
+    if [[ "$resume_stage" == "reviewer" ]]; then
+      stopped_review_base="$(stop_value BASE_COMMIT)"
+      if [[ -n "$stopped_review_base" ]]; then
+        review_base="$(
+          git -C "$ROOT_DIR" rev-parse --verify "$stopped_review_base^{commit}" 2>/dev/null
+        )" || {
+          state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
+            "$cycle_exit" INVALID_REVIEW_BASE
+          refresh_cycle_summary "$cycle_exit"
+          printf 'Reviewer stop recorded an invalid base commit.\n' >&2
+          exit 4
+        }
+      fi
+    else
+      review_base=""
+    fi
+
     now_epoch="$(date +%s)"
     if [[ -n "$first_resume_epoch" && "$first_resume_epoch" -gt "$now_epoch" ]]; then
       resume_epoch="$first_resume_epoch"
@@ -382,12 +438,9 @@ while true; do
     state_write WAITING_FOR_QUOTA "$stop_stage" "$attempt" "$quota_resumes" \
       "$resume_iso" "$cycle_exit" "$stop_reason"
     event_record "waiting for quota until $resume_iso"
+    refresh_cycle_summary "$cycle_exit"
     wait_until_epoch "$resume_epoch" "$supervisor_heartbeat"
-    next_stage="${stop_stage,,}"
-    case "$next_stage" in
-      implementer|reviewer) ;;
-      *) next_stage="implementer" ;;
-    esac
+    next_stage="$resume_stage"
     continue
   fi
 
@@ -399,6 +452,7 @@ while true; do
       --log-file "$(stop_value LOG_FILE)" \
       --agent "$monitor_agent" --model "$monitor_model" --effort "$monitor_effort" || true
   fi
+  refresh_cycle_summary "$cycle_exit"
   printf 'Supervisor stopped on non-recoverable event: %s/%s\n' \
     "$stop_stage" "$stop_reason" >&2
   exit "$cycle_exit"

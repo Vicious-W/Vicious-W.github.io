@@ -38,6 +38,8 @@ Cycle options:
   --reviewer-model MODEL
   --reviewer-effort low|medium|high|xhigh|max
   --start-stage implementer|reviewer
+  --review-base COMMIT    Base for a direct REVIEWER resume; defaults to the
+                          recorded owner-checkpoint base, then HEAD^.
 
 Defaults come from .agent/runtime.env. Roles are not tied to executors: the same
 executor may fill both roles in separate fresh processes, and roles may be
@@ -110,6 +112,7 @@ case "$command_name" in
     reviewer_model="$(agent_runtime_model_config REVIEWER_MODEL gpt-5.6-sol)" || exit 2
     reviewer_effort="$(agent_runtime_effort_config REVIEWER_EFFORT high)" || exit 2
     next_stage="implementer"
+    review_base_override=""
 
     while (( $# > 0 )); do
       case "$1" in
@@ -148,6 +151,11 @@ case "$command_name" in
           next_stage="$2"
           shift 2
           ;;
+        --review-base)
+          [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+          review_base_override="$2"
+          shift 2
+          ;;
         --help|-h)
           usage
           exit 0
@@ -173,6 +181,18 @@ case "$command_name" in
         exit 2
         ;;
     esac
+    if [[ -n "$review_base_override" ]]; then
+      if [[ "$next_stage" != "reviewer" ]]; then
+        printf '%s\n' '--review-base requires --start-stage reviewer.' >&2
+        exit 2
+      fi
+      review_base_override="$(
+        git -C "$ROOT_DIR" rev-parse --verify "$review_base_override^{commit}" 2>/dev/null
+      )" || {
+        printf 'Invalid --review-base commit.\n' >&2
+        exit 2
+      }
+    fi
 
     if ! agent_acquire_lock "$LOCK_DIR" 'automatic cycle'; then
       exit 2
@@ -242,7 +262,27 @@ case "$command_name" in
       fi
 
       implementation_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
-      base_commit="$(git -C "$ROOT_DIR" rev-parse "$implementation_commit^")"
+      if [[ "$next_stage" == "reviewer" ]]; then
+        base_commit="$review_base_override"
+        if [[ -z "$base_commit" ]]; then
+          recorded_base="$(state_value LAST_IMPLEMENTATION_BASE_COMMIT)"
+          if [[ -n "$recorded_base" ]]; then
+            base_commit="$(
+              git -C "$ROOT_DIR" rev-parse --verify "$recorded_base^{commit}" 2>/dev/null
+            )" || base_commit=""
+          fi
+        fi
+      else
+        base_commit=""
+      fi
+      if [[ -z "$base_commit" ]]; then
+        base_commit="$(git -C "$ROOT_DIR" rev-parse "$implementation_commit^")"
+      fi
+      if ! git -C "$ROOT_DIR" merge-base --is-ancestor \
+        "$base_commit" "$implementation_commit"; then
+        printf 'Review base is not an ancestor of the target: %s\n' "$base_commit" >&2
+        exit 2
+      fi
 
       printf '\n=== REVIEWER (%s) round %s/%s ===\n' \
         "$reviewer_agent" "$((current_round + 1))" "$max_rounds"
@@ -277,6 +317,7 @@ case "$command_name" in
         exit 4
       fi
       next_stage="implementer"
+      review_base_override=""
     done
     ;;
   preflight)
