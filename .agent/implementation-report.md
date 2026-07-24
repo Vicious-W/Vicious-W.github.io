@@ -3,8 +3,9 @@
 IMPLEMENTATION_STATUS: REPORTED
 
 - Task: `source-reactor-pool-physics-2026-07-23`
-- Formal-cycle position: owner-directed checkpoint outside the numbered cycle; the next
-  formal review is round 1 of at most 3
+- Formal-cycle position: owner-directed checkpoint outside the numbered cycle; formal
+  review remains round 1 of at most 3 but is paused pending resolution of the manual-versus-
+  automatic operation conflict recorded in `PROJECT.md`
 - Base commit: `014c287ab5ea10b09acde8f5fb9f3fd469b3b0f5`
 - Checkpoint commit: `d139c6e73b9e5c2c3bbc304afa1a6a3cea2e0b6b`
   (`checkpoint: preserve owner-directed SOURCE expansion`)
