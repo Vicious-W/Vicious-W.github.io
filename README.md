@@ -6,10 +6,11 @@
 ## 当前内容
 
 - 独立玻璃立方体；
-- 开放式水池研究堆三维模型；
-- 刚体碰撞、拖拽和堆叠；
-- 由物理接触驱动的声音；
-- 反应堆控制机构与可见状态联动。
+- Pavia TRIGA Mark II 反应堆池三维模型与实验大厅；
+- 刚体碰撞、拖拽、堆叠、损伤与破碎；
+- 独立轻水体积、水面动力学与切伦科夫光学；
+- 由物理接触和机构状态驱动的声音；
+- `AUTO` 连续运行程序与三维控制台上的 `MANUAL` 人工操作，共用同一套反应堆状态。
 
 ## 结构
 
@@ -18,10 +19,18 @@ src/
 ├── main.js
 ├── styles/main.css
 └── scenes/reactor/
-    ├── physicalScene.js
-    ├── reactorModel.js
-    └── glassAudio.js
+    ├── physicalScene.js      场景、刚体、拾取、相机、控制权分流
+    ├── sessionController.js  反应堆状态、指令、联锁与控制权
+    ├── autoProgram.js        AUTO 连续运行调度器
+    ├── controlConsole.js     无文字三维操作台
+    ├── reactorModel.js       反应堆池部件（RP-*）
+    ├── labEnvironment.js     实验大厅与厂房设备
+    ├── waterSystem.js        独立轻水体积
+    ├── glassDamage.js        耐久、裂纹与碎片几何
+    ├── glassAudio.js         玻璃碰撞/损伤声音
+    └── reactorAudio.js       机构、气动与泵的声音
 
+tests/run.mjs            node 逻辑测试（npm test）
 scripts/                 双 Agent 控制与验证
 .agent/                  当前任务、状态和报告
 references/hero/         第一页玻璃与反应堆参考
@@ -51,6 +60,7 @@ Agent 协作：
 npm install
 npm run dev -- --port 8000
 npm run build
+npm test
 ./scripts/agent-cycle.sh status
 ./scripts/agent-cycle.sh preflight
 ./scripts/agent-cycle.sh cycle

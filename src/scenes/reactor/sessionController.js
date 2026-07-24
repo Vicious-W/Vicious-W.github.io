@@ -134,13 +134,16 @@ export function createSessionController({ reduceMotion } = {}) {
     powerProxy: 0,              // 稳态功率通道，1.0 = 250 kW
     pulsePowerProxy: 0,         // 脉冲功率通道，1.0 = 250 MW（独立标度）
     period: Infinity,           // 反应堆周期代理（s），供仪表（正=上升，负=下降）
-    fuelTemperatureProxy: 0,
+    // 冷停堆时燃料与池水处于热平衡，因此燃料温度代理的初值就是池水环境温度，
+    // 不是绝对零点（温度代理只表达定性状态，不标称工程单位）。
+    fuelTemperatureProxy: POOL_AMBIENT,
     poolTemperatureProxy: POOL_AMBIENT,
     coolantFlowProxy: 0.0,
 
     // 脉冲
     pulseId: 0,
     pulseArmed: false,
+    pulseReady: false,          // 全部脉冲联锁是否满足（控制台无文字反馈）
     pulse: null                // { clock, peak, sigma, t0, fuelBump, deposited }
   };
 
@@ -219,20 +222,25 @@ export function createSessionController({ reduceMotion } = {}) {
     // 弹出瞬间的净反应性（$）：当前棒反应性 + TRANS 满价值 - 停堆偏置 - 温度反馈
     const rodNow = rodReactivityOf(state.rod);
     const rhoInsert = rodNow + ROD_WORTH.TRANS - ROD_BIAS - ALPHA_FB * state.fuelTemperatureProxy;
-    const excess = Math.max(0.05, rhoInsert - 1);       // 越瞬发临界的 $ 数
+    // 只有越过瞬发临界（>1$）才是真正的脉冲。从深度次临界弹 TRANS 只是一次普通的
+    // 反应性插入：机构照样动作、水体照样受扰，但功率按缓发中子决定的周期上升，
+    // 不会出现毫秒尖峰——所以必须先用 SHIM/REG 把堆带到低功率临界再点火。
+    const prompt = rhoInsert > 1;
+    const excess = Math.max(0, rhoInsert - 1);          // 越瞬发临界的 $ 数
     // Fuchs–Nordheim 定性关系：峰高随 excess² 增长、脉宽随 excess 收窄、释放能量
     // 随 excess 增长。低功率临界起跳的 ~2$ 插入给出 1.0（=250 MW）峰值、约 68 ms
     // 半高宽，与 Pavia 历史脉冲“约 250 MW、持续数十毫秒”一致。
     state.pulse = {
       clock: 0,
+      prompt,
       t0: TRANS_EJECT_TIME + TRANS_DWELL * 0.35,
-      peak: clamp(0.25 * excess * excess, 0.02, 1.05),
+      peak: prompt ? clamp(0.25 * excess * excess, 0, 1.05) : 0,
       sigma: clamp(0.075 / (0.6 + excess), 0.02, 0.09),
-      fuelBump: clamp(0.28 + 0.16 * excess, 0, 0.9),
-      deposited: false
+      fuelBump: prompt ? clamp(0.28 + 0.16 * excess, 0, 0.9) : 0,
+      deposited: !prompt
     };
     state.pulseId += 1;
-    emit("pulse_start", { pulseId: state.pulseId, excess });
+    emit("pulse_start", { pulseId: state.pulseId, excess, prompt });
     return true;
   };
 
@@ -334,9 +342,11 @@ export function createSessionController({ reduceMotion } = {}) {
   function stepKinetics() {
     const rodR = rodReactivityOf(state.rod);
     state.rodReactivity = rodR;
-    // 脉冲进行中，稳态通道的反应性不含 TRANS 的爆发贡献（脉冲走独立解析通道），
-    // 用在座 SHIM/REG + 反馈评估稳态背景。
-    const rodSteady = state.pulse
+    // 真正的瞬发脉冲进行中时，稳态通道不重复计入 TRANS 的爆发贡献（那部分走独立
+    // 解析通道），只用在座 SHIM/REG + 反馈评估稳态背景。若这次 TRANS 弹出没有越过
+    // 瞬发临界，就不存在解析脉冲通道，TRANS 的反应性必须照常进入稳态通道，否则
+    // 这次插入会被凭空吞掉。
+    const rodSteady = (state.pulse && state.pulse.prompt)
       ? ROD_WORTH.SHIM * rodShape(state.rod.SHIM.pos) + ROD_WORTH.REG * rodShape(state.rod.REG.pos)
       : rodR;
     const rho = rodSteady - ROD_BIAS - ALPHA_FB * state.fuelTemperatureProxy; // $
@@ -446,6 +456,10 @@ export function createSessionController({ reduceMotion } = {}) {
     updatePeriod(dt);
 
     state.autoAvailable = state.controlOwner !== "AUTO" && isSafeShutdown();
+    // 脉冲联锁的可见状态：控制台据此点亮/压暗脉冲钮，用户不用文字也能看出
+    // “现在能不能点火”（PROJECT_SPEC：无文字，但含义必须可辨认）。
+    state.pulseReady = state.mode === "PULSE" && !state.scrammed && !state.pulse
+      && state.powerProxy <= PULSE_POWER_LIMIT && state.rod.TRANS.pos <= 0.02;
 
     return drain();
   };

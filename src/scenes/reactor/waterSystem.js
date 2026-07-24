@@ -69,8 +69,14 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
   const size = (N + 1) * (N + 1);
   const h = new Float32Array(size);
   const v = new Float32Array(size); // 高度变化速度场
-  const WAVE_C2 = 5.0;   // 波速平方代理
-  const DAMP = 0.985;    // 每子步阻尼，保证能量输入停止后衰减
+  const WAVE_C2 = 5.0;   // 波速平方代理（REALTIME_PROXY：数值波速约 0.39 世界单位/s，
+                         // 远慢于浅水波 sqrt(g·h)，为的是让水面扰动在网页上看得清）
+  const DAMP = 0.985;    // 每子步速度阻尼，保证能量输入停止后波动衰减
+  // 高度回复：只阻尼速度场不足以回到静水面——一次入水/脉冲冲量会让水体留下一个被
+  // 拉普拉斯算子摊平、但不为零的残余水位偏移，反复脉冲还会累积。这里给高度场一个
+  // 很弱的回复系数（约 5.5 s 的 e 折时间），保证“能量输入停止后回到静水平衡”，
+  // 同时不会把可见的波纹提前吃掉。
+  const HEIGHT_RELAX = 0.998;
   const FIXED_STEP = 1 / 90;
   let accumulator = 0;
 
@@ -92,7 +98,7 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
     }
     for (let k = 0; k < size; k++) {
       v[k] *= DAMP;
-      h[k] += v[k] * FIXED_STEP;
+      h[k] = (h[k] + v[k] * FIXED_STEP) * HEIGHT_RELAX;
     }
   }
 

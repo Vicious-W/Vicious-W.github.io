@@ -95,7 +95,9 @@ export function createAutoProgram({ state, cmd, emit, limits }) {
       cmd.setMode("PULSE");
     } else if (next === "POST_PULSE_HEAT_TRANSFER") {
       cmd.setMode("OPERATE");
-      fuelPeak = state.fuelTemperatureProxy;
+      // 判据用**燃料—池水温差**而不是燃料温度本身：燃料温度只会趋近池水温度，
+      // 永远降不到某个绝对低值，用绝对值做判据会让本阶段每次都走到超时。
+      fuelPeak = Math.max(state.fuelTemperatureProxy - state.poolTemperatureProxy, 1e-4);
     }
   }
 
@@ -121,7 +123,10 @@ export function createAutoProgram({ state, cmd, emit, limits }) {
   // 再由 SHIM 粗调 / REG 细调实现。
   function holdPower(dt) {
     const err = Math.log(fullPower / Math.max(state.powerProxy, 1e-9));
-    const targetRho = clamp(err * 0.18, -0.25, 0.30);
+    // 上限 0.45$ 远低于瞬发临界（1$）：升功率始终由缓发中子决定周期。本模型的 λ 已
+    // 压缩 10 倍，0.45$ 对应的网页周期约 1.5 s ≈ 真实 15 s 周期，是正常的启动升功率
+    // 速率（TUNED_PRESENTATION：压缩等待时间，不改变因果顺序）。
+    const targetRho = clamp(err * 0.25, -0.25, 0.45);
     if (targetRho > 0.02 && demand.REG > 0.66 && state.rod.SHIM.pos < SHIM_ASCENT - DEADBAND) {
       demand.SHIM = SHIM_ASCENT;
       driveTo("SHIM", demand.SHIM);
@@ -173,7 +178,7 @@ export function createAutoProgram({ state, cmd, emit, limits }) {
           break;   // 粗调完成前不动 REG（真实操作顺序：一次只提一根棒）
         }
         cmd.rodStop("SHIM");
-        trimTo("REG", LOW_POWER_RHO, dt, 1.0, 0.25);
+        trimTo("REG", LOW_POWER_RHO, dt, 2.0, 0.25);
         const onTarget = Math.abs(state.reactivityProxy - LOW_POWER_RHO) < 0.02
           && state.powerProxy < pulsePowerLimit * 0.9
           && state.powerProxy > 1e-5;
@@ -201,7 +206,10 @@ export function createAutoProgram({ state, cmd, emit, limits }) {
 
       // 4.6 脉冲后传热：棒保持不动，燃料热量传入池水，自然循环与三回路响应
       case "POST_PULSE_HEAT_TRANSFER": {
-        const decayed = state.fuelTemperatureProxy < Math.max(0.25 * fuelPeak, 0.06);
+        // 脉冲沉积的燃料热量已有 3/4 传入池水（燃料时间常数约 1.7 s，池水约 25 s——
+        // 两个时间尺度不同，正是 REACTOR_POOL_SYSTEM.md §4.6 要求的“池水总体温度
+        // 变化较慢”）。
+        const decayed = (state.fuelTemperatureProxy - state.poolTemperatureProxy) < 0.25 * fuelPeak;
         if ((tPhase > 3 && decayed) || tPhase > 25) setPhase("STEADY_POWER_ASCENT");
         break;
       }

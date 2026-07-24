@@ -3,9 +3,18 @@
 // 约束：整页无可见文字，因此所有控件只能靠**颜色 + 形状 + 图标几何**区分，不用文字标签：
 //   - 绿色圆钮 = 启动/励磁；红色蘑菇钮 = SCRAM 急停；琥珀钮 = 脉冲点火；
 //   - 青色拨钮 = 一回路泵开关；双位拨杆 = 运行/脉冲模式切换；
+//   - **蓝色方钮 = AUTO 连续运行程序**（方形是全台唯一的方钮，与所有人工控件区分）；
 //   - 三对上/下拨杆 = 三根控制棒（各棒有区别色，向上三角=提出，向下三角=插入）；
 //   - 竖条表 = 功率（蓝→白，脉冲时强闪）、燃料温度（蓝→红）；
-//   - 指示灯 = 模式（停堆灰/运行绿/脉冲琥珀）、SCRAM 红、泵青。
+//   - 指示灯 = 模式（停堆灰/运行绿/脉冲琥珀）、SCRAM 红、泵青、AUTO 蓝、MANUAL 白；
+//   - 八段进度条 = AUTO 程序阶段（联锁复位 → … → 全功率平衡），逐段点亮。
+//
+// 控制权的无文字反馈（PROJECT_SPEC「三维控制台提供无文字的 AUTO 启动/模式控件和
+// AUTO/MANUAL 状态反馈」）：
+//   - AUTO 蓝灯亮 = 自动程序拥有控制权；MANUAL 白灯亮 = 用户拥有控制权；
+//   - AUTO 方钮全亮 = 现在可以启动完整 AUTO（安全停堆）；半亮 = AUTO 正在运行；
+//     压暗 = 当前状态不允许重放自动程序（必须先 SCRAM 到安全停堆）；
+//   - 脉冲钮同理：联锁全部满足才点亮，250 kW 稳态下自动压暗。
 //
 // 交互契约（physicalScene 负责射线拾取与按下/松开分发）：
 //   hotspot = { mesh, kind: 'button'|'toggle'|'hold', name, press(), release() }
@@ -21,10 +30,17 @@ const clamp = THREE.MathUtils.clamp;
 // 颜色语言（与语义绑定，全站一致）
 const COL = {
   start: 0x33dd66, scram: 0xff2a2a, pulse: 0xffa61f, pump: 0x27c6e0,
+  auto: 0x4d8dff, manual: 0xe8eef5,
   panel: 0x2a3138, frame: 0x171c21, bezel: 0x0c0f12, idle: 0x40484f,
   SHIM: 0x6f9ad6, REG: 0x35c9a8, TRANS: 0xff8a3a,
   lampOff: 0x22282d, meterLow: 0x1f4fb0, meterHigh: 0xf4f9ff, tempHot: 0xff4020
 };
+
+// AUTO 程序阶段顺序（与 autoProgram.js 的 AUTO_PHASES 一致，用于八段进度条）
+const PHASE_ORDER = [
+  "INTERLOCKED_RESET", "AUXILIARIES_READY", "LOW_POWER_APPROACH", "PULSE_ARMED",
+  "PULSE", "POST_PULSE_HEAT_TRANSFER", "STEADY_POWER_ASCENT", "FULL_POWER_EQUILIBRIUM"
+];
 
 export function createControlConsole({ commands, position = [0, 0, 6.8], facing = 0, reduceMotion } = {}) {
   const group = new THREE.Group();
@@ -59,13 +75,16 @@ export function createControlConsole({ commands, position = [0, 0, 6.8], facing 
   const place = (obj, x, y) => { obj.position.set(x, y, SURF_Z); panelGroup.add(obj); };
 
   // —— 控件几何 helpers ——
-  function buttonMesh(color, r = 0.14, h = 0.06) {
+  // sides = 4 时得到方形钮帽（AUTO 专用形状，无文字也能与所有圆钮区分）
+  function buttonMesh(color, r = 0.14, h = 0.06, sides = 20) {
     const g = new THREE.Group();
-    const bezel = new THREE.Mesh(track(new THREE.CylinderGeometry(r * 1.35, r * 1.35, 0.03, 20)), mat(COL.bezel, { roughness: 0.8 }));
+    const bezel = new THREE.Mesh(track(new THREE.CylinderGeometry(r * 1.35, r * 1.35, 0.03, sides === 4 ? 4 : 20)), mat(COL.bezel, { roughness: 0.8 }));
     bezel.rotation.x = Math.PI / 2;
-    const cap = new THREE.Mesh(track(new THREE.CylinderGeometry(r, r, h, 20)),
+    if (sides === 4) bezel.rotation.y = Math.PI / 4;
+    const cap = new THREE.Mesh(track(new THREE.CylinderGeometry(r, r, h, sides)),
       track(new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.15, metalness: 0.2, roughness: 0.4 })));
     cap.rotation.x = Math.PI / 2; cap.position.z = h / 2;
+    if (sides === 4) cap.rotation.y = Math.PI / 4;
     g.add(bezel, cap);
     return { group: g, cap, mat: cap.material, baseColor: color };
   }
@@ -166,8 +185,25 @@ export function createControlConsole({ commands, position = [0, 0, 6.8], facing 
   const lampPulse = lampMesh(COL.pulse);
   const lampScram = lampMesh(COL.scram);
   const lampPump = lampMesh(COL.pump);
-  const lampRow = [lampShutdown, lampOperate, lampPulse, lampScram, lampPump];
-  lampRow.forEach((l, i) => { place(l.mesh, -0.55 + i * 0.28, 0.16); });
+  const lampAuto = lampMesh(COL.auto);
+  const lampManual = lampMesh(COL.manual);
+  const lampRow = [lampShutdown, lampOperate, lampPulse, lampScram, lampPump, lampAuto, lampManual];
+  lampRow.forEach((l, i) => { place(l.mesh, -0.55 + i * 0.26, 0.16); });
+
+  // —— AUTO 连续运行程序：方形蓝钮（全台唯一的方钮）——
+  const autoB = buttonMesh(COL.auto, 0.13, 0.06, 4);
+  place(autoB.group, -1.55, 0.20);
+  addHotspot(autoB.cap, "button", "auto", () => { commands.autoStart(); pulseCap(autoB); });
+
+  // —— AUTO 阶段八段进度条（无文字：逐段点亮表示程序走到哪一步）——
+  const phaseSegs = PHASE_ORDER.map((_, i) => {
+    const m = track(new THREE.MeshStandardMaterial({
+      color: 0x1a2029, emissive: COL.auto, emissiveIntensity: 0, roughness: 0.35
+    }));
+    const seg = new THREE.Mesh(track(new THREE.BoxGeometry(0.145, 0.05, 0.022)), m);
+    place(seg, -1.05 + i * 0.18, 0.045);
+    return m;
+  });
 
   // —— 控件动作辅助 ——
   let modeLatched = "OPERATE";
@@ -223,6 +259,33 @@ export function createControlConsole({ commands, position = [0, 0, 6.8], facing 
     setLamp(lampPump, state.pumpOn);
     // 泵钮发光反映开关
     pumpB.mat.emissiveIntensity = state.pumpOn ? 0.9 : 0.12;
+
+    // —— 控制权反馈：AUTO 蓝灯 / MANUAL 白灯 ——
+    setLamp(lampAuto, state.controlOwner === "AUTO", 1.6);
+    setLamp(lampManual, state.controlOwner === "MANUAL", 1.2);
+    // AUTO 方钮：可启动=全亮；正在运行=呼吸；不允许重放=压暗（必须先 SCRAM 到安全停堆）
+    if (state.controlOwner === "AUTO") {
+      autoB.mat.emissiveIntensity = reduceMotion ? 0.9 : 0.55 + blink * 0.5;
+    } else {
+      autoB.mat.emissiveIntensity = state.autoAvailable ? 1.1 : 0.06;
+    }
+    // 脉冲钮：只有全部脉冲联锁满足才点亮（无文字地表达“现在能不能点火”）
+    pulseB.mat.emissiveIntensity = state.pulseReady ? 1.0 : 0.08;
+
+    // —— AUTO 阶段进度条：逐段点亮，当前段最亮 ——
+    const phaseIdx = PHASE_ORDER.indexOf(state.autoPhase);
+    phaseSegs.forEach((m, i) => {
+      if (state.controlOwner === "AUTO" && phaseIdx >= 0) {
+        m.emissive.setHex(COL.auto);
+        m.emissiveIntensity = i < phaseIdx ? 0.45 : (i === phaseIdx ? 1.5 : 0.0);
+      } else if (state.controlOwner === "MANUAL") {
+        // 人工接管：进度条整体转为白色低亮，表示自动程序已交还给用户
+        m.emissive.setHex(COL.manual);
+        m.emissiveIntensity = 0.12;
+      } else {
+        m.emissiveIntensity = 0.0;
+      }
+    });
 
     // 按下闪光衰减
     for (let i = flashers.length - 1; i >= 0; i--) {

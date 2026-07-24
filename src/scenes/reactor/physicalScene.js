@@ -120,6 +120,9 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   // —— 操作员控制台（立在操作层地面上，可点击操控反应堆）——
   const console3d = createControlConsole({
     commands: {
+      // AUTO 控件是控制台上唯一不夺取人工控制权的控件：它请求把控制权交给自动程序。
+      // 其余控件都是真实的人工指令，一按就原位接管（见 sessionController 的 manual 包装）。
+      autoStart: () => session.requestAuto(),
       startup: () => session.startup(),
       scram: () => session.scram(),
       setMode: (m) => session.setMode(m),
@@ -306,6 +309,15 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     if (reactorAudio) reactorAudio.unlock();
     session.unlock();
     resetPeaks(); // 峰值统计从连续运行开始算起，不混入加载时的落位
+  };
+
+  // 控制权分流（PROJECT_SPEC / SOURCE_SCENE.md §5）：
+  //   控制台热点以外的任何有效交互（点击空处、拖玻璃、右键转相机、滚轮、键盘）
+  //   → 解锁并进入 AUTO；控制台热点上的交互 → 由该控件自己的指令进入 MANUAL。
+  // AUTO 运行中再点空处不会重启程序；MANUAL 之后只有安全停堆才会被接受。
+  const interactOutsideConsole = () => {
+    unlockAll();
+    session.requestAuto();
   };
 
   // —— 立方体 ——
@@ -583,9 +595,9 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   let activeHotspotPointer = null;
 
   const onPointerDown = event => {
-    unlockAll();
     // 右键（或中键）→ 轨道相机
     if (event.button === 2 || event.button === 1) {
+      interactOutsideConsole();
       if (orbitPointerId !== null) return;
       orbitPointerId = event.pointerId;
       orbitLast.x = event.clientX; orbitLast.y = event.clientY;
@@ -603,6 +615,9 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     if (hs.length) {
       const spot = console3d.hotspots.find(h => h.mesh === hs[0].object);
       if (spot) {
+        // 控制台热点：只解锁音频/时钟，控制权由该控件的指令自己决定
+        // （AUTO 方钮 → AUTO；其余人工控件 → MANUAL 原位接管）。
+        unlockAll();
         activeHotspot = spot;
         activeHotspotPointer = event.pointerId;
         try { canvas.setPointerCapture(event.pointerId); } catch (e) { /* 合成事件可能抛 */ }
@@ -611,6 +626,8 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
         return;
       }
     }
+    // 控制台以外的左键（拖玻璃或点空处）→ 进入 AUTO
+    interactOutsideConsole();
     // 否则 → 抓取玻璃
     const hits = raycaster.intersectObjects(meshes, false);
     if (!hits.length) return;
@@ -682,7 +699,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   };
 
   const onWheel = event => {
-    unlockAll();
+    interactOutsideConsole();
     event.preventDefault();
     orbit.distance = clamp(orbit.distance * Math.exp(event.deltaY * ZOOM_SPEED),
       orbit.minDistance, orbit.maxDistance);
@@ -690,7 +707,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   };
 
   const onContextMenu = event => event.preventDefault();
-  const onKeyDown = () => unlockAll();
+  const onKeyDown = () => interactOutsideConsole();
 
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
@@ -796,11 +813,10 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   let disposed = false;
   let last = 0;
 
-  const frame = now => {
-    if (!running || disposed) return;
-    const dt = Math.min((now - last) / 1000, 0.05);
-    last = now;
-
+  // 一步完整仿真（反应堆状态 → 结构/水体耦合 → 刚体求解）。渲染帧和自动化验收用的
+  // __SOURCE_ADVANCE__ 走的是同一段代码，因此“快进”得到的是真实积分结果，不是另一
+  // 套简化模型。
+  const simulate = dt => {
     const events = session.update(dt);
     handleSessionEvents(events);
     reactor.update(dt, session.state);
@@ -814,6 +830,14 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     computeSlide();
     syncGratingVisual();
     trackPeaks();
+  };
+
+  const frame = now => {
+    if (!running || disposed) return;
+    const dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+
+    simulate(dt);
 
     for (let i = 0; i < cubes.length; i++) {
       const { mesh, body } = cubes[i];
@@ -862,6 +886,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   // 操作员指令调试钩子（非文字，供自动化验收在控制台几何就绪前直接驱动反应堆；
   // 控制台点击最终调用同一组 session 方法）。dispose 时删除。
   window.__SOURCE_CMD__ = {
+    autoStart: () => session.requestAuto(),
     startup: () => session.startup(),
     scram: () => session.scram(),
     setMode: (m) => session.setMode(m),
@@ -884,6 +909,36 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
         onScreen: v.z < 1 && Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1
       };
     });
+  };
+  // 自动化验收用的快进钩子：以固定 1/60 s 步长推进**同一个** simulate()，不渲染。
+  // AUTO 连续运行程序到达 250 kW 平衡需要约 70 s 仿真时间，而无 GPU 的验收环境只有
+  // 一两帧每秒，实时等待不可行。快进不改变任何模型、常量或积分方式，只是把帧循环
+  // 的节流去掉；dispose() 时删除。
+  window.__SOURCE_ADVANCE__ = (seconds = 1) => {
+    const step = 1 / 60;
+    const n = Math.min(Math.round(seconds / step), 60 * 600);
+    for (let i = 0; i < n; i++) simulate(step);
+    return { seconds: n * step, phase: session.state.autoPhase, owner: session.state.controlOwner };
+  };
+  // 轻水的只读采样：沿池径取一圈样点，给出相对静水面的最大偏移，用于验收
+  // “波动由物理事件触发并正确衰减”（SOURCE_SCENE.md §10.3）。
+  window.__SOURCE_WATER__ = () => {
+    let maxDev = 0;
+    const samples = [];
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const r = water.poolRadius * 0.55;
+      const x = Math.cos(a) * r, z = Math.sin(a) * r;
+      const dev = water.heightAt(x, z) - water.surfaceY;
+      samples.push(+dev.toFixed(5));
+      if (Math.abs(dev) > maxDev) maxDev = Math.abs(dev);
+    }
+    return {
+      surfaceY: water.surfaceY,
+      centerDeviation: +(water.heightAt(0, 0) - water.surfaceY).toFixed(5),
+      maxDeviation: +maxDev.toFixed(5),
+      samples
+    };
   };
   window.__SOURCE_CAM__ = () => ({
     az: +orbit.azimuth.toFixed(4), el: +orbit.elevation.toFixed(4), dist: +orbit.distance.toFixed(3),
@@ -971,6 +1026,8 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       delete window.__SOURCE_CAM__;
       delete window.__SOURCE_CMD__;
       delete window.__SOURCE_HOTSPOTS__;
+      delete window.__SOURCE_ADVANCE__;
+      delete window.__SOURCE_WATER__;
     }
   };
 }
