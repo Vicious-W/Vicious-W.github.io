@@ -12,7 +12,7 @@ FAKE_DATE_COUNTER="$TEST_DIR/fake-date-counter"
 CLAUDE_EVENTS="$TEST_DIR/claude-events.json"
 CODEX_EVENTS="$TEST_DIR/codex-events.jsonl"
 USAGE_SUMMARY="$TEST_DIR/usage-summary.json"
-SESSION_TEST_TASK="runtime-session-test-$$"
+SESSION_TEST_TASK="runtime-session-test-$(date +%s%N)-$$"
 
 # shellcheck source=scripts/lib/agent-runtime.sh
 source "$ROOT_DIR/scripts/lib/agent-runtime.sh"
@@ -156,7 +156,7 @@ else
 fi
 
 printf '%s\n' \
-  '{"type":"result","session_id":"11111111-1111-4111-a111-111111111111","num_turns":4,"duration_ms":1200,"total_cost_usd":1.25,"usage":{"input_tokens":100,"cache_read_input_tokens":80,"cache_creation_input_tokens":20,"output_tokens":30},"result":"final report"}' \
+  '{"type":"result","session_id":"11111111-1111-4111-a111-111111111111","num_turns":4,"duration_ms":1200,"total_cost_usd":0,"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0},"modelUsage":{"router":{"inputTokens":100,"cacheReadInputTokens":80,"cacheCreationInputTokens":20,"outputTokens":30,"costUSD":1.25}},"result":"final report"}' \
   >"$CLAUDE_EVENTS"
 if [[ "$(node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" final claude "$CLAUDE_EVENTS")" == \
       "final report" ]] && \
@@ -165,6 +165,14 @@ if [[ "$(node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" final claude "$CLAUDE_
   printf 'PASS  Claude telemetry extracts final output and session ID\n'
 else
   printf 'FAIL  Claude telemetry extraction failed\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+agent_record_telemetry claude "$CLAUDE_EVENTS" "$USAGE_SUMMARY"
+if grep -Fq '"inputTokens": 100' "$USAGE_SUMMARY" && \
+   grep -Fq '"totalCostUsd": 1.25' "$USAGE_SUMMARY"; then
+  printf 'PASS  Claude telemetry falls back to per-model usage totals\n'
+else
+  printf 'FAIL  Claude telemetry lost per-model usage data\n' >&2
   failure_count=$((failure_count + 1))
 fi
 
@@ -178,6 +186,16 @@ if grep -Fq '"inputTokens": 200' "$USAGE_SUMMARY" && \
   printf 'PASS  Codex telemetry records available token and cache data\n'
 else
   printf 'FAIL  Codex telemetry summary is missing usage data\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+printf '%s\n' \
+  'There is an issue with the selected model. It may not exist or you may not have access.' \
+  >"$TEST_DIR/model-unavailable.log"
+if [[ "$(agent_classify_log "$TEST_DIR/model-unavailable.log")" == "MODEL_UNAVAILABLE" ]]; then
+  printf 'PASS  unavailable models are classified without invoking MONITOR\n'
+else
+  printf 'FAIL  unavailable model error was not classified\n' >&2
   failure_count=$((failure_count + 1))
 fi
 

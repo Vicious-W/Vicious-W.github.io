@@ -463,7 +463,8 @@ while true; do
 
   state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
     "$cycle_exit" "$stop_reason"
-  if [[ "${AGENT_SUPERVISOR_MONITOR_ON_ERROR:-1}" == "1" ]]; then
+  if [[ "$stop_reason" == "CHILD_PROCESS_ERROR" && \
+        "${AGENT_SUPERVISOR_MONITOR_ON_ERROR:-1}" == "1" ]]; then
     "$ROOT_DIR/scripts/run-monitor.sh" \
       --event "$stop_reason" --stage "$stop_stage" --exit-code "$cycle_exit" \
       --log-file "$(stop_value LOG_FILE)" \

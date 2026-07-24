@@ -55,6 +55,28 @@ function firstNumber(...values) {
 function claudeData(events) {
   const result = [...events].reverse().find((event) => event?.type === 'result') ?? events.at(-1) ?? {};
   const usage = result.usage ?? {};
+  const modelUsage = Object.values(result.modelUsage ?? {});
+  const modelTotals = modelUsage.reduce(
+    (total, item) => ({
+      inputTokens: total.inputTokens + (number(item?.inputTokens) ?? 0),
+      cachedInputTokens:
+        total.cachedInputTokens + (number(item?.cacheReadInputTokens) ?? 0),
+      cacheCreationInputTokens:
+        total.cacheCreationInputTokens +
+        (number(item?.cacheCreationInputTokens) ?? 0),
+      outputTokens: total.outputTokens + (number(item?.outputTokens) ?? 0),
+      totalCostUsd: total.totalCostUsd + (number(item?.costUSD) ?? 0),
+    }),
+    {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      outputTokens: 0,
+      totalCostUsd: 0,
+    },
+  );
+  const preferPositive = (primary, fallback) =>
+    Number.isFinite(primary) && primary > 0 ? primary : fallback || primary || null;
   return {
     finalText: typeof result.result === 'string' ? result.result : '',
     sessionId: result.session_id ?? '',
@@ -66,18 +88,30 @@ function claudeData(events) {
       turns: number(result.num_turns),
       durationMs: number(result.duration_ms),
       apiDurationMs: number(result.duration_api_ms),
-      totalCostUsd: number(result.total_cost_usd),
-      inputTokens: firstNumber(usage.input_tokens, usage.inputTokens),
-      cachedInputTokens: firstNumber(
-        usage.cache_read_input_tokens,
-        usage.cached_input_tokens,
-        usage.cachedInputTokens,
+      totalCostUsd: preferPositive(result.total_cost_usd, modelTotals.totalCostUsd),
+      inputTokens: preferPositive(
+        firstNumber(usage.input_tokens, usage.inputTokens),
+        modelTotals.inputTokens,
       ),
-      cacheCreationInputTokens: firstNumber(
-        usage.cache_creation_input_tokens,
-        usage.cacheCreationInputTokens,
+      cachedInputTokens: preferPositive(
+        firstNumber(
+          usage.cache_read_input_tokens,
+          usage.cached_input_tokens,
+          usage.cachedInputTokens,
+        ),
+        modelTotals.cachedInputTokens,
       ),
-      outputTokens: firstNumber(usage.output_tokens, usage.outputTokens),
+      cacheCreationInputTokens: preferPositive(
+        firstNumber(
+          usage.cache_creation_input_tokens,
+          usage.cacheCreationInputTokens,
+        ),
+        modelTotals.cacheCreationInputTokens,
+      ),
+      outputTokens: preferPositive(
+        firstNumber(usage.output_tokens, usage.outputTokens),
+        modelTotals.outputTokens,
+      ),
     },
   };
 }

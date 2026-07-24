@@ -434,6 +434,7 @@ cat .agent/artifacts/runtime/last-stop.env
 | --- | --- | --- |
 | `USAGE_OR_BILLING_LIMIT` | 额度、余额或速率限制 | `supervise` 自动保存并定时续跑 |
 | `AUTHENTICATION` | 登录或令牌失效 | 在普通终端恢复对应 CLI 登录 |
+| `MODEL_UNAVAILABLE` | 模型标识无效或账户无访问权 | 改用 CLI 支持的别名/完整 slug 后重新预检 |
 | `PERMISSION` | 角色所需能力未授权 | 只调整确有需要的最小权限 |
 | `MCP_OR_BROWSER` | Playwright 或浏览器不可用 | 修复注册/浏览器后重新预检 |
 | `TIMEOUT` | 超过单轮活跃监督时限 | 检查日志，拆小任务或合理调时限；系统休眠不计入 |

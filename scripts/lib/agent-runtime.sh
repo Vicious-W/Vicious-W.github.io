@@ -419,6 +419,8 @@ agent_classify_log() {
     printf 'USAGE_OR_BILLING_LIMIT\n'
   elif grep -Eiq '(not logged in|authentication (failed|required)|unauthorized|invalid (api key|token)|token (has )?expired|oauth[^[:cntrl:]]*(failed|expired)|http[^[:cntrl:]]*401)' "$log_file" 2>/dev/null; then
     printf 'AUTHENTICATION\n'
+  elif grep -Eiq '(issue with the selected model|model[^[:cntrl:]]*(does not exist|not found|not available|no access)|api_error_status[^[:cntrl:]]*404)' "$log_file" 2>/dev/null; then
+    printf 'MODEL_UNAVAILABLE\n'
   elif grep -Eiq '(permission denied|approval (is )?required|requires approval|not allowed by (policy|permission)|denied by (policy|sandbox)|sandbox[^[:cntrl:]]*(denied|violation)|tool use[^[:cntrl:]]*denied|operation not permitted)' "$log_file" 2>/dev/null; then
     printf 'PERMISSION\n'
   elif grep -Eiq '((mcp|playwright)[^[:cntrl:]]*(failed|error|unavailable|unhealthy|disconnected|could not connect)|browser[^[:cntrl:]]*(not installed|failed to launch))' "$log_file" 2>/dev/null; then
