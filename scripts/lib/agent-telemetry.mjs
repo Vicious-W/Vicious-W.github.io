@@ -55,6 +55,8 @@ function firstNumber(...values) {
 function claudeData(events) {
   const result = [...events].reverse().find((event) => event?.type === 'result') ?? events.at(-1) ?? {};
   const usage = result.usage ?? {};
+  const iterations = Array.isArray(usage.iterations) ? usage.iterations : [];
+  const lastIteration = iterations.at(-1) ?? {};
   const modelUsage = Object.values(result.modelUsage ?? {});
   const modelTotals = modelUsage.reduce(
     (total, item) => ({
@@ -112,6 +114,14 @@ function claudeData(events) {
         firstNumber(usage.output_tokens, usage.outputTokens),
         modelTotals.outputTokens,
       ),
+      lastTurnCachedInputTokens: firstNumber(
+        lastIteration.cache_read_input_tokens,
+        lastIteration.cached_input_tokens,
+        lastIteration.cachedInputTokens,
+      ),
+      speed: typeof usage.speed === 'string' ? usage.speed : null,
+      fastModeState:
+        typeof result.fast_mode_state === 'string' ? result.fast_mode_state : null,
     },
   };
 }
@@ -151,6 +161,9 @@ function codexData(events) {
       ),
       cacheCreationInputTokens: null,
       outputTokens: firstNumber(usage.output_tokens, usage.outputTokens),
+      lastTurnCachedInputTokens: null,
+      speed: null,
+      fastModeState: null,
     },
   };
 }

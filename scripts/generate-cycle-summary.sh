@@ -172,9 +172,9 @@ fi
   fi
   supervisor_status="$(supervisor_value SUPERVISOR_STATUS)"
   if [[ -n "$supervisor_status" ]]; then
-    printf -- '- 外层监督：`%s`，阶段 `%s`，额度恢复 `%s` 次\n' \
+    printf -- '- 外层监督：`%s`，阶段 `%s`，窗口恢复 `%s` 次，Monitor 模式 `%s`\n' \
       "$supervisor_status" "$(supervisor_value CURRENT_STAGE)" \
-      "$(supervisor_value QUOTA_RESUMES)"
+      "$(supervisor_value QUOTA_RESUMES)" "$(supervisor_value MONITOR_MODE)"
     if [[ -n "$(supervisor_value RESUME_AT)" ]]; then
       printf -- '- 计划恢复时间：`%s`\n' "$(supervisor_value RESUME_AT)"
     fi
@@ -240,6 +240,10 @@ fi
       printf -- '- 会话：`%s`，模式 `%s`\n' \
         "$(manifest_value "$implementation_manifest" RESOLVED_SESSION_ID)" \
         "$(manifest_value "$implementation_manifest" SESSION_MODE)"
+      printf -- '- 会话代次：`%s`；Claude 保险：turns `%s`，budget `$%s`\n' \
+        "$(manifest_value "$implementation_manifest" SESSION_GENERATION)" \
+        "$(manifest_value "$implementation_manifest" MAX_TURNS)" \
+        "$(manifest_value "$implementation_manifest" MAX_BUDGET_USD)"
       printf -- '- 用量记录：`%s`\n' \
         "$(manifest_value "$implementation_manifest" USAGE_FILE)"
     fi
@@ -276,6 +280,10 @@ fi
       printf -- '- 会话：`%s`，模式 `%s`\n' \
         "$(manifest_value "$review_manifest" RESOLVED_SESSION_ID)" \
         "$(manifest_value "$review_manifest" SESSION_MODE)"
+      printf -- '- 会话代次：`%s`；Claude 保险：turns `%s`，budget `$%s`\n' \
+        "$(manifest_value "$review_manifest" SESSION_GENERATION)" \
+        "$(manifest_value "$review_manifest" MAX_TURNS)" \
+        "$(manifest_value "$review_manifest" MAX_BUDGET_USD)"
       printf -- '- 用量记录：`%s`\n' \
         "$(manifest_value "$review_manifest" USAGE_FILE)"
     fi
@@ -289,6 +297,7 @@ fi
     printf -- '- 已达到轮数上限；启动新循环前请先作出产品或技术决定。\n'
   elif [[ -n "$stop_reason" ]]; then
     if [[ "$supervisor_status" == "WAITING_FOR_QUOTA" || \
+          "$supervisor_status" == "WAITING_FOR_BUDGET_WINDOW" || \
           "$supervisor_status" == "SCHEDULED" ]]; then
       printf -- '- 外层监督器已安排恢复；无需保持 AI Agent 轮询。\n'
     else

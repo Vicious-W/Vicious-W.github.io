@@ -14,6 +14,8 @@ AGENT_NPM_CACHE_DIR=""
 AGENT_SESSION_FILE=""
 AGENT_SESSION_ID=""
 AGENT_SESSION_MODE="new"
+AGENT_SESSION_GENERATION=1
+AGENT_SESSION_ROTATED_FROM=""
 
 agent_runtime_init() {
   AGENT_RUNTIME_ROOT="$1"
@@ -47,6 +49,7 @@ agent_prepare_role_session() {
   local session_dir="$AGENT_RUNTIME_ROOT/.agent/artifacts/sessions"
   local task_slug role_slug
   local stored_id stored_task stored_role stored_executor stored_model stored_effort
+  local stored_status stored_generation
 
   task_slug="$(agent_safe_slug "$task_id")"
   role_slug="$(printf '%s' "$role" | tr '[:upper:]' '[:lower:]')"
@@ -59,16 +62,31 @@ agent_prepare_role_session() {
   stored_executor="$(agent_session_value "$AGENT_SESSION_FILE" EXECUTOR)"
   stored_model="$(agent_session_value "$AGENT_SESSION_FILE" MODEL)"
   stored_effort="$(agent_session_value "$AGENT_SESSION_FILE" EFFORT)"
+  stored_status="$(agent_session_value "$AGENT_SESSION_FILE" STATUS)"
+  stored_generation="$(agent_session_value "$AGENT_SESSION_FILE" GENERATION)"
+  [[ "$stored_generation" =~ ^[1-9][0-9]*$ ]] || stored_generation=1
 
   if [[ -n "$stored_id" && "$stored_task" == "$task_id" && \
         "$stored_role" == "$role" && "$stored_executor" == "$executor" && \
-        "$stored_model" == "$model" && "$stored_effort" == "$effort" ]]; then
+        "$stored_model" == "$model" && "$stored_effort" == "$effort" && \
+        "$stored_status" == "ACTIVE" ]]; then
     AGENT_SESSION_ID="$stored_id"
     AGENT_SESSION_MODE="resume"
+    AGENT_SESSION_GENERATION="$stored_generation"
+    AGENT_SESSION_ROTATED_FROM=""
     return 0
   fi
 
   AGENT_SESSION_MODE="new"
+  AGENT_SESSION_GENERATION=1
+  AGENT_SESSION_ROTATED_FROM=""
+  if [[ -n "$stored_id" && "$stored_task" == "$task_id" && \
+        "$stored_role" == "$role" && "$stored_executor" == "$executor" && \
+        "$stored_model" == "$model" && "$stored_effort" == "$effort" && \
+        "$stored_status" == "ROTATE_REQUIRED" ]]; then
+    AGENT_SESSION_GENERATION=$((stored_generation + 1))
+    AGENT_SESSION_ROTATED_FROM="$stored_id"
+  fi
   if [[ "$executor" == "claude" ]]; then
     AGENT_SESSION_ID="$(agent_new_uuid)"
   else
@@ -80,6 +98,10 @@ agent_prepare_role_session() {
     printf 'EXECUTOR=%s\n' "$executor"
     printf 'MODEL=%s\n' "$model"
     printf 'EFFORT=%s\n' "$effort"
+    printf 'GENERATION=%s\n' "$AGENT_SESSION_GENERATION"
+    if [[ -n "$AGENT_SESSION_ROTATED_FROM" ]]; then
+      printf 'PREVIOUS_SESSION_ID=%s\n' "$AGENT_SESSION_ROTATED_FROM"
+    fi
     printf 'SESSION_ID=%s\n' "$AGENT_SESSION_ID"
     printf 'STATUS=PENDING\n'
     printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -107,7 +129,7 @@ agent_finalize_role_session() {
 
   while IFS= read -r line; do
     case "$line" in
-      SESSION_ID=*|STATUS=*|UPDATED_AT_UTC=*|LAST_RUN_STATUS=*) ;;
+      SESSION_ID=*|STATUS=*|UPDATED_AT_UTC=*|LAST_RUN_STATUS=*|LAST_CONTEXT_TOKENS=*|ROTATION_REASON=*) ;;
       *) printf '%s\n' "$line" ;;
     esac
   done <"$AGENT_SESSION_FILE" >"$session_tmp"
@@ -118,6 +140,41 @@ agent_finalize_role_session() {
     printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   } >>"$session_tmp"
   mv "$session_tmp" "$AGENT_SESSION_FILE"
+}
+
+agent_mark_role_session_rotation() {
+  local executor="$1"
+  local usage_file="$2"
+  local context_threshold="$3"
+  local context_tokens=""
+  local session_tmp="${AGENT_SESSION_FILE}.tmp"
+
+  [[ "$executor" == "claude" && -s "$usage_file" && -s "$AGENT_SESSION_FILE" ]] || return 1
+  context_tokens="$(
+    node -e '
+      const fs = require("fs");
+      const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+        .lastTurnCachedInputTokens;
+      if (Number.isFinite(value)) process.stdout.write(String(value));
+    ' "$usage_file" 2>/dev/null
+  )"
+  [[ "$context_tokens" =~ ^[0-9]+$ ]] || return 1
+  (( context_tokens >= context_threshold )) || return 1
+
+  while IFS= read -r line; do
+    case "$line" in
+      STATUS=*|UPDATED_AT_UTC=*|LAST_CONTEXT_TOKENS=*|ROTATION_REASON=*) ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done <"$AGENT_SESSION_FILE" >"$session_tmp"
+  {
+    printf 'STATUS=ROTATE_REQUIRED\n'
+    printf 'LAST_CONTEXT_TOKENS=%s\n' "$context_tokens"
+    printf 'ROTATION_REASON=CONTEXT_GUARD\n'
+    printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  } >>"$session_tmp"
+  mv "$session_tmp" "$AGENT_SESSION_FILE"
+  return 0
 }
 
 agent_record_telemetry() {
@@ -179,6 +236,50 @@ agent_runtime_config() {
     return 2
   fi
   printf '%s\n' "$value"
+}
+
+agent_runtime_decimal_config() {
+  local key="$1"
+  local default_value="$2"
+  local config_file="$AGENT_RUNTIME_ROOT/.agent/runtime.env"
+  local value=""
+
+  if [[ -f "$config_file" ]]; then
+    value="$(sed -n "s/^${key}=//p" "$config_file" | head -n 1)"
+  fi
+  [[ -n "$value" ]] || value="$default_value"
+
+  if [[ ! "$value" =~ ^[0-9]+([.][0-9]{1,4})?$ ]] || \
+     ! awk -v value="$value" 'BEGIN { exit !(value > 0 && value <= 10000) }'; then
+    printf 'Invalid %s=%s in %s; expected a positive decimal no greater than 10000.\n' \
+      "$key" "$value" "$config_file" >&2
+    return 2
+  fi
+  printf '%s\n' "$value"
+}
+
+agent_runtime_enum_config() {
+  local key="$1"
+  local default_value="$2"
+  shift 2
+  local config_file="$AGENT_RUNTIME_ROOT/.agent/runtime.env"
+  local value=""
+  local allowed=""
+
+  if [[ -f "$config_file" ]]; then
+    value="$(sed -n "s/^${key}=//p" "$config_file" | head -n 1)"
+  fi
+  [[ -n "$value" ]] || value="$default_value"
+
+  for allowed in "$@"; do
+    if [[ "$value" == "$allowed" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done
+  printf 'Invalid %s=%s in %s; expected one of: %s.\n' \
+    "$key" "$value" "$config_file" "$*" >&2
+  return 2
 }
 
 agent_runtime_model_config() {
@@ -318,6 +419,21 @@ agent_append_run_session() {
   } >>"$manifest_path"
 }
 
+agent_append_run_limits() {
+  local manifest_path="$1"
+  local max_turns="$2"
+  local max_budget_usd="$3"
+  local context_rotate_tokens="$4"
+
+  {
+    printf 'MAX_TURNS=%s\n' "${max_turns:-NOT_APPLICABLE}"
+    printf 'MAX_BUDGET_USD=%s\n' "${max_budget_usd:-NOT_APPLICABLE}"
+    printf 'CONTEXT_ROTATE_TOKENS=%s\n' "${context_rotate_tokens:-NOT_APPLICABLE}"
+    printf 'SESSION_GENERATION=%s\n' "$AGENT_SESSION_GENERATION"
+    printf 'SESSION_ROTATED_FROM=%s\n' "$AGENT_SESSION_ROTATED_FROM"
+  } >>"$manifest_path"
+}
+
 agent_finish_run_manifest() {
   local manifest_path="$1"
   local status="$2"
@@ -415,7 +531,9 @@ agent_release_lock() {
 agent_classify_log() {
   local log_file="$1"
 
-  if grep -Eiq '(monthly spend limit|usage limit|billing limit|quota (has been )?(exceeded|reached)|insufficient (credits|balance)|credit balance[^[:cntrl:]]*(low|empty|exhausted)|rate limit[^[:cntrl:]]*(exceeded|reached))' "$log_file" 2>/dev/null; then
+  if grep -Eiq '(error_max_turns|reached max turns|maximum (agentic )?turns|max turns[^[:cntrl:]]*(reached|exceeded)|error_max_budget_usd|max(imum)? budget[^[:cntrl:]]*(reached|exceeded)|budget[^[:cntrl:]]*limit)' "$log_file" 2>/dev/null; then
+    printf 'AUTONOMY_SLICE_LIMIT\n'
+  elif grep -Eiq '(monthly spend limit|usage limit|billing limit|quota (has been )?(exceeded|reached)|insufficient (credits|balance)|credit balance[^[:cntrl:]]*(low|empty|exhausted)|rate limit[^[:cntrl:]]*(exceeded|reached))' "$log_file" 2>/dev/null; then
     printf 'USAGE_OR_BILLING_LIMIT\n'
   elif grep -Eiq '(not logged in|authentication (failed|required)|unauthorized|invalid (api key|token)|token (has )?expired|oauth[^[:cntrl:]]*(failed|expired)|http[^[:cntrl:]]*401)' "$log_file" 2>/dev/null; then
     printf 'AUTHENTICATION\n'

@@ -92,6 +92,20 @@ fi
 implementer_timeout="$(agent_runtime_config IMPLEMENTER_TIMEOUT_SECONDS 7200 60 43200)" || exit 2
 heartbeat_seconds="$(agent_runtime_config AGENT_HEARTBEAT_SECONDS 30 5 300)" || exit 2
 termination_grace="$(agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60)" || exit 2
+claude_max_turns=""
+claude_max_budget_usd=""
+claude_context_rotate_tokens=""
+if [[ "$implementer_agent" == "claude" ]]; then
+  claude_max_turns="$(
+    agent_runtime_config CLAUDE_IMPLEMENTER_MAX_TURNS 36 1 1000
+  )" || exit 2
+  claude_max_budget_usd="$(
+    agent_runtime_decimal_config CLAUDE_IMPLEMENTER_MAX_BUDGET_USD 6.00
+  )" || exit 2
+  claude_context_rotate_tokens="$(
+    agent_runtime_config CLAUDE_CONTEXT_ROTATE_TOKENS 160000 10000 1000000
+  )" || exit 2
+fi
 runner="$ROOT_DIR/scripts/agent-runners/$implementer_agent.sh"
 
 mkdir -p "$ARTIFACT_DIR" "$RUN_DIR"
@@ -192,8 +206,19 @@ agent_write_run_manifest \
 agent_append_run_session \
   "$manifest_file" "$AGENT_SESSION_ID" "$AGENT_SESSION_MODE" \
   "${events_file#"$ROOT_DIR/"}" "${usage_file#"$ROOT_DIR/"}"
+agent_append_run_limits \
+  "$manifest_file" "$claude_max_turns" "$claude_max_budget_usd" \
+  "$claude_context_rotate_tokens"
 
-if [[ "$AGENT_SESSION_MODE" == "resume" ]]; then
+if [[ -n "$AGENT_SESSION_ROTATED_FROM" ]]; then
+  context_instructions="This is a deliberately compacted continuation of the same
+task-scoped IMPLEMENTER role. The previous raw session
+$AGENT_SESSION_ROTATED_FROM exceeded the context guard and was closed after a
+Git recovery checkpoint. Reconstruct only the working set from PROJECT.md,
+.agent/next-task.md, .agent/latest-review.md, .agent/implementation-report.md,
+the current Git history/status/diff and directly relevant code or specification
+sections. Do not reread every unchanged engineering document."
+elif [[ "$AGENT_SESSION_MODE" == "resume" ]]; then
   context_instructions="This is a continuation of the same task-scoped IMPLEMENTER conversation.
 Do not reread unchanged protocol and engineering documents already present in
 the conversation. Re-read PROJECT.md, .agent/next-task.md,
@@ -219,6 +244,7 @@ Task: $active_task_id
 Round: $implementation_round of at most $max_rounds
 Base commit: $base_commit
 Role session: ${AGENT_SESSION_ID:-pending} ($AGENT_SESSION_MODE)
+Session generation: $AGENT_SESSION_GENERATION
 Run manifest: ${manifest_file#"$ROOT_DIR/"}
 
 $context_instructions
@@ -232,6 +258,13 @@ damage/fracture, audio activation, changed RP-* and reactor component IDs,
 sources, geometry, state links, proxy labels, deliberate abstractions,
 verification, and open gap IDs in .agent/implementation-report.md.
 
+Keep the autonomous slice efficient: batch related reads and edits, avoid
+re-reading unchanged files or printing large generated output, stabilize the
+code before running the full validation suite, and perform one consolidated
+Playwright evidence pass near the end instead of repeatedly replaying the same
+viewports. A neutral budget/turn guard may stop this process early; in that case
+leave a coherent filesystem state and do not attempt to bypass the guard.
+
 You may edit source, styles, tests, package configuration, and current progress
 facts. The collaboration control plane is protected: do not modify
 PROJECT_SPEC.md, AGENT_PROTOCOL.md, REVIEW_CONTRACT.md, AGENTS.md, CLAUDE.md,
@@ -241,7 +274,9 @@ Agent/validation control scripts. Do not stage or commit. Never push, deploy,
 reset, clean, rebase, switch branches, inspect secret stores, expose credentials,
 or start another Agent.
 
-Run ./scripts/run-validation.sh. For page appearance or behavior changes, use
+Run ./scripts/run-validation.sh as a standalone command; do not chain diagnostic
+echo/cat commands onto it. Use the Write/Edit tools, not a shell heredoc, for
+temporary source probes in ignored artifact paths. For page appearance or behavior changes, use
 Playwright MCP—not a Bash Playwright script—to exercise the required viewports,
 session reset, first-interaction activation, reactor-pool operation and pulse,
 water response, glass interactions, audio activation, responsive layout, and
@@ -259,15 +294,21 @@ printf 'Starting IMPLEMENTER round %s/%s for %s\n' \
 printf 'Runtime: %s / %s / %s\n' \
   "$implementer_agent" "$implementer_model" "$implementer_effort"
 printf 'Role session: %s (%s)\n' "${AGENT_SESSION_ID:-assigned-by-executor}" "$AGENT_SESSION_MODE"
+if [[ "$implementer_agent" == "claude" ]]; then
+  printf 'Claude guard: max %s turns / $%s API-equivalent / rotate at %s cached tokens\n' \
+    "$claude_max_turns" "$claude_max_budget_usd" "$claude_context_rotate_tokens"
+fi
 
-export AGENT_SESSION_ID AGENT_SESSION_MODE
+export AGENT_SESSION_ID AGENT_SESSION_MODE AGENT_SESSION_GENERATION
+export AGENT_CLAUDE_MAX_TURNS="$claude_max_turns"
+export AGENT_CLAUDE_MAX_BUDGET_USD="$claude_max_budget_usd"
 export AGENT_EVENT_FILE="$events_file"
 run_agent_process \
   "IMPLEMENTER ($implementer_agent) round $implementation_round/$max_rounds" \
   "$implementer_timeout" "$heartbeat_seconds" "$termination_grace" "$agent_log" -- \
   "$runner" IMPLEMENTER "$implementer_model" "$implementer_effort" "$prompt_file" -
 implementer_exit=$?
-unset AGENT_EVENT_FILE
+unset AGENT_EVENT_FILE AGENT_CLAUDE_MAX_TURNS AGENT_CLAUDE_MAX_BUDGET_USD
 
 if (( implementer_exit == 0 )); then
   run_status="SUCCESS"
@@ -276,7 +317,13 @@ else
 fi
 agent_finalize_role_session "$implementer_agent" "$events_file" "$run_status"
 agent_record_telemetry "$implementer_agent" "$events_file" "$usage_file"
+session_rotation="NO"
+if agent_mark_role_session_rotation \
+  "$implementer_agent" "$usage_file" "${claude_context_rotate_tokens:-1000000}"; then
+  session_rotation="REQUIRED"
+fi
 printf 'RESOLVED_SESSION_ID=%s\n' "$AGENT_SESSION_ID" >>"$manifest_file"
+printf 'SESSION_ROTATION_REQUIRED=%s\n' "$session_rotation" >>"$manifest_file"
 agent_finish_run_manifest \
   "$manifest_file" "$run_status" "$implementer_exit" "$AGENT_RUN_REASON"
 

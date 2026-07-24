@@ -12,7 +12,10 @@ FAKE_DATE_COUNTER="$TEST_DIR/fake-date-counter"
 CLAUDE_EVENTS="$TEST_DIR/claude-events.json"
 CODEX_EVENTS="$TEST_DIR/codex-events.jsonl"
 USAGE_SUMMARY="$TEST_DIR/usage-summary.json"
+CLAUDE_ARGS="$TEST_DIR/claude-args.txt"
+SESSION_EVENTS="$TEST_DIR/session-events.json"
 SESSION_TEST_TASK="runtime-session-test-$(date +%s%N)-$$"
+MONITOR_SESSION_TEST_TASK="runtime-monitor-session-test-$(date +%s%N)-$$"
 
 # shellcheck source=scripts/lib/agent-runtime.sh
 source "$ROOT_DIR/scripts/lib/agent-runtime.sh"
@@ -83,6 +86,10 @@ expect_result 42 USAGE_OR_BILLING_LIMIT usage-limit \
   run_agent_process 'fake usage-limit child' 5 1 1 "$TEST_DIR/usage-limit.log" -- \
   bash -c 'printf "You have hit your monthly spend limit\n" >&2; exit 42'
 
+expect_result 43 AUTONOMY_SLICE_LIMIT autonomy-slice-limit \
+  run_agent_process 'fake autonomy guard child' 5 1 1 "$TEST_DIR/slice-limit.log" -- \
+  bash -c 'printf "Error: Reached max turns (36)\n" >&2; exit 43'
+
 expect_result 124 TIMEOUT timeout \
   run_agent_process 'fake timeout child' 1 1 1 "$TEST_DIR/timeout.log" -- \
   bash -c 'sleep 5'
@@ -139,12 +146,33 @@ fi
 agent_prepare_role_session "$SESSION_TEST_TASK" IMPLEMENTER claude opus-4.8 high
 first_session_id="$AGENT_SESSION_ID"
 first_session_mode="$AGENT_SESSION_MODE"
+printf '%s\n' \
+  "{\"type\":\"result\",\"session_id\":\"$first_session_id\",\"result\":\"session created\"}" \
+  >"$SESSION_EVENTS"
+agent_finalize_role_session claude "$SESSION_EVENTS" SUCCESS
 agent_prepare_role_session "$SESSION_TEST_TASK" IMPLEMENTER claude opus-4.8 high
 if [[ "$first_session_mode" == "new" && "$AGENT_SESSION_MODE" == "resume" && \
       -n "$first_session_id" && "$AGENT_SESSION_ID" == "$first_session_id" ]]; then
   printf 'PASS  task-scoped role session changes from new to resume\n'
 else
   printf 'FAIL  task-scoped role session was not reused deterministically\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+printf '%s\n' \
+  '{"lastTurnCachedInputTokens":170000}' >"$USAGE_SUMMARY"
+if agent_mark_role_session_rotation claude "$USAGE_SUMMARY" 160000; then
+  agent_prepare_role_session "$SESSION_TEST_TASK" IMPLEMENTER claude opus-4.8 high
+  if [[ "$AGENT_SESSION_MODE" == "new" && \
+        "$AGENT_SESSION_GENERATION" == "2" && \
+        "$AGENT_SESSION_ROTATED_FROM" == "$first_session_id" && \
+        "$AGENT_SESSION_ID" != "$first_session_id" ]]; then
+    printf 'PASS  context guard rotates one logical role session to a compacted generation\n'
+  else
+    printf 'FAIL  context guard did not create the expected session generation\n' >&2
+    failure_count=$((failure_count + 1))
+  fi
+else
+  printf 'FAIL  context guard did not mark an oversized Claude session\n' >&2
   failure_count=$((failure_count + 1))
 fi
 agent_prepare_role_session "$SESSION_TEST_TASK" REVIEWER claude opus-4.8 high
@@ -169,10 +197,35 @@ else
 fi
 agent_record_telemetry claude "$CLAUDE_EVENTS" "$USAGE_SUMMARY"
 if grep -Fq '"inputTokens": 100' "$USAGE_SUMMARY" && \
-   grep -Fq '"totalCostUsd": 1.25' "$USAGE_SUMMARY"; then
+   grep -Fq '"totalCostUsd": 1.25' "$USAGE_SUMMARY" && \
+   grep -Fq '"lastTurnCachedInputTokens":' "$USAGE_SUMMARY"; then
   printf 'PASS  Claude telemetry falls back to per-model usage totals\n'
 else
   printf 'FAIL  Claude telemetry lost per-model usage data\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+cat >"$FAKE_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$AGENT_FAKE_CLAUDE_ARGS"
+printf '%s\n' \
+  '{"type":"result","session_id":"33333333-3333-4333-a333-333333333333","num_turns":1,"duration_ms":1,"usage":{"iterations":[{"cache_read_input_tokens":10}]},"result":"fake final"}'
+EOF
+chmod +x "$FAKE_BIN/claude"
+AGENT_FAKE_CLAUDE_ARGS="$CLAUDE_ARGS" \
+AGENT_SESSION_ID="33333333-3333-4333-a333-333333333333" \
+AGENT_SESSION_MODE=new \
+AGENT_EVENT_FILE="$TEST_DIR/fake-runner-events.json" \
+AGENT_CLAUDE_MAX_TURNS=36 \
+AGENT_CLAUDE_MAX_BUDGET_USD=6.00 \
+PATH="$FAKE_BIN:$PATH" \
+  "$ROOT_DIR/scripts/agent-runners/claude.sh" \
+    IMPLEMENTER opus high "$PROMPT_TEST" - >/dev/null
+if grep -Fq -- '--max-turns 36' "$CLAUDE_ARGS" && \
+   grep -Fq -- '--max-budget-usd 6.00' "$CLAUDE_ARGS"; then
+  printf 'PASS  Claude adapter forwards autonomous turn and budget guards\n'
+else
+  printf 'FAIL  Claude adapter omitted one or more autonomous guards\n' >&2
   failure_count=$((failure_count + 1))
 fi
 
@@ -186,6 +239,20 @@ if grep -Fq '"inputTokens": 200' "$USAGE_SUMMARY" && \
   printf 'PASS  Codex telemetry records available token and cache data\n'
 else
   printf 'FAIL  Codex telemetry summary is missing usage data\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+agent_prepare_role_session \
+  "$MONITOR_SESSION_TEST_TASK" MONITOR codex gpt-5.6-terra medium
+agent_finalize_role_session codex "$CODEX_EVENTS" SUCCESS
+monitor_session_id="$AGENT_SESSION_ID"
+agent_prepare_role_session \
+  "$MONITOR_SESSION_TEST_TASK" MONITOR codex gpt-5.6-terra medium
+if [[ "$AGENT_SESSION_MODE" == "resume" && \
+      "$AGENT_SESSION_ID" == "$monitor_session_id" && \
+      -n "$monitor_session_id" ]]; then
+  printf 'PASS  task-scoped CLI MONITOR resumes one persistent conversation\n'
+else
+  printf 'FAIL  CLI MONITOR session was not persisted across events\n' >&2
   failure_count=$((failure_count + 1))
 fi
 

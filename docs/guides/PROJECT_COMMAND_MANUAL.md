@@ -1,8 +1,8 @@
 # 项目参与者指令手册
 
-版本：v3.0
+版本：v4.0
 
-更新日期：2026-07-23
+更新日期：2026-07-24
 
 适用目录：`/home/vicious/projects/Vicious-W.github.io`
 
@@ -61,7 +61,8 @@ npm run dev -- --port 8000
 作为通用协作者工作，不自动写正式交接或推进循环。
 
 `MONITOR` 是跨额度窗口的监督身份：只检查流程、进程、Git 和恢复证据，不评价业务
-质量。常规等待和确定性恢复由 shell 完成；只有未知异常才需要启动 MONITOR Agent。
+质量。`attached` 模式由当前可见 MONITOR 对话从开始到终止持有 supervisor；
+`persistent-cli` 模式由父脚本创建并恢复一个后台任务级 MONITOR 会话。
 
 `IMPLEMENTER` 和 `REVIEWER` 是显式分配的专用身份。任何受支持的执行器都可以承担
 任一角色，同一执行器也可以在两个全新进程中先实现再审查。后一种配置具有权限和
@@ -110,6 +111,14 @@ MONITOR_AGENT=codex
 MONITOR_MODEL=gpt-5.6-terra
 MONITOR_EFFORT=medium
 MONITOR_TIMEOUT_SECONDS=900
+MONITOR_MODE=attached
+CLAUDE_IMPLEMENTER_MAX_TURNS=36
+CLAUDE_IMPLEMENTER_MAX_BUDGET_USD=6.00
+CLAUDE_REVIEWER_MAX_TURNS=24
+CLAUDE_REVIEWER_MAX_BUDGET_USD=4.00
+CLAUDE_MONITOR_MAX_TURNS=8
+CLAUDE_MONITOR_MAX_BUDGET_USD=1.00
+CLAUDE_CONTEXT_ROTATE_TOKENS=160000
 QUOTA_WAIT_SECONDS=18000
 MAX_QUOTA_RESUMES=6
 ```
@@ -224,7 +233,14 @@ Agent 不负责启动下一个 Agent。中立父脚本一直等待子进程结�
   --reviewer-effort max \
   --monitor codex \
   --monitor-model gpt-5.6-terra \
-  --monitor-effort medium
+  --monitor-effort medium \
+  --monitor-mode attached
+```
+
+如果由你自己在普通终端启动、希望异常时也能完全无人值守：
+
+```bash
+./scripts/agent-cycle.sh supervise --monitor-mode persistent-cli
 ```
 
 如果需要在确定时间才首次启动：
@@ -245,14 +261,24 @@ agent-supervisor.sh：跨额度窗口、恢复次数、定时等待、异常交�
     └── REVIEWER
 ```
 
-额度中断时，监督器会先确认工作 Agent 已退出。若实现阶段留下合法半成品，它运行
+额度中断或 Claude 主动预算保险触发时，监督器会先确认工作 Agent 已退出。若实现阶段留下合法半成品，它运行
 统一验证并创建标题明确的 recovery checkpoint；该提交只保存现场，不代表通过，
-也不增加审查轮次。然后状态进入 `WAITING_FOR_QUOTA`，由 shell 的 `sleep` 等待。
-这段等待不会调用模型，因此不会消耗 Agent token。
+也不增加审查轮次。额度事件进入 `WAITING_FOR_QUOTA`，主动预算保险进入
+`WAITING_FOR_BUDGET_WINDOW`，随后都由 shell 的 `sleep` 等待。这段等待不会调用
+模型，因此不会消耗 Agent token。
+
+Claude 非交互调用不是一次模型请求，而是工具调用—模型调用循环。为防止几十分钟内
+重复读取数千万缓存 token，默认对 IMPLEMENTER、REVIEWER 和后台 MONITOR 分别设置
+最大 turns 与 API 等价预算。命中任一值记录为 `AUTONOMY_SLICE_LIMIT`，状态进入
+`WAITING_FOR_BUDGET_WINDOW`。这些金额是控制 Claude CLI 返回的等价用量，不等于
+订阅账单金额。
 
 到点后，监督器从中断角色启动全新进程：实现阶段中断就继续 IMPLEMENTER，已有
 实现检查点后的审查中断就直接继续 REVIEWER；新进程会精确恢复同一任务的对应角色
-会话，而不是重新选择“最近会话”。默认每次额度等待 5 小时，最多恢复 6 次，均可用
+会话，而不是重新选择“最近会话”。如果最后一轮缓存上下文达到
+`CLAUDE_CONTEXT_ROTATE_TOKENS`，父脚本会在安全检查点后创建同一逻辑角色会话的新
+代次，并在清单记录旧会话 ID；这样保留任务连续性，但不再让每个工具轮次携带膨胀
+的全部原始历史。默认每次额度等待 5 小时，最多恢复 6 次，均可用
 `--quota-wait-seconds` 和 `--max-quota-resumes` 覆盖。
 
 每次调用的运行清单位于 `.agent/artifacts/runs/`，其中记录会话 ID、`new/resume`
@@ -280,22 +306,24 @@ agent-supervisor.sh：跨额度窗口、恢复次数、定时等待、异常交�
 `HEAD^..HEAD`。若 `.agent/state.env` 已记录 `LAST_IMPLEMENTATION_BASE_COMMIT`，
 可以省略该参数。
 
-`SCHEDULED` 和 `WAITING_FOR_QUOTA` 表示没有 AI Agent 在运行；`RUNNING` 表示正在
-执行一个有界 cycle；`COMPLETE` 或 `STOPPED` 是终态。
+`SCHEDULED`、`WAITING_FOR_QUOTA` 和 `WAITING_FOR_BUDGET_WINDOW` 表示没有工作
+Agent 在运行；`RUNNING` 表示正在执行一个有界 cycle；`COMPLETE` 或 `STOPPED`
+是终态。
 
 单个 Agent 的 timeout 只累计监督循环实际运行的轮询时间。Windows 睡眠或 WSL
 暂停期间 Agent 没有工作，这段墙上时间不计入 timeout；恢复后继续累计。supervisor
-会先写入 `COMPLETE`、`STOPPED` 或 `WAITING_FOR_QUOTA`，再重新生成简报，因此简报
-看到的是同一事件的最终外层状态。
+会先写入 `COMPLETE`、`STOPPED`、`WAITING_FOR_QUOTA` 或
+`WAITING_FOR_BUDGET_WINDOW`，再重新生成简报，因此简报看到的是同一事件的最终
+外层状态。
 
 `--start-at` 默认也作为固定额度窗口锚点。例如首次恢复为 10:42、窗口为 5 小时，
 后续会对齐 15:42、20:42，而不是从 Agent 实际中断时刻再等待整整 5 小时。首次
 启动时间与额度锚点不相同时，可另传 `--quota-anchor`。
 
-普通额度事件由脚本机械处理，不唤醒 MONITOR。只有未知退出、恢复现场不安全或控制
-状态异常时，才启动一次只读 MONITOR 生成事件报告，然后停止等待所有者决定。避免
-让 AI 每分钟查看相同状态：shell 等待近似零模型成本，高频 AI 轮询会重复读取上下文
-并实际消耗 token。
+在 `attached` 模式中，当前可见 MONITOR 对话必须一直保留前台工具调用；一旦该
+对话回合结束，外部 shell 无法重新唤醒它。等待仍由 shell 完成，不需要模型轮询。
+在 `persistent-cli` 模式中，父脚本于启动事件创建 MONITOR 会话，并在异常、等待和
+恢复边界精确恢复该会话；它不会显示成当前 VS Code 对话。
 
 ## 7. 父脚本命令
 

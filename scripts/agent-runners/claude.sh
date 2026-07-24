@@ -33,12 +33,30 @@ session_id="${AGENT_SESSION_ID:-}"
 session_mode="${AGENT_SESSION_MODE:-$([[ "$role" == "MONITOR" ]] && printf ephemeral || printf new)}"
 event_file="${AGENT_EVENT_FILE:-$([[ "$role" == "MONITOR" ]] && printf '%s.events.json' "$output_file")}"
 telemetry_script="$root_dir/scripts/lib/agent-telemetry.mjs"
+max_turns="${AGENT_CLAUDE_MAX_TURNS:-}"
+max_budget_usd="${AGENT_CLAUDE_MAX_BUDGET_USD:-}"
 
 if [[ -z "$event_file" ]]; then
   printf 'AGENT_EVENT_FILE is required for persistent Claude runs.\n' >&2
   exit 2
 fi
 mkdir -p "$(dirname "$event_file")"
+
+limit_args=()
+if [[ -n "$max_turns" ]]; then
+  [[ "$max_turns" =~ ^[1-9][0-9]*$ ]] || {
+    printf 'AGENT_CLAUDE_MAX_TURNS must be a positive integer.\n' >&2
+    exit 2
+  }
+  limit_args+=(--max-turns "$max_turns")
+fi
+if [[ -n "$max_budget_usd" ]]; then
+  [[ "$max_budget_usd" =~ ^[0-9]+([.][0-9]{1,4})?$ ]] || {
+    printf 'AGENT_CLAUDE_MAX_BUDGET_USD must be a positive decimal.\n' >&2
+    exit 2
+  }
+  limit_args+=(--max-budget-usd "$max_budget_usd")
+fi
 
 session_args=()
 case "$session_mode" in
@@ -80,6 +98,7 @@ run_claude() {
     --exclude-dynamic-system-prompt-sections \
     --prompt-suggestions false \
     --output-format json \
+    "${limit_args[@]}" \
     "${session_args[@]}" \
     --allowedTools "$permission_tools" \
     --disallowedTools "$denied_tools" \
@@ -97,7 +116,7 @@ emit_final() {
 case "$role" in
   IMPLEMENTER)
     if run_claude \
-      "Read(./**),Write(./**),Edit(./**),Glob,Grep,Bash(./scripts/run-validation.sh),Bash(npm run *),Bash(npm install *),Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git rev-parse *),Bash(git ls-files *),Bash(rg *),Bash(find *),Bash(sed *),Bash(ls *),Bash(curl http://localhost:*),Bash(curl http://127.0.0.1:*),WebSearch,WebFetch,mcp__playwright__*" \
+      "Read(./**),Write(./**),Edit(./**),Glob,Grep,Bash(./scripts/run-validation.sh),Bash(npm run *),Bash(npm test),Bash(npm install *),Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git rev-parse *),Bash(git ls-files *),Bash(rg *),Bash(find *),Bash(sed *),Bash(ls *),Bash(curl http://localhost:*),Bash(curl http://127.0.0.1:*),WebSearch,WebFetch,mcp__playwright__*" \
       "NotebookEdit,Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git reset *),Bash(git clean *),Bash(git checkout *),Bash(git switch *),Bash(git rebase *),Bash(git rm *),Bash(rm -rf *),Bash(sudo *),Bash(env),Bash(printenv *),Task,Agent"; then
       emit_final
     else

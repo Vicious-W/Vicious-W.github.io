@@ -8,6 +8,8 @@ FAKE_CYCLE="$TEST_DIR/fake-cycle.sh"
 COUNT_FILE="$TEST_DIR/count"
 ARGS_FILE="$TEST_DIR/second-args"
 FAKE_SUMMARY="$TEST_DIR/fake-summary.sh"
+FAKE_MONITOR="$TEST_DIR/fake-monitor.sh"
+MONITOR_COUNT_FILE="$TEST_DIR/monitor-count"
 SUMMARY_CAPTURE="$TEST_DIR/summary-state.env"
 TEST_REVIEW_BASE="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 STOP_FILE="$ROOT_DIR/.agent/artifacts/runtime/last-stop.env"
@@ -19,6 +21,7 @@ EVENT_BACKUP="$TEST_DIR/events.backup"
 
 mkdir -p "$TEST_DIR" "$(dirname "$STOP_FILE")"
 rm -f -- "$COUNT_FILE" "$ARGS_FILE" "$STOP_BACKUP" "$STATE_BACKUP" "$EVENT_BACKUP"
+rm -f -- "$MONITOR_COUNT_FILE"
 if [[ -f "$STOP_FILE" ]]; then
   cp "$STOP_FILE" "$STOP_BACKUP"
 fi
@@ -59,7 +62,7 @@ if (( count == 1 )); then
   {
     printf 'STOPPED_AT_UTC=2026-07-23T00:00:00Z\n'
     printf 'STAGE=REVIEWER\n'
-    printf 'STOP_REASON=USAGE_OR_BILLING_LIMIT\n'
+    printf 'STOP_REASON=%s\n' "\${AGENT_FAKE_STOP_REASON:-USAGE_OR_BILLING_LIMIT}"
     printf 'EXIT_CODE=1\n'
     printf 'LOG_FILE=.agent/artifacts/supervisor-test/fake.log\n'
     printf 'BASE_COMMIT=%s\n' "$TEST_REVIEW_BASE"
@@ -76,6 +79,16 @@ cat >"$FAKE_SUMMARY" <<EOF
 cp "$STATE_FILE" "$SUMMARY_CAPTURE"
 EOF
 chmod +x "$FAKE_SUMMARY"
+
+cat >"$FAKE_MONITOR" <<EOF
+#!/usr/bin/env bash
+set -uo pipefail
+count=0
+[[ -f "$MONITOR_COUNT_FILE" ]] && count="\$(sed -n '1p' "$MONITOR_COUNT_FILE")"
+printf '%s\n' "\$((count + 1))" >"$MONITOR_COUNT_FILE"
+exit 0
+EOF
+chmod +x "$FAKE_MONITOR"
 
 AGENT_SUPERVISOR_CYCLE_COMMAND="$FAKE_CYCLE" \
 AGENT_SUPERVISOR_SUMMARY_COMMAND="$FAKE_SUMMARY" \
@@ -134,6 +147,59 @@ if grep -Fqx 'SUPERVISOR_STATUS=COMPLETE' "$SUMMARY_CAPTURE" 2>/dev/null; then
   printf 'PASS  final summary sees the persisted COMPLETE supervisor state\n'
 else
   printf 'FAIL  final summary ran before the COMPLETE state was persisted\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+rm -f -- "$COUNT_FILE" "$ARGS_FILE"
+AGENT_FAKE_STOP_REASON=AUTONOMY_SLICE_LIMIT \
+AGENT_SUPERVISOR_CYCLE_COMMAND="$FAKE_CYCLE" \
+AGENT_SUPERVISOR_SUMMARY_COMMAND="$FAKE_SUMMARY" \
+AGENT_SUPERVISOR_NO_SLEEP=1 \
+AGENT_SUPERVISOR_SKIP_RECOVERY=1 \
+AGENT_SUPERVISOR_ALLOW_DIRTY_TEST=1 \
+AGENT_SUPERVISOR_MONITOR_ON_ERROR=0 \
+  "$ROOT_DIR/scripts/agent-supervisor.sh" supervise \
+    --quota-wait-seconds 60 \
+    --quota-anchor "2026-07-23 00:00:00 UTC" \
+    --max-quota-resumes 2 \
+    --max-rounds 1 \
+    --monitor-mode attached \
+    --implementer claude --implementer-model sonnet --implementer-effort high \
+    --reviewer claude --reviewer-model sonnet --reviewer-effort max \
+    --monitor codex --monitor-model gpt-5.6-terra --monitor-effort medium
+slice_supervisor_exit=$?
+if (( slice_supervisor_exit == 0 )) && \
+   [[ "$(sed -n '1p' "$COUNT_FILE" 2>/dev/null)" == "2" ]]; then
+  printf 'PASS  autonomy slice guard checkpoints and resumes through the same bounded route\n'
+else
+  printf 'FAIL  supervisor did not recover a simulated autonomy slice stop\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+rm -f -- "$COUNT_FILE" "$ARGS_FILE" "$MONITOR_COUNT_FILE"
+AGENT_FAKE_STOP_REASON=AUTONOMY_SLICE_LIMIT \
+AGENT_SUPERVISOR_CYCLE_COMMAND="$FAKE_CYCLE" \
+AGENT_SUPERVISOR_MONITOR_COMMAND="$FAKE_MONITOR" \
+AGENT_SUPERVISOR_SUMMARY_COMMAND="$FAKE_SUMMARY" \
+AGENT_SUPERVISOR_NO_SLEEP=1 \
+AGENT_SUPERVISOR_SKIP_RECOVERY=1 \
+AGENT_SUPERVISOR_ALLOW_DIRTY_TEST=1 \
+AGENT_SUPERVISOR_MONITOR_ON_ERROR=1 \
+  "$ROOT_DIR/scripts/agent-supervisor.sh" supervise \
+    --quota-wait-seconds 60 \
+    --quota-anchor "2026-07-23 00:00:00 UTC" \
+    --max-quota-resumes 2 \
+    --max-rounds 1 \
+    --monitor-mode persistent-cli \
+    --implementer claude --implementer-model sonnet --implementer-effort high \
+    --reviewer claude --reviewer-model sonnet --reviewer-effort max \
+    --monitor codex --monitor-model gpt-5.6-terra --monitor-effort medium
+persistent_supervisor_exit=$?
+if (( persistent_supervisor_exit == 0 )) && \
+   [[ "$(sed -n '1p' "$MONITOR_COUNT_FILE" 2>/dev/null)" == "3" ]]; then
+  printf 'PASS  persistent CLI MONITOR is invoked at start, guard stop and window resume\n'
+else
+  printf 'FAIL  persistent CLI MONITOR event routing is incomplete\n' >&2
   failure_count=$((failure_count + 1))
 fi
 

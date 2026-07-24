@@ -87,8 +87,10 @@
   的专属会话，角色间绝不共享；
 - `agent-cycle.sh` 管理有界实现—审查轮次，`agent-supervisor.sh` 管理跨额度窗口
   的恢复、定时续跑和异常交接；
-- 长时间等待由 shell 完成，不运行 AI；MONITOR 只在无法机械处理的事件边界以只读
-  身份启动；
+- 长时间等待由 shell 完成，不运行工作 Agent；可见 MONITOR 使用 `attached` 模式
+  从头到尾持有前台 supervisor，后台全自动模式则恢复一个任务级持久 CLI MONITOR；
+- Claude 非交互调用具有最大 turns、API 等价预算和上下文代次阈值；命中保险后保存
+  合法现场并对齐下一窗口，过大的原始 transcript 以结构化交接轮换；
 - 每次专用调用在 `.agent/artifacts/runs/` 留下实际运行配置、角色会话模式和用量
   记录路径。
 

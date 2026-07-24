@@ -362,7 +362,7 @@ case "$command_name" in
     printf 'Git status\n'
     git -C "$ROOT_DIR" status --short --branch
     printf '\nDefault role configuration\n'
-    sed -n '1,24p' "$ROOT_DIR/.agent/runtime.env"
+    sed -n '1,48p' "$ROOT_DIR/.agent/runtime.env"
     printf '\nAgent state\n'
     sed -n '1,160p' "$STATE_FILE"
     printf '\nActive task\n'

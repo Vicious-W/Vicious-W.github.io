@@ -34,6 +34,10 @@ Role options:
   --monitor claude|codex
   --monitor-model MODEL
   --monitor-effort LEVEL
+  --monitor-mode attached|persistent-cli
+                         attached: the visible MONITOR conversation owns this
+                         foreground process; persistent-cli: start/resume one
+                         task-scoped CLI MONITOR at event boundaries.
   --max-rounds N         Override this supervised task's formal round limit.
 
 Recovery options:
@@ -71,6 +75,7 @@ state_write() {
     printf 'IMPLEMENTER=%s/%s/%s\n' "$implementer_agent" "$implementer_model" "$implementer_effort"
     printf 'REVIEWER=%s/%s/%s\n' "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
     printf 'MONITOR=%s/%s/%s\n' "$monitor_agent" "$monitor_model" "$monitor_effort"
+    printf 'MONITOR_MODE=%s\n' "$monitor_mode"
     printf 'MAX_ROUNDS=%s\n' "$max_rounds"
     printf 'REVIEW_BASE=%s\n' "${review_base:-}"
     printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -165,6 +170,7 @@ create_recovery_checkpoint() {
 wait_until_epoch() {
   local target_epoch="$1"
   local heartbeat="$2"
+  local wait_state="${3:-WAITING}"
   local now remaining wait_seconds next_heartbeat
 
   if [[ "${AGENT_SUPERVISOR_NO_SLEEP:-0}" == "1" ]]; then
@@ -178,14 +184,35 @@ wait_until_epoch() {
     remaining=$((target_epoch - now))
     (( remaining > 0 )) || break
     if (( now >= next_heartbeat )); then
-      printf '[%s] WAITING_FOR_QUOTA: %ss remaining; no Agent is running.\n' \
-        "$(date -u +'%H:%M:%SZ')" "$remaining"
+      printf '[%s] %s: %ss remaining; no work Agent is running.\n' \
+        "$(date -u +'%H:%M:%SZ')" "$wait_state" "$remaining"
       next_heartbeat=$((now + heartbeat))
     fi
     wait_seconds=60
     (( remaining < wait_seconds )) && wait_seconds="$remaining"
     sleep "$wait_seconds"
   done
+}
+
+dispatch_monitor_event() {
+  local event="$1"
+  local stage="$2"
+  local event_exit="$3"
+  local related_log="${4:-}"
+
+  if [[ "$monitor_mode" == "attached" ]]; then
+    event_record "attached MONITOR handoff: event=$event stage=$stage exit=$event_exit"
+    printf '[%s] ATTACHED_MONITOR_EVENT: %s/%s (exit %s).\n' \
+      "$(date -u +'%H:%M:%SZ')" "$stage" "$event" "$event_exit"
+    return 0
+  fi
+  if [[ "${AGENT_SUPERVISOR_MONITOR_ON_ERROR:-1}" != "1" ]]; then
+    return 0
+  fi
+  "$monitor_command" \
+    --event "$event" --stage "$stage" --exit-code "$event_exit" \
+    --log-file "$related_log" \
+    --agent "$monitor_agent" --model "$monitor_model" --effort "$monitor_effort"
 }
 
 command_name="${1:-}"
@@ -214,6 +241,9 @@ reviewer_effort="$(agent_runtime_effort_config REVIEWER_EFFORT high)" || exit 2
 monitor_agent="$(agent_runtime_executor_config MONITOR_AGENT codex)" || exit 2
 monitor_model="$(agent_runtime_model_config MONITOR_MODEL gpt-5.6-terra)" || exit 2
 monitor_effort="$(agent_runtime_effort_config MONITOR_EFFORT medium)" || exit 2
+monitor_mode="$(
+  agent_runtime_enum_config MONITOR_MODE attached attached persistent-cli
+)" || exit 2
 quota_wait="$(agent_runtime_config QUOTA_WAIT_SECONDS 18000 60 604800)" || exit 2
 max_resumes="$(agent_runtime_config MAX_QUOTA_RESUMES 6 1 100)" || exit 2
 supervisor_heartbeat="$(agent_runtime_config SUPERVISOR_HEARTBEAT_SECONDS 300 30 3600)" || exit 2
@@ -236,6 +266,7 @@ while (( $# > 0 )); do
     --monitor) monitor_agent="${2:-}"; shift 2 ;;
     --monitor-model) monitor_model="${2:-}"; shift 2 ;;
     --monitor-effort) monitor_effort="${2:-}"; shift 2 ;;
+    --monitor-mode) monitor_mode="${2:-}"; shift 2 ;;
     --max-rounds) max_rounds="${2:-}"; shift 2 ;;
     --start-stage) start_stage="${2:-}"; shift 2 ;;
     --review-base) review_base="${2:-}"; shift 2 ;;
@@ -258,6 +289,10 @@ agent_validate_effort "$reviewer_effort" || exit 2
 agent_validate_executor "$monitor_agent" || exit 2
 agent_validate_model "$monitor_model" || exit 2
 agent_validate_effort "$monitor_effort" || exit 2
+case "$monitor_mode" in
+  attached|persistent-cli) ;;
+  *) printf 'Invalid --monitor-mode: %s\n' "$monitor_mode" >&2; exit 2 ;;
+esac
 [[ "$quota_wait" =~ ^[0-9]+$ && "$quota_wait" -ge 60 ]] || { printf 'Invalid quota wait.\n' >&2; exit 2; }
 [[ "$max_resumes" =~ ^[1-9][0-9]*$ ]] || { printf 'Invalid max resumes.\n' >&2; exit 2; }
 [[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || { printf 'Invalid max rounds.\n' >&2; exit 2; }
@@ -330,6 +365,11 @@ fi
 
 cycle_command="${AGENT_SUPERVISOR_CYCLE_COMMAND:-$ROOT_DIR/scripts/agent-cycle.sh}"
 [[ -x "$cycle_command" ]] || { printf 'Cycle command is not executable: %s\n' "$cycle_command" >&2; exit 127; }
+monitor_command="${AGENT_SUPERVISOR_MONITOR_COMMAND:-$ROOT_DIR/scripts/run-monitor.sh}"
+if [[ "$monitor_mode" == "persistent-cli" && ! -x "$monitor_command" ]]; then
+  printf 'Monitor command is not executable: %s\n' "$monitor_command" >&2
+  exit 127
+fi
 cycle_args=(
   cycle
   --implementer "$implementer_agent"
@@ -344,14 +384,25 @@ cycle_args=(
 attempt=0
 quota_resumes=0
 next_stage="$start_stage"
+state_write INITIALIZING "$next_stage" "$attempt" "$quota_resumes" "" "" SUPERVISOR_START
 event_record "supervisor started"
+
+if [[ "$monitor_mode" == "persistent-cli" && \
+      "${AGENT_SUPERVISOR_MONITOR_ON_ERROR:-1}" == "1" ]]; then
+  if ! dispatch_monitor_event SUPERVISOR_START "$next_stage" 0 ""; then
+    state_write STOPPED MONITOR 0 "$quota_resumes" "" 6 MONITOR_START_FAILED
+    event_record "persistent CLI MONITOR failed to initialize"
+    refresh_cycle_summary 6
+    exit 6
+  fi
+fi
 
 if [[ -n "$start_epoch" && "$start_epoch" -gt "$(date +%s)" ]]; then
   start_iso="$(date -u -d "@$start_epoch" +'%Y-%m-%dT%H:%M:%SZ')"
   state_write SCHEDULED "$next_stage" "$attempt" "$quota_resumes" \
     "$start_iso" "" INITIAL_START
   event_record "initial cycle scheduled for $start_iso"
-  wait_until_epoch "$start_epoch" "$supervisor_heartbeat"
+  wait_until_epoch "$start_epoch" "$supervisor_heartbeat" SCHEDULED
 fi
 
 while true; do
@@ -390,7 +441,8 @@ while true; do
   [[ -n "$stop_reason" ]] || stop_reason="UNCLASSIFIED"
   event_record "attempt $attempt stopped: stage=$stop_stage reason=$stop_reason exit=$cycle_exit"
 
-  if [[ "$stop_reason" == "USAGE_OR_BILLING_LIMIT" ]]; then
+  if [[ "$stop_reason" == "USAGE_OR_BILLING_LIMIT" || \
+        "$stop_reason" == "AUTONOMY_SLICE_LIMIT" ]]; then
     if (( quota_resumes >= max_resumes )); then
       state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
         "$cycle_exit" MAX_QUOTA_RESUMES
@@ -401,12 +453,8 @@ while true; do
     if ! create_recovery_checkpoint "$stop_stage" "$attempt"; then
       state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
         "$cycle_exit" UNSAFE_RECOVERY
-      if [[ "${AGENT_SUPERVISOR_MONITOR_ON_ERROR:-1}" == "1" ]]; then
-        "$ROOT_DIR/scripts/run-monitor.sh" \
-          --event UNSAFE_RECOVERY --stage "$stop_stage" --exit-code "$cycle_exit" \
-          --log-file "$(stop_value LOG_FILE)" \
-          --agent "$monitor_agent" --model "$monitor_model" --effort "$monitor_effort" || true
-      fi
+      dispatch_monitor_event \
+        UNSAFE_RECOVERY "$stop_stage" "$cycle_exit" "$(stop_value LOG_FILE)" || true
       refresh_cycle_summary "$cycle_exit"
       exit 4
     fi
@@ -452,24 +500,38 @@ while true; do
       resume_epoch=$((now_epoch + quota_wait))
     fi
     resume_iso="$(date -u -d "@$resume_epoch" +'%Y-%m-%dT%H:%M:%SZ')"
-    state_write WAITING_FOR_QUOTA "$stop_stage" "$attempt" "$quota_resumes" \
+    if [[ "$stop_reason" == "AUTONOMY_SLICE_LIMIT" ]]; then
+      waiting_status="WAITING_FOR_BUDGET_WINDOW"
+      wait_label="budget/turn guard"
+    else
+      waiting_status="WAITING_FOR_QUOTA"
+      wait_label="quota"
+    fi
+    state_write "$waiting_status" "$stop_stage" "$attempt" "$quota_resumes" \
       "$resume_iso" "$cycle_exit" "$stop_reason"
-    event_record "waiting for quota until $resume_iso"
+    event_record "waiting after $wait_label until $resume_iso"
+    if [[ "$monitor_mode" == "persistent-cli" ]]; then
+      dispatch_monitor_event \
+        "$stop_reason" "$stop_stage" "$cycle_exit" "$(stop_value LOG_FILE)" || true
+    fi
     refresh_cycle_summary "$cycle_exit"
-    wait_until_epoch "$resume_epoch" "$supervisor_heartbeat"
+    wait_until_epoch "$resume_epoch" "$supervisor_heartbeat" "$waiting_status"
+    if [[ "$monitor_mode" == "persistent-cli" ]]; then
+      dispatch_monitor_event WINDOW_RESUME "$resume_stage" 0 "" || {
+        state_write STOPPED MONITOR "$attempt" "$quota_resumes" "" \
+          6 MONITOR_RESUME_FAILED
+        refresh_cycle_summary 6
+        exit 6
+      }
+    fi
     next_stage="$resume_stage"
     continue
   fi
 
   state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
     "$cycle_exit" "$stop_reason"
-  if [[ "$stop_reason" == "CHILD_PROCESS_ERROR" && \
-        "${AGENT_SUPERVISOR_MONITOR_ON_ERROR:-1}" == "1" ]]; then
-    "$ROOT_DIR/scripts/run-monitor.sh" \
-      --event "$stop_reason" --stage "$stop_stage" --exit-code "$cycle_exit" \
-      --log-file "$(stop_value LOG_FILE)" \
-      --agent "$monitor_agent" --model "$monitor_model" --effort "$monitor_effort" || true
-  fi
+  dispatch_monitor_event \
+    "$stop_reason" "$stop_stage" "$cycle_exit" "$(stop_value LOG_FILE)" || true
   refresh_cycle_summary "$cycle_exit"
   printf 'Supervisor stopped on non-recoverable event: %s/%s\n' \
     "$stop_stage" "$stop_reason" >&2

@@ -257,6 +257,7 @@ required_files=(
   docs/guides/PROJECT_COMMAND_MANUAL.md
   docs/methodology/AI_Project_Meta_Method_v3.0_2026-07-23.md
   docs/methodology/AI_Project_Meta_Method_v4.0_2026-07-23.md
+  docs/methodology/AI_Project_Meta_Method_v5.0_2026-07-24.md
   references/README.md
   .vscode/settings.json
   .agent/next-task.md
@@ -337,6 +338,12 @@ NODE
   else
     record_fail 'Claude project policy is missing required denials'
   fi
+
+  if claude --max-turns 1 --max-budget-usd 1.00 --version >/dev/null 2>&1; then
+    record_pass 'Claude CLI accepts autonomous turn and budget guard flags'
+  else
+    record_fail 'Claude CLI does not accept required autonomous guard flags'
+  fi
 fi
 
 if [[ -x "$ROOT_DIR/scripts/run-validation.sh" && \
@@ -391,6 +398,14 @@ runtime_values_ok=1
 agent_runtime_config IMPLEMENTER_TIMEOUT_SECONDS 7200 60 43200 >/dev/null || runtime_values_ok=0
 agent_runtime_config REVIEWER_TIMEOUT_SECONDS 3600 60 43200 >/dev/null || runtime_values_ok=0
 agent_runtime_config MONITOR_TIMEOUT_SECONDS 900 60 7200 >/dev/null || runtime_values_ok=0
+agent_runtime_enum_config MONITOR_MODE attached attached persistent-cli >/dev/null || runtime_values_ok=0
+agent_runtime_config CLAUDE_IMPLEMENTER_MAX_TURNS 36 1 1000 >/dev/null || runtime_values_ok=0
+agent_runtime_decimal_config CLAUDE_IMPLEMENTER_MAX_BUDGET_USD 6.00 >/dev/null || runtime_values_ok=0
+agent_runtime_config CLAUDE_REVIEWER_MAX_TURNS 24 1 1000 >/dev/null || runtime_values_ok=0
+agent_runtime_decimal_config CLAUDE_REVIEWER_MAX_BUDGET_USD 4.00 >/dev/null || runtime_values_ok=0
+agent_runtime_config CLAUDE_MONITOR_MAX_TURNS 8 1 1000 >/dev/null || runtime_values_ok=0
+agent_runtime_decimal_config CLAUDE_MONITOR_MAX_BUDGET_USD 1.00 >/dev/null || runtime_values_ok=0
+agent_runtime_config CLAUDE_CONTEXT_ROTATE_TOKENS 160000 10000 1000000 >/dev/null || runtime_values_ok=0
 agent_runtime_config AGENT_HEARTBEAT_SECONDS 30 5 300 >/dev/null || runtime_values_ok=0
 agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60 >/dev/null || runtime_values_ok=0
 agent_runtime_config QUOTA_WAIT_SECONDS 18000 60 604800 >/dev/null || runtime_values_ok=0

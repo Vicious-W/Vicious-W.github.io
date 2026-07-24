@@ -11,7 +11,8 @@
 - `roles/REVIEWER.md`：专用独立审查身份；
 - `next-task.md`：所有者确认的当前执行切片；
 - `state.env`：任务、轮次、结论和上一轮实际运行配置；
-- `runtime.env`：三种专用角色的默认执行器、模型、effort、超时和恢复策略；
+- `runtime.env`：三种专用角色的默认执行器、模型、effort、超时、Monitor 模式、
+  Claude 自主预算和恢复策略；
 - `implementation-report.md`：最近一轮实现交接，由 IMPLEMENTER 更新；
 - `latest-review.md`：最近一次正式审查，由中立审查包装器替换；
 - `review-history/`：只追加的正式审查归档；
@@ -62,12 +63,20 @@
 ```bash
 ./scripts/agent-cycle.sh supervise \
   --implementer claude --implementer-model sonnet --implementer-effort high \
-  --reviewer claude --reviewer-model sonnet --reviewer-effort max
+  --reviewer claude --reviewer-model sonnet --reviewer-effort max \
+  --monitor-mode attached
 ```
 
 `agent-supervisor.sh` 调用有界的 `agent-cycle.sh`，在额度中断后保存合法实现现场、
-记录恢复时间并由 shell 等待。等待期间没有 Agent 进程，不消耗模型 token。
-MONITOR 不持续轮询，只在未知异常时生成只读事件报告。
+记录恢复时间并由 shell 等待。等待期间没有工作 Agent 或模型请求，不消耗模型 token。
+`attached` 表示当前可见 MONITOR 对话从头到尾持有这个前台进程；该对话结束后
+shell 无法重新唤醒它。无人值守时使用 `--monitor-mode persistent-cli`，父脚本在
+启动时创建一个任务级 CLI MONITOR，并在后续事件边界恢复同一会话。
+
+Claude `--print` 调用同时受最大 turns 和 API 等价预算约束。任一保险先到会产生
+`AUTONOMY_SLICE_LIMIT`，合法现场被保存后对齐下一窗口恢复。最后一轮缓存上下文
+超过阈值时，下一次不再恢复膨胀的原始 transcript，而以当前 Git 检查点和结构化
+交接创建同一逻辑角色会话的新代次。
 
 完整顺序为：
 
@@ -87,7 +96,7 @@ MONITOR 不持续轮询，只在未知异常时生成只读事件报告。
 
 每次调用的原始 JSON/JSONL 事件和标准化用量摘要保存在
 `.agent/artifacts/implementation/` 或 `.agent/artifacts/review/`，运行清单记录会话
-ID、`new/resume` 模式及这些文件的路径。
+ID、`new/resume` 模式、会话代次、预算保险及这些文件的路径。
 
 ## 权限原则
 
@@ -126,7 +135,8 @@ cat .agent/artifacts/preflight/summary.md
 cat .agent/artifacts/runtime/last-stop.env
 ```
 
-权限、认证、额度、MCP、超时、工作区污染、越权或报告无效都会立即停止，不会增加
-审查轮次。普通 `cycle` 会停止；`supervise` 只对明确分类的额度事件进行有界恢复，
-其他错误会唤醒只读 MONITOR 后停止。不要用 `git reset --hard`、`git clean -fd`
+权限、认证、额度、自主切片保险、MCP、超时、工作区污染、越权或报告无效都会立即
+停止，不会增加审查轮次。普通 `cycle` 会停止；`supervise` 只对明确分类的额度或
+自主切片事件进行有界恢复，其他错误交给附着式或持久 CLI MONITOR 后停止。不要用
+`git reset --hard`、`git clean -fd`
 或删除活动锁来恢复；先检查保留现场，再由所有者决定。

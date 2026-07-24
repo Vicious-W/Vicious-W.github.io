@@ -108,6 +108,20 @@ fi
 reviewer_timeout="$(agent_runtime_config REVIEWER_TIMEOUT_SECONDS 3600 60 43200)" || exit 2
 heartbeat_seconds="$(agent_runtime_config AGENT_HEARTBEAT_SECONDS 30 5 300)" || exit 2
 termination_grace="$(agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60)" || exit 2
+claude_max_turns=""
+claude_max_budget_usd=""
+claude_context_rotate_tokens=""
+if [[ "$reviewer_agent" == "claude" ]]; then
+  claude_max_turns="$(
+    agent_runtime_config CLAUDE_REVIEWER_MAX_TURNS 24 1 1000
+  )" || exit 2
+  claude_max_budget_usd="$(
+    agent_runtime_decimal_config CLAUDE_REVIEWER_MAX_BUDGET_USD 4.00
+  )" || exit 2
+  claude_context_rotate_tokens="$(
+    agent_runtime_config CLAUDE_CONTEXT_ROTATE_TOKENS 160000 10000 1000000
+  )" || exit 2
+fi
 runner="$ROOT_DIR/scripts/agent-runners/$reviewer_agent.sh"
 
 mkdir -p "$ARTIFACT_DIR" "$HISTORY_DIR" "$RUN_DIR"
@@ -240,8 +254,18 @@ agent_write_run_manifest \
 agent_append_run_session \
   "$manifest_file" "$AGENT_SESSION_ID" "$AGENT_SESSION_MODE" \
   "${events_file#"$ROOT_DIR/"}" "${usage_file#"$ROOT_DIR/"}"
+agent_append_run_limits \
+  "$manifest_file" "$claude_max_turns" "$claude_max_budget_usd" \
+  "$claude_context_rotate_tokens"
 
-if [[ "$AGENT_SESSION_MODE" == "resume" ]]; then
+if [[ -n "$AGENT_SESSION_ROTATED_FROM" ]]; then
+  context_instructions="This is a deliberately compacted continuation of the
+same task-scoped REVIEWER role. The previous raw session
+$AGENT_SESSION_ROTATED_FROM exceeded the context guard. Reconstruct only the
+review working set from the exact base/target diff, current implementation
+report, validation evidence, prior formal findings and directly relevant
+specification/code sections. Never request the IMPLEMENTER conversation."
+elif [[ "$AGENT_SESSION_MODE" == "resume" ]]; then
   context_instructions="This is a continuation of the same task-scoped REVIEWER conversation.
 Do not inherit or request the IMPLEMENTER conversation. Re-read the exact base
 and target diff, current implementation report, validation evidence and prior
@@ -272,6 +296,7 @@ Working tree at launch: clean
 Validation: $validation_status (exit $validation_exit)
 Validation summary: .agent/artifacts/validation/summary.md
 Role session: ${AGENT_SESSION_ID:-pending} ($AGENT_SESSION_MODE)
+Session generation: $AGENT_SESSION_GENERATION
 Run manifest: ${manifest_file#"$ROOT_DIR/"}
 
 $context_instructions
@@ -301,14 +326,20 @@ EOF
 printf 'Starting REVIEWER round %s/%s\n' "$next_round" "$max_rounds"
 printf 'Runtime: %s / %s / %s\n' "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
 printf 'Role session: %s (%s)\n' "${AGENT_SESSION_ID:-assigned-by-executor}" "$AGENT_SESSION_MODE"
-export AGENT_SESSION_ID AGENT_SESSION_MODE
+if [[ "$reviewer_agent" == "claude" ]]; then
+  printf 'Claude guard: max %s turns / $%s API-equivalent / rotate at %s cached tokens\n' \
+    "$claude_max_turns" "$claude_max_budget_usd" "$claude_context_rotate_tokens"
+fi
+export AGENT_SESSION_ID AGENT_SESSION_MODE AGENT_SESSION_GENERATION
+export AGENT_CLAUDE_MAX_TURNS="$claude_max_turns"
+export AGENT_CLAUDE_MAX_BUDGET_USD="$claude_max_budget_usd"
 export AGENT_EVENT_FILE="$events_file"
 run_agent_process \
   "REVIEWER ($reviewer_agent) round $next_round/$max_rounds" \
   "$reviewer_timeout" "$heartbeat_seconds" "$termination_grace" "$agent_log" -- \
   "$runner" REVIEWER "$reviewer_model" "$reviewer_effort" "$prompt_file" "$review_tmp"
 reviewer_exit=$?
-unset AGENT_EVENT_FILE
+unset AGENT_EVENT_FILE AGENT_CLAUDE_MAX_TURNS AGENT_CLAUDE_MAX_BUDGET_USD
 
 if (( reviewer_exit == 0 )); then
   run_status="SUCCESS"
@@ -317,7 +348,13 @@ else
 fi
 agent_finalize_role_session "$reviewer_agent" "$events_file" "$run_status"
 agent_record_telemetry "$reviewer_agent" "$events_file" "$usage_file"
+session_rotation="NO"
+if agent_mark_role_session_rotation \
+  "$reviewer_agent" "$usage_file" "${claude_context_rotate_tokens:-1000000}"; then
+  session_rotation="REQUIRED"
+fi
 printf 'RESOLVED_SESSION_ID=%s\n' "$AGENT_SESSION_ID" >>"$manifest_file"
+printf 'SESSION_ROTATION_REQUIRED=%s\n' "$session_rotation" >>"$manifest_file"
 agent_finish_run_manifest \
   "$manifest_file" "$run_status" "$reviewer_exit" "$AGENT_RUN_REASON"
 
