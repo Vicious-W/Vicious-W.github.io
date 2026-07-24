@@ -29,35 +29,92 @@ if [[ ! -s "$prompt_file" ]]; then
 fi
 
 prompt_text="$(<"$prompt_file")"
+session_id="${AGENT_SESSION_ID:-}"
+session_mode="${AGENT_SESSION_MODE:-$([[ "$role" == "MONITOR" ]] && printf ephemeral || printf new)}"
+event_file="${AGENT_EVENT_FILE:-$([[ "$role" == "MONITOR" ]] && printf '%s.events.jsonl' "$output_file")}"
+
+if [[ -z "$event_file" ]]; then
+  printf 'AGENT_EVENT_FILE is required for persistent Codex runs.\n' >&2
+  exit 2
+fi
+mkdir -p "$(dirname "$event_file")"
+
+run_codex() {
+  local sandbox="$1"
+  local network="$2"
+  local output_args=()
+
+  if [[ "$output_file" != "-" ]]; then
+    output_args=(--output-last-message "$output_file")
+  fi
+
+  case "$session_mode" in
+    new)
+      codex exec \
+        --cd "$root_dir" \
+        --model "$model" \
+        --sandbox "$sandbox" \
+        --color never \
+        -c 'approval_policy="never"' \
+        -c "model_reasoning_effort=\"$effort\"" \
+        -c "sandbox_workspace_write.network_access=$network" \
+        --json \
+        "${output_args[@]}" \
+        "$prompt_text" | tee "$event_file"
+      ;;
+    resume)
+      [[ -n "$session_id" ]] || {
+        printf 'A resumed Codex session requires AGENT_SESSION_ID.\n' >&2
+        return 2
+      }
+      codex exec \
+        --cd "$root_dir" \
+        --sandbox "$sandbox" \
+        --color never \
+        -c 'approval_policy="never"' \
+        -c "model_reasoning_effort=\"$effort\"" \
+        -c "sandbox_workspace_write.network_access=$network" \
+        --json \
+        resume \
+        --model "$model" \
+        "${output_args[@]}" \
+        "$session_id" "$prompt_text" | tee "$event_file"
+      ;;
+    ephemeral)
+      [[ "$role" == "MONITOR" ]] || {
+        printf 'Ephemeral Codex sessions are reserved for MONITOR.\n' >&2
+        return 2
+      }
+      codex exec \
+        --cd "$root_dir" \
+        --model "$model" \
+        --sandbox "$sandbox" \
+        --ephemeral \
+        --color never \
+        -c 'approval_policy="never"' \
+        -c "model_reasoning_effort=\"$effort\"" \
+        -c "sandbox_workspace_write.network_access=$network" \
+        --json \
+        "${output_args[@]}" \
+        "$prompt_text" | tee "$event_file"
+      ;;
+    *)
+      printf 'Invalid AGENT_SESSION_MODE: %s\n' "$session_mode" >&2
+      return 2
+      ;;
+  esac
+}
 
 case "$role" in
   IMPLEMENTER)
-    exec codex exec \
-      --cd "$root_dir" \
-      --model "$model" \
-      --sandbox workspace-write \
-      --ephemeral \
-      --color never \
-      -c 'approval_policy="never"' \
-      -c "model_reasoning_effort=\"$effort\"" \
-      -c 'sandbox_workspace_write.network_access=true' \
-      "$prompt_text"
+    run_codex workspace-write true
     ;;
   REVIEWER|MONITOR)
     if [[ "$output_file" == "-" ]]; then
       printf 'Codex %s requires a report output file.\n' "$role" >&2
       exit 2
     fi
-    exec codex exec \
-      --cd "$root_dir" \
-      --model "$model" \
-      --sandbox read-only \
-      --ephemeral \
-      --color never \
-      -c 'approval_policy="never"' \
-      -c "model_reasoning_effort=\"$effort\"" \
-      --output-last-message "$output_file" \
-      "$prompt_text"
+    run_codex read-only false
     ;;
   *)
     printf 'Unsupported Codex role: %s\n' "$role" >&2

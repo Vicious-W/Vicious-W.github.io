@@ -34,6 +34,7 @@ Role options:
   --monitor claude|codex
   --monitor-model MODEL
   --monitor-effort LEVEL
+  --max-rounds N         Override this supervised task's formal round limit.
 
 Recovery options:
   --start-stage ROLE     Start at implementer or reviewer; default implementer.
@@ -70,6 +71,7 @@ state_write() {
     printf 'IMPLEMENTER=%s/%s/%s\n' "$implementer_agent" "$implementer_model" "$implementer_effort"
     printf 'REVIEWER=%s/%s/%s\n' "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
     printf 'MONITOR=%s/%s/%s\n' "$monitor_agent" "$monitor_model" "$monitor_effort"
+    printf 'MAX_ROUNDS=%s\n' "$max_rounds"
     printf 'REVIEW_BASE=%s\n' "${review_base:-}"
     printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   } >"$tmp"
@@ -215,6 +217,8 @@ monitor_effort="$(agent_runtime_effort_config MONITOR_EFFORT medium)" || exit 2
 quota_wait="$(agent_runtime_config QUOTA_WAIT_SECONDS 18000 60 604800)" || exit 2
 max_resumes="$(agent_runtime_config MAX_QUOTA_RESUMES 6 1 100)" || exit 2
 supervisor_heartbeat="$(agent_runtime_config SUPERVISOR_HEARTBEAT_SECONDS 300 30 3600)" || exit 2
+max_rounds="$(sed -n 's/^MAX_ROUNDS=//p' "$AGENT_DIR/state.env" | head -n 1)"
+[[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || max_rounds=3
 first_resume_at=""
 start_at=""
 quota_anchor_at=""
@@ -232,6 +236,7 @@ while (( $# > 0 )); do
     --monitor) monitor_agent="${2:-}"; shift 2 ;;
     --monitor-model) monitor_model="${2:-}"; shift 2 ;;
     --monitor-effort) monitor_effort="${2:-}"; shift 2 ;;
+    --max-rounds) max_rounds="${2:-}"; shift 2 ;;
     --start-stage) start_stage="${2:-}"; shift 2 ;;
     --review-base) review_base="${2:-}"; shift 2 ;;
     --start-at) start_at="${2:-}"; shift 2 ;;
@@ -255,6 +260,7 @@ agent_validate_model "$monitor_model" || exit 2
 agent_validate_effort "$monitor_effort" || exit 2
 [[ "$quota_wait" =~ ^[0-9]+$ && "$quota_wait" -ge 60 ]] || { printf 'Invalid quota wait.\n' >&2; exit 2; }
 [[ "$max_resumes" =~ ^[1-9][0-9]*$ ]] || { printf 'Invalid max resumes.\n' >&2; exit 2; }
+[[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || { printf 'Invalid max rounds.\n' >&2; exit 2; }
 case "$start_stage" in
   implementer|reviewer) ;;
   *) printf 'Invalid --start-stage: %s\n' "$start_stage" >&2; exit 2 ;;
@@ -332,6 +338,7 @@ cycle_args=(
   --reviewer "$reviewer_agent"
   --reviewer-model "$reviewer_model"
   --reviewer-effort "$reviewer_effort"
+  --max-rounds "$max_rounds"
 )
 
 attempt=0
@@ -365,6 +372,16 @@ while true; do
     refresh_cycle_summary 0
     printf 'Supervised Agent rotation completed.\n'
     exit 0
+  fi
+
+  if (( cycle_exit == 3 )) && [[ ! -s "$STOP_FILE" ]]; then
+    state_write STOPPED COMPLETE "$attempt" "$quota_resumes" "" \
+      "$cycle_exit" MAX_ROUNDS_REACHED
+    event_record "supervisor reached the configured formal round limit"
+    refresh_cycle_summary "$cycle_exit"
+    printf 'Supervised Agent rotation reached its configured round limit (%s).\n' \
+      "$max_rounds"
+    exit 3
   fi
 
   stop_reason="$(stop_value STOP_REASON)"

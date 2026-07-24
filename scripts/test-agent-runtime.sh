@@ -9,6 +9,10 @@ MANIFEST_TEST="$TEST_DIR/test-manifest.env"
 PROMPT_TEST="$TEST_DIR/test-prompt.md"
 FAKE_BIN="$TEST_DIR/fake-bin"
 FAKE_DATE_COUNTER="$TEST_DIR/fake-date-counter"
+CLAUDE_EVENTS="$TEST_DIR/claude-events.json"
+CODEX_EVENTS="$TEST_DIR/codex-events.jsonl"
+USAGE_SUMMARY="$TEST_DIR/usage-summary.json"
+SESSION_TEST_TASK="runtime-session-test-$$"
 
 # shellcheck source=scripts/lib/agent-runtime.sh
 source "$ROOT_DIR/scripts/lib/agent-runtime.sh"
@@ -129,6 +133,51 @@ if grep -Fqx 'ROLE=IMPLEMENTER' "$MANIFEST_TEST" && \
   printf 'PASS  run manifest records role, executor and permission profile\n'
 else
   printf 'FAIL  run manifest is missing required identity fields\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+agent_prepare_role_session "$SESSION_TEST_TASK" IMPLEMENTER claude opus-4.8 high
+first_session_id="$AGENT_SESSION_ID"
+first_session_mode="$AGENT_SESSION_MODE"
+agent_prepare_role_session "$SESSION_TEST_TASK" IMPLEMENTER claude opus-4.8 high
+if [[ "$first_session_mode" == "new" && "$AGENT_SESSION_MODE" == "resume" && \
+      -n "$first_session_id" && "$AGENT_SESSION_ID" == "$first_session_id" ]]; then
+  printf 'PASS  task-scoped role session changes from new to resume\n'
+else
+  printf 'FAIL  task-scoped role session was not reused deterministically\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+agent_prepare_role_session "$SESSION_TEST_TASK" REVIEWER claude opus-4.8 high
+if [[ "$AGENT_SESSION_ID" != "$first_session_id" ]]; then
+  printf 'PASS  IMPLEMENTER and REVIEWER receive isolated session IDs\n'
+else
+  printf 'FAIL  role isolation reused the IMPLEMENTER session for REVIEWER\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+printf '%s\n' \
+  '{"type":"result","session_id":"11111111-1111-4111-a111-111111111111","num_turns":4,"duration_ms":1200,"total_cost_usd":1.25,"usage":{"input_tokens":100,"cache_read_input_tokens":80,"cache_creation_input_tokens":20,"output_tokens":30},"result":"final report"}' \
+  >"$CLAUDE_EVENTS"
+if [[ "$(node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" final claude "$CLAUDE_EVENTS")" == \
+      "final report" ]] && \
+   [[ "$(node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" session claude "$CLAUDE_EVENTS")" == \
+      "11111111-1111-4111-a111-111111111111" ]]; then
+  printf 'PASS  Claude telemetry extracts final output and session ID\n'
+else
+  printf 'FAIL  Claude telemetry extraction failed\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+printf '%s\n' \
+  '{"type":"thread.started","thread_id":"22222222-2222-4222-a222-222222222222"}' \
+  '{"type":"turn.completed","usage":{"input_tokens":200,"cached_input_tokens":150,"output_tokens":40}}' \
+  >"$CODEX_EVENTS"
+agent_record_telemetry codex "$CODEX_EVENTS" "$USAGE_SUMMARY"
+if grep -Fq '"inputTokens": 200' "$USAGE_SUMMARY" && \
+   grep -Fq '"cachedInputTokens": 150' "$USAGE_SUMMARY"; then
+  printf 'PASS  Codex telemetry records available token and cache data\n'
+else
+  printf 'FAIL  Codex telemetry summary is missing usage data\n' >&2
   failure_count=$((failure_count + 1))
 fi
 

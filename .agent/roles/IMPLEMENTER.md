@@ -4,7 +4,7 @@
 
 ## 开始前
 
-按顺序阅读：
+首次进入本任务的 IMPLEMENTER 会话时按顺序阅读：
 
 1. `AGENT_PROTOCOL.md` 和本文件；
 2. `PROJECT_SPEC.md`；
@@ -16,6 +16,10 @@
 8. `.agent/latest-review.md`；
 9. `.agent/implementation-report.md`；
 10. `PROJECT.md`、`README.md`、Git 状态和相关代码测试。
+
+同一任务的后续实现或额度恢复使用新进程精确恢复 IMPLEMENTER 专属会话。此时重读
+当前任务、最新审查、实现报告、Git 状态和本轮相关差异；未变化的长篇协议与工程
+文档不必机械全文重读。不得恢复 REVIEWER 或其他角色会话。
 
 若目标与 `PROJECT_SPEC.md` 冲突、工作区不是父脚本声明的干净状态，或需要新的产品
 决定，停止并交还所有者。

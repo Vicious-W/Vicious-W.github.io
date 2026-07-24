@@ -28,12 +28,14 @@ Options:
   --agent claude|codex  Override IMPLEMENTER_AGENT.
   --model MODEL         Override IMPLEMENTER_MODEL.
   --effort LEVEL        Override IMPLEMENTER_EFFORT.
+  --max-rounds N        Override the round limit for this invocation only.
 EOF
 }
 
 executor_override=""
 model_override=""
 effort_override=""
+max_rounds_override=""
 while (( $# > 0 )); do
   case "$1" in
     --agent)
@@ -49,6 +51,11 @@ while (( $# > 0 )); do
     --effort)
       [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
       effort_override="$2"
+      shift 2
+      ;;
+    --max-rounds)
+      [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { usage >&2; exit 2; }
+      max_rounds_override="$2"
       shift 2
       ;;
     --help|-h)
@@ -107,11 +114,16 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
-if ! "$ROOT_DIR/scripts/agent-preflight.sh" \
-  --implementation-only \
-  --implementer-agent "$implementer_agent" \
-  --implementer-model "$implementer_model" \
-  --implementer-effort "$implementer_effort"; then
+preflight_args=(
+  --implementation-only
+  --implementer-agent "$implementer_agent"
+  --implementer-model "$implementer_model"
+  --implementer-effort "$implementer_effort"
+)
+if [[ -n "$max_rounds_override" ]]; then
+  preflight_args+=(--max-rounds "$max_rounds_override")
+fi
+if ! "$ROOT_DIR/scripts/agent-preflight.sh" "${preflight_args[@]}"; then
   printf 'IMPLEMENTER was not started because preflight failed.\n' >&2
   exit 6
 fi
@@ -139,10 +151,11 @@ fi
 active_task_id="$(sed -n 's/^ACTIVE_TASK_ID=//p' "$STATE_FILE" | head -n 1)"
 active_task_status="$(sed -n 's/^ACTIVE_TASK_STATUS=//p' "$STATE_FILE" | head -n 1)"
 current_round="$(sed -n 's/^CURRENT_ROUND=//p' "$STATE_FILE" | head -n 1)"
-max_rounds="$(sed -n 's/^MAX_ROUNDS=//p' "$STATE_FILE" | head -n 1)"
+configured_max_rounds="$(sed -n 's/^MAX_ROUNDS=//p' "$STATE_FILE" | head -n 1)"
 
 [[ "$current_round" =~ ^[0-9]+$ ]] || current_round=0
-[[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || max_rounds=3
+[[ "$configured_max_rounds" =~ ^[1-9][0-9]*$ ]] || configured_max_rounds=3
+max_rounds="${max_rounds_override:-$configured_max_rounds}"
 
 if [[ -z "$active_task_id" ]]; then
   printf 'ACTIVE_TASK_ID is empty in %s.\n' "$STATE_FILE" >&2
@@ -165,12 +178,36 @@ run_id="implementation-r${implementation_round}-$(date -u +'%Y%m%dT%H%M%SZ')-$$"
 prompt_file="$ARTIFACT_DIR/prompt-round-${implementation_round}.md"
 agent_log="$ARTIFACT_DIR/${implementer_agent}-round-${implementation_round}.log"
 manifest_file="$RUN_DIR/${run_id}.env"
+events_file="$ARTIFACT_DIR/${run_id}.events.$([[ "$implementer_agent" == "codex" ]] && printf jsonl || printf json)"
+usage_file="$ARTIFACT_DIR/${run_id}.usage.json"
+
+agent_prepare_role_session \
+  "$active_task_id" IMPLEMENTER "$implementer_agent" "$implementer_model" "$implementer_effort"
 
 agent_write_run_manifest \
   "$manifest_file" "$run_id" "$active_task_id" "$implementation_round" \
   IMPLEMENTER "$implementer_agent" "$implementer_model" "$implementer_effort" \
   workspace-write-no-git "$implementer_timeout" "$base_commit" PENDING \
   .agent/implementation-report.md
+agent_append_run_session \
+  "$manifest_file" "$AGENT_SESSION_ID" "$AGENT_SESSION_MODE" \
+  "${events_file#"$ROOT_DIR/"}" "${usage_file#"$ROOT_DIR/"}"
+
+if [[ "$AGENT_SESSION_MODE" == "resume" ]]; then
+  context_instructions="This is a continuation of the same task-scoped IMPLEMENTER conversation.
+Do not reread unchanged protocol and engineering documents already present in
+the conversation. Re-read PROJECT.md, .agent/next-task.md,
+.agent/latest-review.md, .agent/implementation-report.md, current Git status and
+diff, then open only changed or directly relevant specification sections and
+code. Confirm the checkpointed workspace rather than assuming prior tool state."
+else
+  context_instructions="Read, in order: PROJECT.md, AGENT_PROTOCOL.md,
+.agent/roles/IMPLEMENTER.md, PROJECT_SPEC.md,
+docs/engineering/SOURCE_SCENE.md, docs/engineering/REACTOR_POOL_SYSTEM.md,
+docs/engineering/REACTOR_MODEL.md, REVIEW_CONTRACT.md, .agent/next-task.md,
+.agent/latest-review.md, .agent/implementation-report.md, README.md, the current
+Git status, and all directly relevant code."
+fi
 
 cat >"$prompt_file" <<EOF
 You are one bounded Agent invocation with the explicitly assigned role
@@ -181,14 +218,10 @@ and do not switch roles.
 Task: $active_task_id
 Round: $implementation_round of at most $max_rounds
 Base commit: $base_commit
+Role session: ${AGENT_SESSION_ID:-pending} ($AGENT_SESSION_MODE)
 Run manifest: ${manifest_file#"$ROOT_DIR/"}
 
-Read, in order: PROJECT.md, AGENT_PROTOCOL.md, .agent/roles/IMPLEMENTER.md,
-PROJECT_SPEC.md, docs/engineering/SOURCE_SCENE.md,
-docs/engineering/REACTOR_POOL_SYSTEM.md, docs/engineering/REACTOR_MODEL.md,
-REVIEW_CONTRACT.md, .agent/next-task.md, .agent/latest-review.md,
-.agent/implementation-report.md, README.md, the current Git status, and all
-directly relevant code.
+$context_instructions
 
 Implement the active task comprehensively. If the latest verdict is
 CHANGES_REQUIRED, address every valid Blocker and Major first. Make reasonable
@@ -225,12 +258,27 @@ printf 'Starting IMPLEMENTER round %s/%s for %s\n' \
   "$implementation_round" "$max_rounds" "$active_task_id"
 printf 'Runtime: %s / %s / %s\n' \
   "$implementer_agent" "$implementer_model" "$implementer_effort"
+printf 'Role session: %s (%s)\n' "${AGENT_SESSION_ID:-assigned-by-executor}" "$AGENT_SESSION_MODE"
 
+export AGENT_SESSION_ID AGENT_SESSION_MODE
+export AGENT_EVENT_FILE="$events_file"
 run_agent_process \
   "IMPLEMENTER ($implementer_agent) round $implementation_round/$max_rounds" \
   "$implementer_timeout" "$heartbeat_seconds" "$termination_grace" "$agent_log" -- \
   "$runner" IMPLEMENTER "$implementer_model" "$implementer_effort" "$prompt_file" -
 implementer_exit=$?
+unset AGENT_EVENT_FILE
+
+if (( implementer_exit == 0 )); then
+  run_status="SUCCESS"
+else
+  run_status="$AGENT_RUN_REASON"
+fi
+agent_finalize_role_session "$implementer_agent" "$events_file" "$run_status"
+agent_record_telemetry "$implementer_agent" "$events_file" "$usage_file"
+printf 'RESOLVED_SESSION_ID=%s\n' "$AGENT_SESSION_ID" >>"$manifest_file"
+agent_finish_run_manifest \
+  "$manifest_file" "$run_status" "$implementer_exit" "$AGENT_RUN_REASON"
 
 if (( implementer_exit != 0 )); then
   agent_record_stop IMPLEMENTER "$AGENT_RUN_REASON" "$implementer_exit" "$agent_log"

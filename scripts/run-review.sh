@@ -28,6 +28,7 @@ Options:
   --agent claude|codex  Override REVIEWER_AGENT.
   --model MODEL         Override REVIEWER_MODEL.
   --effort LEVEL        Override REVIEWER_EFFORT.
+  --max-rounds N        Override the round limit for this invocation only.
 
 The tree must be clean. The wrapper runs validation, starts one REVIEWER with a
 read-only profile, validates the report, then installs and archives it.
@@ -37,6 +38,7 @@ EOF
 executor_override=""
 model_override=""
 effort_override=""
+max_rounds_override=""
 positional=()
 while (( $# > 0 )); do
   case "$1" in
@@ -53,6 +55,11 @@ while (( $# > 0 )); do
     --effort)
       [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
       effort_override="$2"
+      shift 2
+      ;;
+    --max-rounds)
+      [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { usage >&2; exit 2; }
+      max_rounds_override="$2"
       shift 2
       ;;
     --help|-h)
@@ -127,11 +134,16 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
-if ! "$ROOT_DIR/scripts/agent-preflight.sh" \
-  --review-only \
-  --reviewer-agent "$reviewer_agent" \
-  --reviewer-model "$reviewer_model" \
-  --reviewer-effort "$reviewer_effort"; then
+preflight_args=(
+  --review-only
+  --reviewer-agent "$reviewer_agent"
+  --reviewer-model "$reviewer_model"
+  --reviewer-effort "$reviewer_effort"
+)
+if [[ -n "$max_rounds_override" ]]; then
+  preflight_args+=(--max-rounds "$max_rounds_override")
+fi
+if ! "$ROOT_DIR/scripts/agent-preflight.sh" "${preflight_args[@]}"; then
   printf 'REVIEWER was not started because preflight failed.\n' >&2
   exit 6
 fi
@@ -177,7 +189,7 @@ else
 fi
 
 current_round="$(sed -n 's/^CURRENT_ROUND=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
-max_rounds="$(sed -n 's/^MAX_ROUNDS=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
+configured_max_rounds="$(sed -n 's/^MAX_ROUNDS=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 last_reviewed_commit="$(sed -n 's/^LAST_REVIEWED_COMMIT=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 last_verdict="$(sed -n 's/^LAST_REVIEW_VERDICT=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 active_task_id="$(sed -n 's/^ACTIVE_TASK_ID=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
@@ -187,7 +199,8 @@ last_implementer_model="$(sed -n 's/^LAST_IMPLEMENTER_MODEL=//p' "$STATE_FILE" 2
 last_implementer_effort="$(sed -n 's/^LAST_IMPLEMENTER_EFFORT=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 
 [[ "$current_round" =~ ^[0-9]+$ ]] || current_round=0
-[[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || max_rounds=3
+[[ "$configured_max_rounds" =~ ^[1-9][0-9]*$ ]] || configured_max_rounds=3
+max_rounds="${max_rounds_override:-$configured_max_rounds}"
 
 if [[ "$last_verdict" == "PASS" && -n "$last_reviewed_commit" && \
       "$target_commit" != "$last_reviewed_commit" ]]; then
@@ -213,19 +226,43 @@ run_id="review-r${next_round}-$(date -u +'%Y%m%dT%H%M%SZ')-$$"
 prompt_file="$ARTIFACT_DIR/prompt-round-${next_round}.md"
 agent_log="$ARTIFACT_DIR/${reviewer_agent}-round-${next_round}.log"
 manifest_file="$RUN_DIR/${run_id}.env"
+events_file="$ARTIFACT_DIR/${run_id}.events.$([[ "$reviewer_agent" == "codex" ]] && printf jsonl || printf json)"
+usage_file="$ARTIFACT_DIR/${run_id}.usage.json"
+
+agent_prepare_role_session \
+  "$active_task_id" REVIEWER "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
 
 agent_write_run_manifest \
   "$manifest_file" "$run_id" "$active_task_id" "$next_round" \
   REVIEWER "$reviewer_agent" "$reviewer_model" "$reviewer_effort" \
   read-only "$reviewer_timeout" "$base_commit" "$target_commit" \
   .agent/latest-review.md
+agent_append_run_session \
+  "$manifest_file" "$AGENT_SESSION_ID" "$AGENT_SESSION_MODE" \
+  "${events_file#"$ROOT_DIR/"}" "${usage_file#"$ROOT_DIR/"}"
+
+if [[ "$AGENT_SESSION_MODE" == "resume" ]]; then
+  context_instructions="This is a continuation of the same task-scoped REVIEWER conversation.
+Do not inherit or request the IMPLEMENTER conversation. Re-read the exact base
+and target diff, current implementation report, validation evidence and prior
+formal findings. Re-open only changed or directly relevant specification and
+code sections, and independently revalidate every finding against the new
+target."
+else
+  context_instructions="Read PROJECT.md, AGENT_PROTOCOL.md,
+.agent/roles/REVIEWER.md, PROJECT_SPEC.md,
+docs/engineering/SOURCE_SCENE.md, docs/engineering/REACTOR_POOL_SYSTEM.md,
+docs/engineering/REACTOR_MODEL.md, REVIEW_CONTRACT.md, README.md,
+.agent/implementation-report.md, the specified Git diff, related code/tests,
+and validation evidence."
+fi
 
 cat >"$prompt_file" <<EOF
 You are one bounded Agent invocation with the explicitly assigned role REVIEWER,
 not IMPLEMENTER. Your executor is $reviewer_agent, model is $reviewer_model, and
 effort is $reviewer_effort. Do not infer a role from the executor name, switch
 roles, edit repository files, or start another Agent. The review profile is
-read-only and this invocation has no prior-role session.
+read-only. This role session never contains IMPLEMENTER invocations.
 
 Task: $active_task_id
 Round: $next_round of at most $max_rounds
@@ -234,13 +271,10 @@ Compare against: $base_commit
 Working tree at launch: clean
 Validation: $validation_status (exit $validation_exit)
 Validation summary: .agent/artifacts/validation/summary.md
+Role session: ${AGENT_SESSION_ID:-pending} ($AGENT_SESSION_MODE)
 Run manifest: ${manifest_file#"$ROOT_DIR/"}
 
-Read PROJECT.md, AGENT_PROTOCOL.md, .agent/roles/REVIEWER.md,
-PROJECT_SPEC.md, docs/engineering/SOURCE_SCENE.md,
-docs/engineering/REACTOR_POOL_SYSTEM.md, docs/engineering/REACTOR_MODEL.md,
-REVIEW_CONTRACT.md, README.md, .agent/implementation-report.md, the specified
-Git diff, related code/tests, and validation evidence.
+$context_instructions
 
 Check scope compliance, bugs, regressions, test adequacy, responsive behavior,
 main flows, and console errors. For SOURCE changes, verify first-interaction
@@ -266,11 +300,27 @@ EOF
 
 printf 'Starting REVIEWER round %s/%s\n' "$next_round" "$max_rounds"
 printf 'Runtime: %s / %s / %s\n' "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
+printf 'Role session: %s (%s)\n' "${AGENT_SESSION_ID:-assigned-by-executor}" "$AGENT_SESSION_MODE"
+export AGENT_SESSION_ID AGENT_SESSION_MODE
+export AGENT_EVENT_FILE="$events_file"
 run_agent_process \
   "REVIEWER ($reviewer_agent) round $next_round/$max_rounds" \
   "$reviewer_timeout" "$heartbeat_seconds" "$termination_grace" "$agent_log" -- \
   "$runner" REVIEWER "$reviewer_model" "$reviewer_effort" "$prompt_file" "$review_tmp"
 reviewer_exit=$?
+unset AGENT_EVENT_FILE
+
+if (( reviewer_exit == 0 )); then
+  run_status="SUCCESS"
+else
+  run_status="$AGENT_RUN_REASON"
+fi
+agent_finalize_role_session "$reviewer_agent" "$events_file" "$run_status"
+agent_record_telemetry "$reviewer_agent" "$events_file" "$usage_file"
+printf 'RESOLVED_SESSION_ID=%s\n' "$AGENT_SESSION_ID" >>"$manifest_file"
+agent_finish_run_manifest \
+  "$manifest_file" "$run_status" "$reviewer_exit" "$AGENT_RUN_REASON"
+
 if (( reviewer_exit != 0 )); then
   agent_record_stop REVIEWER "$AGENT_RUN_REASON" "$reviewer_exit" "$agent_log"
   {
@@ -352,7 +402,7 @@ state_tmp="$AGENT_DIR/state.env.tmp"
   printf 'LAST_REVIEWED_COMMIT=%s\n' "$target_commit"
   printf 'LAST_REVIEW_VERDICT=%s\n' "$verdict"
   printf 'LAST_VALIDATION_STATUS=%s\n' "$validation_status"
-  printf 'MAX_ROUNDS=%s\n' "$max_rounds"
+  printf 'MAX_ROUNDS=%s\n' "$configured_max_rounds"
   printf 'LAST_IMPLEMENTER_AGENT=%s\n' "$last_implementer_agent"
   printf 'LAST_IMPLEMENTER_MODEL=%s\n' "$last_implementer_model"
   printf 'LAST_IMPLEMENTER_EFFORT=%s\n' "$last_implementer_effort"

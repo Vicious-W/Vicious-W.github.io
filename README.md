@@ -61,6 +61,7 @@ npm run build
 默认循环仍采用 Claude Code 实现、Codex 审查，但可在启动时交换角色、改用同一种
 执行器或显式指定各自模型与 effort。直接进入项目而未指定专用角色的 Agent 默认
 为 `GENERAL`。预计会跨额度窗口时使用 `supervise`：外层 shell 会保存安全恢复
-检查点并零 Token 等待，MONITOR 只处理未知异常。
+检查点并零 Token 等待，MONITOR 只处理未知异常。同一任务内实现与审查分别恢复
+自己的专属会话；`--max-rounds N` 可只限制本次运行。
 
 详细说明见 `docs/guides/PROJECT_COMMAND_MANUAL.md`。

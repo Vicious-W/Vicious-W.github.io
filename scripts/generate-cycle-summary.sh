@@ -8,6 +8,7 @@ STATE_FILE="$AGENT_DIR/state.env"
 RUNTIME_FILE="$AGENT_DIR/runtime.env"
 STOP_FILE="$AGENT_DIR/artifacts/runtime/last-stop.env"
 SUPERVISOR_STATE_FILE="$AGENT_DIR/artifacts/supervisor/state.env"
+CYCLE_RUNTIME_FILE="$AGENT_DIR/artifacts/cycle/runtime.env"
 RUN_DIR="$AGENT_DIR/artifacts/runs"
 OUTPUT_DIR="$AGENT_DIR/artifacts/cycle"
 OUTPUT_FILE="$OUTPUT_DIR/latest-summary.md"
@@ -24,6 +25,7 @@ state_value() { value_from "$STATE_FILE" "$1"; }
 runtime_value() { value_from "$RUNTIME_FILE" "$1"; }
 stop_value() { value_from "$STOP_FILE" "$1"; }
 supervisor_value() { value_from "$SUPERVISOR_STATE_FILE" "$1"; }
+cycle_runtime_value() { value_from "$CYCLE_RUNTIME_FILE" "$1"; }
 manifest_value() {
   local file="$1"
   local key="$2"
@@ -78,15 +80,30 @@ max_rounds="$(state_value MAX_ROUNDS)"
 last_verdict="$(state_value LAST_REVIEW_VERDICT)"
 [[ "$current_round" =~ ^[0-9]+$ ]] || current_round=0
 [[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || max_rounds=3
+if [[ "$(cycle_runtime_value TASK_ID)" == "$task_id" && \
+      "$(cycle_runtime_value EFFECTIVE_MAX_ROUNDS)" =~ ^[1-9][0-9]*$ ]]; then
+  max_rounds="$(cycle_runtime_value EFFECTIVE_MAX_ROUNDS)"
+fi
 
 first_implementation_manifest=""
 latest_implementation_manifest=""
+declare -A implementation_manifests=()
+declare -A review_manifests=()
 if [[ -d "$RUN_DIR" ]]; then
   while IFS= read -r manifest_path; do
     [[ "$(manifest_value "$manifest_path" TASK_ID)" == "$task_id" ]] || continue
-    [[ "$(manifest_value "$manifest_path" ROLE)" == "IMPLEMENTER" ]] || continue
-    [[ -n "$first_implementation_manifest" ]] || first_implementation_manifest="$manifest_path"
-    latest_implementation_manifest="$manifest_path"
+    manifest_role="$(manifest_value "$manifest_path" ROLE)"
+    manifest_round="$(manifest_value "$manifest_path" ROUND)"
+    case "$manifest_role" in
+      IMPLEMENTER)
+        [[ -n "$first_implementation_manifest" ]] || first_implementation_manifest="$manifest_path"
+        latest_implementation_manifest="$manifest_path"
+        implementation_manifests["$manifest_round"]="$manifest_path"
+        ;;
+      REVIEWER)
+        review_manifests["$manifest_round"]="$manifest_path"
+        ;;
+    esac
   done < <(
     find "$RUN_DIR" -maxdepth 1 -type f -printf '%T@ %p\n' 2>/dev/null |
       sort -n |
@@ -175,6 +192,7 @@ fi
     review_commit="${review_commits[$round]:-}"
 
     printf '### IMPLEMENTER\n\n'
+    implementation_manifest="${implementation_manifests[$round]:-}"
     if [[ -n "$implementation_commit" ]] && \
        git -C "$ROOT_DIR" show "$implementation_commit:.agent/implementation-report.md" \
          >"$report_tmp" 2>/dev/null; then
@@ -217,9 +235,18 @@ fi
     else
       printf -- '- 未运行，或没有形成有效检查点。\n'
     fi
+    if [[ -n "$implementation_manifest" && \
+          -n "$(manifest_value "$implementation_manifest" SESSION_MODE)" ]]; then
+      printf -- '- 会话：`%s`，模式 `%s`\n' \
+        "$(manifest_value "$implementation_manifest" RESOLVED_SESSION_ID)" \
+        "$(manifest_value "$implementation_manifest" SESSION_MODE)"
+      printf -- '- 用量记录：`%s`\n' \
+        "$(manifest_value "$implementation_manifest" USAGE_FILE)"
+    fi
     printf '\n'
 
     printf '### REVIEWER\n\n'
+    review_manifest="${review_manifests[$round]:-}"
     if [[ -n "$review_commit" ]] && \
        git -C "$ROOT_DIR" show "$review_commit:.agent/latest-review.md" \
          >"$report_tmp" 2>/dev/null; then
@@ -243,6 +270,14 @@ fi
       printf -- '- 详细报告：`git show %s:.agent/latest-review.md`\n' "$review_commit"
     else
       printf -- '- 未运行。\n'
+    fi
+    if [[ -n "$review_manifest" && \
+          -n "$(manifest_value "$review_manifest" SESSION_MODE)" ]]; then
+      printf -- '- 会话：`%s`，模式 `%s`\n' \
+        "$(manifest_value "$review_manifest" RESOLVED_SESSION_ID)" \
+        "$(manifest_value "$review_manifest" SESSION_MODE)"
+      printf -- '- 用量记录：`%s`\n' \
+        "$(manifest_value "$review_manifest" USAGE_FILE)"
     fi
     printf '\n'
   done

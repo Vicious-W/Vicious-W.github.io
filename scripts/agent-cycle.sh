@@ -37,6 +37,8 @@ Cycle options:
   --reviewer, --reviewer-agent claude|codex
   --reviewer-model MODEL
   --reviewer-effort low|medium|high|xhigh|max
+  --max-rounds N         Override this cycle's round limit without changing
+                         .agent/state.env.
   --start-stage implementer|reviewer
   --review-base COMMIT    Base for a direct REVIEWER resume; defaults to the
                           recorded owner-checkpoint base, then HEAD^.
@@ -113,6 +115,7 @@ case "$command_name" in
     reviewer_effort="$(agent_runtime_effort_config REVIEWER_EFFORT high)" || exit 2
     next_stage="implementer"
     review_base_override=""
+    max_rounds_override=""
 
     while (( $# > 0 )); do
       case "$1" in
@@ -144,6 +147,11 @@ case "$command_name" in
         --reviewer-effort)
           [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
           reviewer_effort="$2"
+          shift 2
+          ;;
+        --max-rounds)
+          [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { usage >&2; exit 2; }
+          max_rounds_override="$2"
           shift 2
           ;;
         --start-stage)
@@ -216,24 +224,39 @@ case "$command_name" in
     printf '  REVIEWER:    %s / %s / %s\n' \
       "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
     printf '  START STAGE: %s\n' "$next_stage"
+    printf '  MAX ROUNDS:  %s\n' "${max_rounds_override:-state default}"
 
-    if ! "$ROOT_DIR/scripts/agent-preflight.sh" \
+    preflight_args=(
       --implementer-agent "$implementer_agent" \
       --implementer-model "$implementer_model" \
       --implementer-effort "$implementer_effort" \
       --reviewer-agent "$reviewer_agent" \
       --reviewer-model "$reviewer_model" \
-      --reviewer-effort "$reviewer_effort"; then
+      --reviewer-effort "$reviewer_effort"
+    )
+    if [[ -n "$max_rounds_override" ]]; then
+      preflight_args+=(--max-rounds "$max_rounds_override")
+    fi
+    if ! "$ROOT_DIR/scripts/agent-preflight.sh" "${preflight_args[@]}"; then
       printf 'Automatic cycle stopped at preflight; no Agent was started.\n' >&2
       exit 6
     fi
 
+    mkdir -p "$ROOT_DIR/.agent/artifacts/cycle"
+    {
+      printf 'TASK_ID=%s\n' "$(state_value ACTIVE_TASK_ID)"
+      printf 'EFFECTIVE_MAX_ROUNDS=%s\n' \
+        "${max_rounds_override:-$(state_value MAX_ROUNDS)}"
+      printf 'STARTED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+    } >"$ROOT_DIR/.agent/artifacts/cycle/runtime.env"
+
     while true; do
       task_status="$(state_value ACTIVE_TASK_STATUS)"
       current_round="$(state_value CURRENT_ROUND)"
-      max_rounds="$(state_value MAX_ROUNDS)"
+      configured_max_rounds="$(state_value MAX_ROUNDS)"
       [[ "$current_round" =~ ^[0-9]+$ ]] || current_round=0
-      [[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || max_rounds=3
+      [[ "$configured_max_rounds" =~ ^[1-9][0-9]*$ ]] || configured_max_rounds=3
+      max_rounds="${max_rounds_override:-$configured_max_rounds}"
 
       if [[ "$task_status" == "COMPLETE" ]]; then
         printf 'Active task already has a PASS verdict. Nothing to run.\n'
@@ -251,7 +274,8 @@ case "$command_name" in
         AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-implementation.sh" \
           --agent "$implementer_agent" \
           --model "$implementer_model" \
-          --effort "$implementer_effort"
+          --effort "$implementer_effort" \
+          --max-rounds "$max_rounds"
         implementation_exit=$?
         if (( implementation_exit != 0 )); then
           printf 'Cycle stopped during IMPLEMENTER (exit %s).\n' "$implementation_exit" >&2
@@ -290,6 +314,7 @@ case "$command_name" in
         --agent "$reviewer_agent" \
         --model "$reviewer_model" \
         --effort "$reviewer_effort" \
+        --max-rounds "$max_rounds" \
         "$implementation_commit" "$base_commit"
       review_exit=$?
       if (( review_exit != 0 )); then

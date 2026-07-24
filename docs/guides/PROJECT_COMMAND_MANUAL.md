@@ -146,7 +146,8 @@ MAX_QUOTA_RESUMES=6
   --reviewer-effort high
 ```
 
-角色间仍是两个独立、无会话继承的进程；审查进程仍强制只读。
+角色间仍是两个独立会话、两个独立进程；同一任务后续轮次只恢复自己的角色会话，
+审查进程仍强制只读。
 
 模型名必须是对应 CLI 支持的实际值。`effort` 可用
 `low`、`medium`、`high`、`xhigh`、`max`；具体模型是否支持某个强度由 CLI
@@ -172,6 +173,15 @@ MAX_QUOTA_RESUMES=6
 ./scripts/agent-cycle.sh cycle
 ```
 
+只运行一次实现和一次审查，不改项目默认轮数：
+
+```bash
+./scripts/agent-cycle.sh cycle \
+  --max-rounds 1 \
+  --implementer claude --implementer-model opus-4.8 --implementer-effort high \
+  --reviewer codex --reviewer-model gpt-5.6-sol --reviewer-effort high
+```
+
 开始后会看到：
 
 ```text
@@ -186,9 +196,9 @@ Cycle configuration
 
 ```text
 预检
-→ IMPLEMENTER 新进程
+→ IMPLEMENTER 新进程（恢复本任务的 IMPLEMENTER 专属会话）
 → 越权检查、统一验证、本地实现提交
-→ REVIEWER 新进程（只读）
+→ REVIEWER 新进程（只读，恢复本任务的 REVIEWER 专属会话）
 → 报告格式检查、归档、本地审查提交
 → PASS 结束；CHANGES_REQUIRED 进入下一轮
 ```
@@ -196,7 +206,8 @@ Cycle configuration
 Agent 不负责启动下一个 Agent。中立父脚本一直等待子进程结束，确认交接后再启动
 下一阶段，因此不会因为自动交接而让两个 Agent 长时间并行运行。
 
-默认最多三轮。权限、认证、额度、MCP、超时、脏工作区、越权、无效报告或未知
+默认最多三轮；`--max-rounds N` 只覆盖当前 cycle/supervise，不修改
+`.agent/state.env` 的默认值。权限、认证、额度、MCP、超时、脏工作区、越权、无效报告或未知
 结论都会立即停止。流程不会 push、部署、reset、clean、rebase 或无限重试。
 
 ### 6.1 跨额度窗口的监督循环
@@ -240,8 +251,13 @@ agent-supervisor.sh：跨额度窗口、恢复次数、定时等待、异常交�
 这段等待不会调用模型，因此不会消耗 Agent token。
 
 到点后，监督器从中断角色启动全新进程：实现阶段中断就继续 IMPLEMENTER，已有
-实现检查点后的审查中断就直接继续 REVIEWER。默认每次额度等待 5 小时，最多恢复
-6 次，均可用 `--quota-wait-seconds` 和 `--max-quota-resumes` 覆盖。
+实现检查点后的审查中断就直接继续 REVIEWER；新进程会精确恢复同一任务的对应角色
+会话，而不是重新选择“最近会话”。默认每次额度等待 5 小时，最多恢复 6 次，均可用
+`--quota-wait-seconds` 和 `--max-quota-resumes` 覆盖。
+
+每次调用的运行清单位于 `.agent/artifacts/runs/`，其中记录会话 ID、`new/resume`
+模式、原始 JSON/JSONL 事件和标准化用量摘要路径。用量字段由执行器实际返回决定；
+订阅模式没有费用数据时显示为 `null`，不代表费用为零。
 
 查看监督状态：
 

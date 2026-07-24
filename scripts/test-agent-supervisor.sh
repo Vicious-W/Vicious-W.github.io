@@ -87,6 +87,7 @@ AGENT_SUPERVISOR_MONITOR_ON_ERROR=0 \
     --quota-wait-seconds 60 \
     --quota-anchor "2026-07-23 00:00:00 UTC" \
     --max-quota-resumes 2 \
+    --max-rounds 1 \
     --implementer claude --implementer-model sonnet --implementer-effort high \
     --reviewer claude --reviewer-model sonnet --reviewer-effort max \
     --monitor codex --monitor-model gpt-5.6-terra --monitor-effort medium
@@ -115,6 +116,12 @@ if grep -Fq -- "--review-base $TEST_REVIEW_BASE" "$ARGS_FILE" 2>/dev/null; then
   printf 'PASS  reviewer quota stop preserved its exact comparison base\n'
 else
   printf 'FAIL  supervisor did not preserve the REVIEWER comparison base\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+if grep -Fq -- '--max-rounds 1' "$ARGS_FILE" 2>/dev/null; then
+  printf 'PASS  supervisor preserved the run-specific round limit\n'
+else
+  printf 'FAIL  supervisor did not pass the run-specific round limit\n' >&2
   failure_count=$((failure_count + 1))
 fi
 if grep -Fqx 'SUPERVISOR_STATUS=COMPLETE' "$STATE_FILE" 2>/dev/null; then

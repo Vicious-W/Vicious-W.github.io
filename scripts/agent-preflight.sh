@@ -23,6 +23,7 @@ implementer_effort="$(agent_runtime_effort_config IMPLEMENTER_EFFORT high)" || e
 reviewer_agent="$(agent_runtime_executor_config REVIEWER_AGENT codex)" || exit 2
 reviewer_model="$(agent_runtime_model_config REVIEWER_MODEL gpt-5.6-sol)" || exit 2
 reviewer_effort="$(agent_runtime_effort_config REVIEWER_EFFORT high)" || exit 2
+max_rounds_override=""
 
 usage() {
   cat <<'EOF'
@@ -41,6 +42,7 @@ Options:
   --reviewer-agent NAME       claude or codex.
   --reviewer-model MODEL
   --reviewer-effort LEVEL
+  --max-rounds N             Check this run-specific round limit.
   --allow-dirty               Diagnostic: do not fail on dirty worktree.
   --skip-git-write            Diagnostic: do not probe .git write access.
   --skip-external             Diagnostic: skip authentication and MCP checks.
@@ -87,6 +89,11 @@ while (( $# > 0 )); do
     --reviewer-effort)
       [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
       reviewer_effort="$2"
+      shift 2
+      ;;
+    --max-rounds)
+      [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { usage >&2; exit 2; }
+      max_rounds_override="$2"
       shift 2
       ;;
     --allow-dirty)
@@ -207,7 +214,7 @@ check_executor_external() {
   printf '\n## Results\n\n'
 } >"$SUMMARY_FILE"
 
-for command_name in git node npm rg sed grep timeout setsid mktemp; do
+for command_name in git node npm rg sed grep timeout setsid mktemp tee; do
   check_command "$command_name"
 done
 
@@ -262,6 +269,7 @@ required_files=(
   scripts/agent-supervisor.sh
   scripts/agent-runners/claude.sh
   scripts/agent-runners/codex.sh
+  scripts/lib/agent-telemetry.mjs
   scripts/generate-cycle-summary.sh
   scripts/run-implementation.sh
   scripts/run-monitor.sh
@@ -340,6 +348,7 @@ if [[ -x "$ROOT_DIR/scripts/run-validation.sh" && \
       -x "$ROOT_DIR/scripts/agent-supervisor.sh" && \
       -x "$ROOT_DIR/scripts/agent-runners/claude.sh" && \
       -x "$ROOT_DIR/scripts/agent-runners/codex.sh" && \
+      -x "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" && \
       -x "$ROOT_DIR/scripts/generate-cycle-summary.sh" && \
       -x "$ROOT_DIR/scripts/test-agent-runtime.sh" && \
       -x "$ROOT_DIR/scripts/test-agent-supervisor.sh" ]]; then
@@ -366,6 +375,12 @@ else
   record_fail 'Agent shell script syntax check failed'
 fi
 
+if node --check "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" >/dev/null; then
+  record_pass 'Agent telemetry parser passes node --check'
+else
+  record_fail 'Agent telemetry parser syntax check failed'
+fi
+
 if agent_runtime_prepare_npm_cache; then
   record_pass 'dedicated Agent npm cache is writable'
 else
@@ -389,13 +404,14 @@ fi
 
 current_round="$(sed -n 's/^CURRENT_ROUND=//p' "$STATE_FILE" | head -n 1)"
 max_rounds="$(sed -n 's/^MAX_ROUNDS=//p' "$STATE_FILE" | head -n 1)"
+effective_max_rounds="${max_rounds_override:-$max_rounds}"
 task_status="$(sed -n 's/^ACTIVE_TASK_STATUS=//p' "$STATE_FILE" | head -n 1)"
-if [[ "$current_round" =~ ^[0-9]+$ && "$max_rounds" =~ ^[1-9][0-9]*$ ]] && \
-   (( current_round < max_rounds )) && \
+if [[ "$current_round" =~ ^[0-9]+$ && "$effective_max_rounds" =~ ^[1-9][0-9]*$ ]] && \
+   (( current_round < effective_max_rounds )) && \
    [[ "$task_status" == "READY" || "$task_status" == "NEEDS_CHANGES" ]]; then
-  record_pass "active task can run: status=$task_status, round=$current_round/$max_rounds"
+  record_pass "active task can run: status=$task_status, round=$current_round/$effective_max_rounds"
 else
-  record_fail "active task cannot run: status=$task_status, round=$current_round/$max_rounds"
+  record_fail "active task cannot run: status=$task_status, round=$current_round/$effective_max_rounds"
 fi
 
 dirty_status="$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all 2>/dev/null)"

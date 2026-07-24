@@ -11,9 +11,130 @@ AGENT_RUN_EXIT=0
 AGENT_RUN_REASON="NOT_RUN"
 AGENT_RUN_ELAPSED_SECONDS=0
 AGENT_NPM_CACHE_DIR=""
+AGENT_SESSION_FILE=""
+AGENT_SESSION_ID=""
+AGENT_SESSION_MODE="new"
 
 agent_runtime_init() {
   AGENT_RUNTIME_ROOT="$1"
+}
+
+agent_safe_slug() {
+  printf '%s' "$1" | tr -c '[:alnum:]_.-' '_'
+}
+
+agent_new_uuid() {
+  if [[ -r /proc/sys/kernel/random/uuid ]]; then
+    sed -n '1p' /proc/sys/kernel/random/uuid
+    return
+  fi
+  printf '%08x-%04x-4%03x-a%03x-%012x\n' \
+    "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$((RANDOM * RANDOM))"
+}
+
+agent_session_value() {
+  local file="$1"
+  local key="$2"
+  sed -n "s/^${key}=//p" "$file" 2>/dev/null | head -n 1
+}
+
+agent_prepare_role_session() {
+  local task_id="$1"
+  local role="$2"
+  local executor="$3"
+  local model="$4"
+  local effort="$5"
+  local session_dir="$AGENT_RUNTIME_ROOT/.agent/artifacts/sessions"
+  local task_slug role_slug
+  local stored_id stored_task stored_role stored_executor stored_model stored_effort
+
+  task_slug="$(agent_safe_slug "$task_id")"
+  role_slug="$(printf '%s' "$role" | tr '[:upper:]' '[:lower:]')"
+  AGENT_SESSION_FILE="$session_dir/${task_slug}-${role_slug}.env"
+  mkdir -p "$session_dir"
+
+  stored_id="$(agent_session_value "$AGENT_SESSION_FILE" SESSION_ID)"
+  stored_task="$(agent_session_value "$AGENT_SESSION_FILE" TASK_ID)"
+  stored_role="$(agent_session_value "$AGENT_SESSION_FILE" ROLE)"
+  stored_executor="$(agent_session_value "$AGENT_SESSION_FILE" EXECUTOR)"
+  stored_model="$(agent_session_value "$AGENT_SESSION_FILE" MODEL)"
+  stored_effort="$(agent_session_value "$AGENT_SESSION_FILE" EFFORT)"
+
+  if [[ -n "$stored_id" && "$stored_task" == "$task_id" && \
+        "$stored_role" == "$role" && "$stored_executor" == "$executor" && \
+        "$stored_model" == "$model" && "$stored_effort" == "$effort" ]]; then
+    AGENT_SESSION_ID="$stored_id"
+    AGENT_SESSION_MODE="resume"
+    return 0
+  fi
+
+  AGENT_SESSION_MODE="new"
+  if [[ "$executor" == "claude" ]]; then
+    AGENT_SESSION_ID="$(agent_new_uuid)"
+  else
+    AGENT_SESSION_ID=""
+  fi
+  {
+    printf 'TASK_ID=%s\n' "$task_id"
+    printf 'ROLE=%s\n' "$role"
+    printf 'EXECUTOR=%s\n' "$executor"
+    printf 'MODEL=%s\n' "$model"
+    printf 'EFFORT=%s\n' "$effort"
+    printf 'SESSION_ID=%s\n' "$AGENT_SESSION_ID"
+    printf 'STATUS=PENDING\n'
+    printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  } >"$AGENT_SESSION_FILE"
+}
+
+agent_finalize_role_session() {
+  local executor="$1"
+  local events_file="$2"
+  local run_status="$3"
+  local detected_id=""
+  local session_tmp="${AGENT_SESSION_FILE}.tmp"
+  local telemetry_script="$AGENT_RUNTIME_ROOT/scripts/lib/agent-telemetry.mjs"
+
+  if [[ -s "$events_file" && -x "$telemetry_script" ]]; then
+    detected_id="$(node "$telemetry_script" session "$executor" "$events_file" 2>/dev/null)"
+  fi
+  [[ -n "$detected_id" ]] && AGENT_SESSION_ID="$detected_id"
+
+  # A Codex session cannot be resumed until its generated thread ID has been
+  # observed. Claude receives an explicit UUID before launch.
+  if [[ -z "$AGENT_SESSION_ID" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    case "$line" in
+      SESSION_ID=*|STATUS=*|UPDATED_AT_UTC=*|LAST_RUN_STATUS=*) ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done <"$AGENT_SESSION_FILE" >"$session_tmp"
+  {
+    printf 'SESSION_ID=%s\n' "$AGENT_SESSION_ID"
+    printf 'STATUS=ACTIVE\n'
+    printf 'LAST_RUN_STATUS=%s\n' "$run_status"
+    printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  } >>"$session_tmp"
+  mv "$session_tmp" "$AGENT_SESSION_FILE"
+}
+
+agent_record_telemetry() {
+  local executor="$1"
+  local events_file="$2"
+  local usage_file="$3"
+  local telemetry_script="$AGENT_RUNTIME_ROOT/scripts/lib/agent-telemetry.mjs"
+
+  mkdir -p "$(dirname "$usage_file")"
+  if [[ -x "$telemetry_script" ]]; then
+    node "$telemetry_script" summary "$executor" "$events_file" "$usage_file" \
+      2>/dev/null || printf '{"schemaVersion":1,"executor":"%s","telemetryAvailable":false}\n' \
+        "$executor" >"$usage_file"
+  else
+    printf '{"schemaVersion":1,"executor":"%s","telemetryAvailable":false}\n' \
+      "$executor" >"$usage_file"
+  fi
 }
 
 agent_runtime_prepare_npm_cache() {
@@ -180,6 +301,35 @@ agent_write_run_manifest() {
     printf 'EXPECTED_OUTPUT=%s\n' "$expected_output"
     printf 'STARTED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   } >"$manifest_path"
+}
+
+agent_append_run_session() {
+  local manifest_path="$1"
+  local session_id="$2"
+  local session_mode="$3"
+  local events_path="$4"
+  local usage_path="$5"
+
+  {
+    printf 'SESSION_ID=%s\n' "$session_id"
+    printf 'SESSION_MODE=%s\n' "$session_mode"
+    printf 'EVENTS_FILE=%s\n' "$events_path"
+    printf 'USAGE_FILE=%s\n' "$usage_path"
+  } >>"$manifest_path"
+}
+
+agent_finish_run_manifest() {
+  local manifest_path="$1"
+  local status="$2"
+  local exit_code="$3"
+  local stop_reason="$4"
+  {
+    printf 'FINISHED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+    printf 'STATUS=%s\n' "$status"
+    printf 'EXIT_CODE=%s\n' "$exit_code"
+    printf 'STOP_REASON=%s\n' "$stop_reason"
+    printf 'ELAPSED_SECONDS=%s\n' "$AGENT_RUN_ELAPSED_SECONDS"
+  } >>"$manifest_path"
 }
 
 agent_process_start_ticks() {
