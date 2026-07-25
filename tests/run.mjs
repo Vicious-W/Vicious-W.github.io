@@ -14,7 +14,7 @@
 
 import {
   createSessionController, MODES, CONTROL_OWNERS, AUTO_PHASES,
-  FULL_POWER, PULSE_POWER_LIMIT, POWER_TRIP
+  FULL_POWER, PULSE_POWER_LIMIT
 } from "../src/scenes/reactor/sessionController.js";
 import {
   createDamageState, registerImpact, buildFragmentGeometries, impactEnergy
@@ -517,15 +517,28 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   assert(cherenkovIntensity(0, 1) > 0.7, "低功率下的历史脉冲仍然照亮池水（脉冲通道独立）");
 }
 {
-  // 保护回路：人工把三根棒全提出来不会停在“无限升功率”状态
+  // R-001 的副作用边界：TRANS 可人工驱动之后，三根棒同时全提是可达状态。
+  // 这里断言它仍然由瞬发负温度反馈自限（真实 TRIGA 的自限特性），不发散、
+  // 不进入物理上荒谬的状态——不引入任何额外的保护装置。
   const c = freshUnlocked();
-  c.startup();
+  c.startup(); c.pumpToggle();
   ["SHIM", "REG", "TRANS"].forEach(n => c.rodStart(n, +1));
-  run(c, 60, 1 / 60);
-  assert(c.state.protectionTrips >= 1, "越过高功率整定值触发保护回路自动 SCRAM");
-  assert(c.state.scrammed && c.state.powerProxy < POWER_TRIP,
-    "保护动作后已停堆且功率回落: " + c.state.powerProxy.toFixed(3));
-  assert(c.state.powerProxy <= 2.6, "功率始终有界");
+  run(c, 10, 1 / 60);
+  ["SHIM", "REG", "TRANS"].forEach(n => c.rodStop(n));
+  let peak = 0;
+  for (let i = 0; i < 60 * 120; i++) { c.update(1 / 60); peak = Math.max(peak, c.state.powerProxy); }
+  assert(c.state.rod.TRANS.pos > 0.99, "三根棒确实全部提到顶");
+  assert(Number.isFinite(peak) && peak < 6,
+    "三棒全提时功率被负温度反馈自限、不发散: 峰值 " + peak.toFixed(3));
+  assert(c.state.powerProxy > FULL_POWER,
+    "三棒全提的稳态功率高于满功率（存在真实控制裕量）: " + c.state.powerProxy.toFixed(3));
+  assert(c.state.fuelTemperatureProxy > c.state.poolTemperatureProxy,
+    "自限状态下燃料温度仍高于池水（热流方向正确）");
+  // 该状态下 SCRAM 仍然有效
+  c.scram();
+  run(c, 5, 1 / 60);
+  assert(c.state.rod.TRANS.pos < 0.02 && c.state.powerProxy < peak * 0.2,
+    "三棒全提状态下 SCRAM 仍把功率和棒位压下来");
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

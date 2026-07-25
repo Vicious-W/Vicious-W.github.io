@@ -98,11 +98,6 @@ export const FULL_POWER = 1.0;         // 250 kW 稳态功率代理
 export const PULSE_POWER_LIMIT = 4e-4;
 const SAFE_SHUTDOWN_POWER = 0.02;      // 允许重新进入完整 AUTO 的停堆功率上限
 const SAFE_SHUTDOWN_ROD = 0.02;        // 允许重新进入完整 AUTO 的棒位上限
-// 保护回路（RP-009）高功率整定值：125% 满功率自动 SCRAM。人工可以把三根棒都提
-// 出来（真实 TRIGA 的稳态工况同样允许定位瞬发棒），但保护系统会在功率越过整定值
-// 时插棒，所以控制台无法把反应堆停在"无限升功率"这种物理上荒谬的状态。脉冲通道
-// 是独立标度，不参与该整定值。
-export const POWER_TRIP = 1.25;
 
 // S 形积分棒价值：p=0→0，p=1→1，微分价值在中段最大
 function rodShape(p) {
@@ -122,7 +117,6 @@ export function createSessionController({ reduceMotion } = {}) {
     autoAvailable: false,           // 当前是否允许启动完整 AUTO（控制台无文字反馈）
     // 三套棒驱动当前是否接受指令（控制台无文字反馈：被联锁禁止的拨杆压暗）
     rodDriveEnabled: { SHIM: false, REG: false, TRANS: false },
-    protectionTrips: 0,             // 保护回路自动 SCRAM 次数
 
     // 运行
     mode: "SHUTDOWN",
@@ -331,7 +325,24 @@ export function createSessionController({ reduceMotion } = {}) {
   });
 
   // 对外的人工指令：先夺取控制权，再执行与 AUTO 相同的实现
-  const manual = fn => (...args) => { claimManual(); return fn(...args); };
+  // 控制台的无文字状态反馈全部是**派生量**：每帧刷新一次，并在每条人工指令之后
+  // 立即再刷新一次。后者是必要的——按下 START 的那一刻拨杆就该亮起来，而不是等
+  // 到下一帧；控制台 update() 与 session.update() 的先后顺序也就不再影响可见语义。
+  function refreshIndications() {
+    for (const k in state.rod) state.rodDriveEnabled[k] = rodDriveAllowed(k);
+    state.autoAvailable = state.controlOwner !== "AUTO" && isSafeShutdown();
+    // 脉冲联锁的可见状态：控制台据此点亮/压暗脉冲钮，用户不用文字也能看出
+    // “现在能不能点火”（PROJECT_SPEC：无文字，但含义必须可辨认）。
+    state.pulseReady = state.mode === "PULSE" && !state.scrammed && !state.pulse
+      && state.powerProxy <= PULSE_POWER_LIMIT && state.rod.TRANS.pos <= 0.02;
+  }
+
+  const manual = fn => (...args) => {
+    claimManual();
+    const result = fn(...args);
+    refreshIndications();
+    return result;
+  };
 
   // —— 每帧：棒运动 ——
   function stepRods(dt) {
@@ -486,20 +497,7 @@ export function createSessionController({ reduceMotion } = {}) {
     stepPulse(dt);
     stepThermal(dt);
     updatePeriod(dt);
-
-    // 保护回路：稳态功率越过高功率整定值 → 自动 SCRAM（人工和 AUTO 一视同仁）
-    if (!state.scrammed && state.powerProxy > POWER_TRIP) {
-      state.protectionTrips += 1;
-      cmdScram();
-      emit("protection_trip", { power: state.powerProxy });
-    }
-
-    for (const k in state.rod) state.rodDriveEnabled[k] = rodDriveAllowed(k);
-    state.autoAvailable = state.controlOwner !== "AUTO" && isSafeShutdown();
-    // 脉冲联锁的可见状态：控制台据此点亮/压暗脉冲钮，用户不用文字也能看出
-    // “现在能不能点火”（PROJECT_SPEC：无文字，但含义必须可辨认）。
-    state.pulseReady = state.mode === "PULSE" && !state.scrammed && !state.pulse
-      && state.powerProxy <= PULSE_POWER_LIMIT && state.rod.TRANS.pos <= 0.02;
+    refreshIndications();
 
     return drain();
   };
