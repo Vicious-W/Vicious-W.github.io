@@ -78,6 +78,8 @@
   恢复其他角色或“最近会话”；
 - 每个代次记录 `SESSION_GENERATION` 与 `SESSION_ROTATED_FROM`，使逻辑连续性和
   原始会话边界都可审计。
+- 只有执行器实际返回可恢复 session ID，且本次至少进入成功、额度/自主保险或可恢复
+  timeout 状态时，角色会话才能标为 `ACTIVE`；认证、模型和启动失败不得续接预分配 ID。
 
 同一执行器连续担任两种角色能提供流程隔离，但不能提供模型多样性。周期简报必须
 如实记录实际执行器、模型和强度，方便所有者判断独立性。同一逻辑会话不等于无限
@@ -112,7 +114,10 @@ Agent 不递归启动下一 Agent；角色交接由仍在前台等待子进程�
 轮转任务：保存恢复现场、记录 `WAITING_FOR_QUOTA`、零 token 等待、按原角色续跑，
 并按 `attached` 或 `persistent-cli` 模式交接 MONITOR。Claude 非交互调用还必须
 具有最大自主轮次与 API 等价预算；命中任一保险时记为
-`AUTONOMY_SLICE_LIMIT`，保存合法现场并对齐下一窗口，而不是继续烧完整额度。
+`AUTONOMY_SLICE_LIMIT`，但这不等于真实额度耗尽。监督器保存合法现场并进入
+`AWAITING_MONITOR_ACTION`：MONITOR 根据实时/累计用量选择立即续片、轮换上下文后
+续片、等待额度窗口或停止。`persistent-cli` 的 `MONITOR_ACTION` 必须被父脚本读取
+并执行，不能只生成装饰性报告。
 
 ## 运行清单
 
@@ -126,6 +131,10 @@ Agent 不递归启动下一 Agent；角色交接由仍在前台等待子进程�
 - `SESSION_ID`、`SESSION_MODE`、原始事件和用量摘要路径；
 - `SESSION_GENERATION`、`SESSION_ROTATED_FROM`、最大 turns、预算与上下文阈值；
 - 完成时间、退出码、停止原因和可获得的 token、cache、cost 数据。
+
+Claude 使用逐事件 `stream-json`；监督心跳只打印精简累计数值，不转发模型思考或
+大段工具输出。监督窗口另维护累计用量账本，用于比较 turns、缓存读取、输出和 API
+等价用量，避免只看单次切片。
 
 清单用于审计实际调用配置，不取代 `PROJECT_SPEC.md`、角色契约或正式交接报告。
 部分订阅执行器不提供费用字段；此时保留空值或 `null`，不能把缺失值写成零。

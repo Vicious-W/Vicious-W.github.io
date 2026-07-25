@@ -271,6 +271,7 @@ required_files=(
   scripts/agent-runners/claude.sh
   scripts/agent-runners/codex.sh
   scripts/lib/agent-telemetry.mjs
+  scripts/lib/agent-usage-ledger.mjs
   scripts/generate-cycle-summary.sh
   scripts/run-implementation.sh
   scripts/run-monitor.sh
@@ -339,10 +340,11 @@ NODE
     record_fail 'Claude project policy is missing required denials'
   fi
 
-  if claude --max-turns 1 --max-budget-usd 1.00 --version >/dev/null 2>&1; then
-    record_pass 'Claude CLI accepts autonomous turn and budget guard flags'
+  if claude --max-turns 1 --max-budget-usd 1.00 \
+       --verbose --output-format stream-json --version >/dev/null 2>&1; then
+    record_pass 'Claude CLI accepts autonomous guards and streaming telemetry flags'
   else
-    record_fail 'Claude CLI does not accept required autonomous guard flags'
+    record_fail 'Claude CLI does not accept required guard/streaming flags'
   fi
 fi
 
@@ -356,6 +358,7 @@ if [[ -x "$ROOT_DIR/scripts/run-validation.sh" && \
       -x "$ROOT_DIR/scripts/agent-runners/claude.sh" && \
       -x "$ROOT_DIR/scripts/agent-runners/codex.sh" && \
       -x "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" && \
+      -x "$ROOT_DIR/scripts/lib/agent-usage-ledger.mjs" && \
       -x "$ROOT_DIR/scripts/generate-cycle-summary.sh" && \
       -x "$ROOT_DIR/scripts/test-agent-runtime.sh" && \
       -x "$ROOT_DIR/scripts/test-agent-supervisor.sh" ]]; then
@@ -382,10 +385,11 @@ else
   record_fail 'Agent shell script syntax check failed'
 fi
 
-if node --check "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" >/dev/null; then
-  record_pass 'Agent telemetry parser passes node --check'
+if node --check "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" >/dev/null && \
+   node --check "$ROOT_DIR/scripts/lib/agent-usage-ledger.mjs" >/dev/null; then
+  record_pass 'Agent telemetry and usage-ledger parsers pass node --check'
 else
-  record_fail 'Agent telemetry parser syntax check failed'
+  record_fail 'Agent telemetry or usage-ledger parser syntax check failed'
 fi
 
 if agent_runtime_prepare_npm_cache; then
@@ -399,10 +403,10 @@ agent_runtime_config IMPLEMENTER_TIMEOUT_SECONDS 7200 60 43200 >/dev/null || run
 agent_runtime_config REVIEWER_TIMEOUT_SECONDS 3600 60 43200 >/dev/null || runtime_values_ok=0
 agent_runtime_config MONITOR_TIMEOUT_SECONDS 900 60 7200 >/dev/null || runtime_values_ok=0
 agent_runtime_enum_config MONITOR_MODE attached attached persistent-cli >/dev/null || runtime_values_ok=0
-agent_runtime_config CLAUDE_IMPLEMENTER_MAX_TURNS 36 1 1000 >/dev/null || runtime_values_ok=0
-agent_runtime_decimal_config CLAUDE_IMPLEMENTER_MAX_BUDGET_USD 6.00 >/dev/null || runtime_values_ok=0
-agent_runtime_config CLAUDE_REVIEWER_MAX_TURNS 24 1 1000 >/dev/null || runtime_values_ok=0
-agent_runtime_decimal_config CLAUDE_REVIEWER_MAX_BUDGET_USD 4.00 >/dev/null || runtime_values_ok=0
+agent_runtime_config CLAUDE_IMPLEMENTER_MAX_TURNS 24 1 1000 >/dev/null || runtime_values_ok=0
+agent_runtime_decimal_config CLAUDE_IMPLEMENTER_MAX_BUDGET_USD 4.00 >/dev/null || runtime_values_ok=0
+agent_runtime_config CLAUDE_REVIEWER_MAX_TURNS 18 1 1000 >/dev/null || runtime_values_ok=0
+agent_runtime_decimal_config CLAUDE_REVIEWER_MAX_BUDGET_USD 3.00 >/dev/null || runtime_values_ok=0
 agent_runtime_config CLAUDE_MONITOR_MAX_TURNS 8 1 1000 >/dev/null || runtime_values_ok=0
 agent_runtime_decimal_config CLAUDE_MONITOR_MAX_BUDGET_USD 1.00 >/dev/null || runtime_values_ok=0
 agent_runtime_config CLAUDE_CONTEXT_ROTATE_TOKENS 160000 10000 1000000 >/dev/null || runtime_values_ok=0
@@ -411,6 +415,8 @@ agent_runtime_config AGENT_TERMINATION_GRACE_SECONDS 15 1 60 >/dev/null || runti
 agent_runtime_config QUOTA_WAIT_SECONDS 18000 60 604800 >/dev/null || runtime_values_ok=0
 agent_runtime_config MAX_QUOTA_RESUMES 6 1 100 >/dev/null || runtime_values_ok=0
 agent_runtime_config SUPERVISOR_HEARTBEAT_SECONDS 300 30 3600 >/dev/null || runtime_values_ok=0
+agent_runtime_config MAX_AUTONOMY_SLICES_PER_WINDOW 4 1 100 >/dev/null || runtime_values_ok=0
+agent_runtime_config MONITOR_ACTION_TIMEOUT_SECONDS 7200 60 86400 >/dev/null || runtime_values_ok=0
 if (( runtime_values_ok == 1 )); then
   record_pass '.agent/runtime.env timing values are within safe bounds'
 else

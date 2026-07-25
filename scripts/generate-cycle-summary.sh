@@ -8,6 +8,7 @@ STATE_FILE="$AGENT_DIR/state.env"
 RUNTIME_FILE="$AGENT_DIR/runtime.env"
 STOP_FILE="$AGENT_DIR/artifacts/runtime/last-stop.env"
 SUPERVISOR_STATE_FILE="$AGENT_DIR/artifacts/supervisor/state.env"
+SUPERVISOR_USAGE_LEDGER="$AGENT_DIR/artifacts/supervisor/usage-ledger.json"
 CYCLE_RUNTIME_FILE="$AGENT_DIR/artifacts/cycle/runtime.env"
 RUN_DIR="$AGENT_DIR/artifacts/runs"
 OUTPUT_DIR="$AGENT_DIR/artifacts/cycle"
@@ -172,11 +173,32 @@ fi
   fi
   supervisor_status="$(supervisor_value SUPERVISOR_STATUS)"
   if [[ -n "$supervisor_status" ]]; then
-    printf -- '- 外层监督：`%s`，阶段 `%s`，窗口恢复 `%s` 次，Monitor 模式 `%s`\n' \
+    printf -- '- 外层监督：`%s`，阶段 `%s`，额度窗口恢复 `%s` 次，自主切片 `%s` 次，Monitor 模式 `%s`\n' \
       "$supervisor_status" "$(supervisor_value CURRENT_STAGE)" \
-      "$(supervisor_value QUOTA_RESUMES)" "$(supervisor_value MONITOR_MODE)"
+      "$(supervisor_value QUOTA_RESUMES)" \
+      "$(supervisor_value AUTONOMY_SLICES)" "$(supervisor_value MONITOR_MODE)"
+    if [[ -n "$(supervisor_value LAST_MONITOR_ACTION)" ]]; then
+      printf -- '- 最近 Monitor 决策：`%s`\n' \
+        "$(supervisor_value LAST_MONITOR_ACTION)"
+    fi
     if [[ -n "$(supervisor_value RESUME_AT)" ]]; then
       printf -- '- 计划恢复时间：`%s`\n' "$(supervisor_value RESUME_AT)"
+    fi
+    if [[ -s "$SUPERVISOR_USAGE_LEDGER" ]]; then
+      usage_ledger_summary="$(
+        node -e '
+          const fs = require("fs");
+          const totals = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).totals ?? {};
+          const value = (key) => Number.isFinite(totals[key]) ? totals[key] : 0;
+          process.stdout.write(
+            `runs ${value("runs")}, turns ${value("turns")}, ` +
+            `API-equivalent $${value("totalCostUsd").toFixed(2)}, ` +
+            `cache-read ${value("cachedInputTokens")}, output ${value("outputTokens")}`,
+          );
+        ' "$SUPERVISOR_USAGE_LEDGER" 2>/dev/null
+      )"
+      [[ -n "$usage_ledger_summary" ]] && \
+        printf -- '- 当前监督窗口累计用量：`%s`\n' "$usage_ledger_summary"
     fi
   fi
   printf -- '- 默认 IMPLEMENTER：`%s / %s / %s`\n' \
@@ -296,7 +318,9 @@ fi
   elif (( current_round >= max_rounds )); then
     printf -- '- 已达到轮数上限；启动新循环前请先作出产品或技术决定。\n'
   elif [[ -n "$stop_reason" ]]; then
-    if [[ "$supervisor_status" == "WAITING_FOR_QUOTA" || \
+    if [[ "$supervisor_status" == "AWAITING_MONITOR_ACTION" ]]; then
+      printf -- '- 工作 Agent 已退出；由附着式 Monitor 根据用量提交下一动作。\n'
+    elif [[ "$supervisor_status" == "WAITING_FOR_QUOTA" || \
           "$supervisor_status" == "WAITING_FOR_BUDGET_WINDOW" || \
           "$supervisor_status" == "SCHEDULED" ]]; then
       printf -- '- 外层监督器已安排恢复；无需保持 AI Agent 轮询。\n'

@@ -86,7 +86,7 @@ prompt_file="$ARTIFACT_DIR/${run_id}-prompt.md"
 report_file="$ARTIFACT_DIR/${run_id}-report.md"
 log_file="$ARTIFACT_DIR/${run_id}.log"
 manifest_file="$RUN_DIR/${run_id}.env"
-events_file="$ARTIFACT_DIR/${run_id}-report.md.events.$([[ "$monitor_agent" == "codex" ]] && printf jsonl || printf json)"
+events_file="$ARTIFACT_DIR/${run_id}-report.md.events.jsonl"
 usage_file="$ARTIFACT_DIR/${run_id}.usage.json"
 task_id="$(sed -n 's/^ACTIVE_TASK_ID=//p' "$AGENT_DIR/state.env" | head -n 1)"
 head_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
@@ -136,21 +136,27 @@ $context_instructions
 
 Read PROJECT.md, AGENT_PROTOCOL.md, .agent/roles/MONITOR.md,
 .agent/state.env, .agent/runtime.env, the current Git status, the latest cycle
-summary, $STOP_FILE when present, and only the control/process evidence needed
-to classify this event.
+summary, $STOP_FILE and .agent/artifacts/supervisor/action-request.env when
+present, the supervisor usage ledger, and only the control/process evidence
+needed to classify this event. Respect CAN_CONTINUE=NO: in that case choose
+WAIT_FOR_QUOTA or STOP_OWNER.
 
 Output a concise Simplified Chinese Markdown report. The first heading must be
 "# Monitor Event Report". Include exactly one standalone action line chosen
 from:
 
 MONITOR_ACTION: WAIT_FOR_QUOTA
-MONITOR_ACTION: RETRY_PREFLIGHT
+MONITOR_ACTION: CONTINUE_NOW
+MONITOR_ACTION: ROTATE_AND_CONTINUE
 MONITOR_ACTION: STOP_OWNER
 MONITOR_ACTION: CONTROL_REPAIR_REQUIRED
-MONITOR_ACTION: CONTINUE
 
 Explain the evidence, whether a work Agent is still alive, whether Git/control
-state is safe, and the next mechanical action. Do not propose business fixes.
+state is safe, and the next mechanical action. For AUTONOMY_SLICE_LIMIT, inspect
+the stop usage file and supervisor usage ledger: continue immediately when the
+slice was efficient and useful quota likely remains; rotate before continuing
+when cached context is disproportionately large; wait only when evidence points
+to a real quota boundary. Do not propose business fixes.
 EOF
 
 if ! "$ROOT_DIR/scripts/agent-preflight.sh" \
@@ -166,12 +172,14 @@ export AGENT_SESSION_ID AGENT_SESSION_MODE AGENT_SESSION_GENERATION
 export AGENT_CLAUDE_MAX_TURNS="$claude_max_turns"
 export AGENT_CLAUDE_MAX_BUDGET_USD="$claude_max_budget_usd"
 export AGENT_EVENT_FILE="$events_file"
+export AGENT_LIVE_TELEMETRY_EXECUTOR="$monitor_agent"
 run_agent_process \
   "MONITOR ($monitor_agent) event $event" \
   "$monitor_timeout" "$heartbeat_seconds" "$termination_grace" "$log_file" -- \
   "$runner" MONITOR "$monitor_model" "$monitor_effort" "$prompt_file" "$report_file"
 monitor_exit=$?
-unset AGENT_EVENT_FILE AGENT_CLAUDE_MAX_TURNS AGENT_CLAUDE_MAX_BUDGET_USD
+unset AGENT_EVENT_FILE AGENT_LIVE_TELEMETRY_EXECUTOR
+unset AGENT_CLAUDE_MAX_TURNS AGENT_CLAUDE_MAX_BUDGET_USD
 if (( monitor_exit == 0 )); then
   run_status="SUCCESS"
 else
@@ -195,7 +203,7 @@ if (( monitor_exit != 0 )); then
 fi
 
 if ! grep -Fqx '# Monitor Event Report' "$report_file" || \
-   [[ "$(grep -Ec '^MONITOR_ACTION: (WAIT_FOR_QUOTA|RETRY_PREFLIGHT|STOP_OWNER|CONTROL_REPAIR_REQUIRED|CONTINUE)$' "$report_file" || true)" != "1" ]]; then
+   [[ "$(grep -Ec '^MONITOR_ACTION: (WAIT_FOR_QUOTA|CONTINUE_NOW|ROTATE_AND_CONTINUE|STOP_OWNER|CONTROL_REPAIR_REQUIRED)$' "$report_file" || true)" != "1" ]]; then
   printf 'MONITOR report format is invalid: %s\n' "$report_file" >&2
   exit 4
 fi

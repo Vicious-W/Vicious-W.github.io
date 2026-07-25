@@ -7,7 +7,7 @@
 - 状态：正式版本
 - 适用范围：由项目所有者、一个或多个 AI 执行器和中立脚本长期共同维护的项目
 - 核心变化：在 v4.0 的跨额度窗口监督之上，补齐会话所有权、可见 Monitor 附着、
-  后台 Monitor 持久化、无人值守用量预算和上下文代次轮换
+  后台 Monitor 持久化、无人值守用量预算、实时遥测、可执行决策握手和上下文代次轮换
 
 ---
 
@@ -213,18 +213,35 @@ max turns 也无法防止少数超大轮次消耗预算。
 AUTONOMY_SLICE_LIMIT
 ```
 
-它不是失败的正式审查轮次，也不代表额度已经耗尽。处理顺序与额度中断相同：
+它不是失败的正式审查轮次，也不代表额度已经耗尽。安全保存顺序与额度中断相同，
+后续路由不同：
 
 ```text
 工作 Agent 退出
 → 检查边界
 → 保存合法现场
-→ WAITING_FOR_BUDGET_WINDOW
-→ 对齐下一配置窗口
-→ 新进程恢复原角色
+→ AWAITING_MONITOR_ACTION
+  ├─ CONTINUE_NOW → 新进程恢复原角色
+  ├─ ROTATE_AND_CONTINUE → 新上下文代次恢复原角色
+  ├─ WAIT_FOR_QUOTA → WAITING_FOR_BUDGET_WINDOW
+  └─ STOP_OWNER → STOPPED
 ```
 
-项目也可以选择命中保险后立即交还所有者，而不是自动等待；该策略必须显式配置。
+`USAGE_OR_BILLING_LIMIT` 才能自动证明应等待额度窗口。自主保险后的立即续片必须
+经过 Monitor 决策，并受每窗口最大切片数约束，不能无限自动重启。
+
+### 6.4 实时遥测与窗口账本
+
+非交互执行器应使用逐事件输出；监督心跳只读取并打印数值摘要：
+
+- 当前模型 turns；
+- input、cache read、cache creation 与 output tokens；
+- 最后一轮缓存上下文；
+- 结束后的 API 等价用量和停止 subtype。
+
+监督器还应维护本次窗口的累计账本。单次切片看似便宜，不代表连续恢复后的总量仍
+安全；Monitor 的决定必须同时参考当前切片与窗口累计值。模型思考、大段工具输出和
+源文件内容不得作为“实时监控”反复打印。
 
 ---
 
@@ -250,7 +267,7 @@ SCHEDULED
 → RUNNING
   ├─ SUCCESS → COMPLETE
   ├─ USAGE_OR_BILLING_LIMIT → recovery → WAITING_FOR_QUOTA
-  ├─ AUTONOMY_SLICE_LIMIT → recovery → WAITING_FOR_BUDGET_WINDOW
+  ├─ AUTONOMY_SLICE_LIMIT → recovery → AWAITING_MONITOR_ACTION
   └─ 不安全/未知 → MONITOR → STOPPED
 ```
 
@@ -261,6 +278,8 @@ supervisor 负责：
 - recovery checkpoint；
 - 原阶段恢复；
 - Monitor 模式；
+- Monitor 动作握手与执行；
+- 实时用量和监督窗口累计账本；
 - 状态、事件和简报。
 
 它不判断业务质量，不改变正式审查结论。
@@ -276,9 +295,9 @@ supervisor 负责：
 → MONITOR 前台启动 supervisor
 → shell 启动工作 Agent
 → shell 等待/心跳
-→ 事件使前台工具调用返回
-→ 同一 MONITOR 对话处理
-→ 继续或终止
+→ 安全边界进入 AWAITING_MONITOR_ACTION
+→ 同一 MONITOR 对话读取用量并提交带事件 ID 的动作
+→ supervisor 校验并继续、轮换、等待或终止
 ```
 
 等待期间可以有一个 shell 进程和一个仍打开的 Agent 工具调用，但没有持续模型
@@ -291,10 +310,12 @@ supervisor 启动事件
 → 创建 CLI MONITOR session
 → 工作 Agent 串行运行
 → 事件边界恢复同一 MONITOR session
-→ 输出只读事件报告
+→ 输出只读事件报告和唯一 MONITOR_ACTION
+→ supervisor 解析并执行动作
 ```
 
 该模式可以无人值守，但报告位于终端或 artifacts，不会唤醒所有者原来的 UI 对话。
+只生成报告却忽略 `MONITOR_ACTION` 不构成自动监督。
 
 ---
 
@@ -373,11 +394,15 @@ USAGE_FILE=...
 - Monitor 后台事件复用同一任务级会话；
 - 上下文阈值触发新 session generation；
 - `max-turns` 和 `max-budget` 正确传给执行器；
+- 逐事件输出能在进程结束前给出精简 turns/cache/token；
+- 结构化 `error_max_turns` / `error_max_budget_usd` 即使 CLI 返回零也不能被当成成功；
+- 认证或模型启动失败不会激活预分配 session ID；
 - 预算错误分类为 `AUTONOMY_SLICE_LIMIT`；
-- 该分类能形成 recovery checkpoint 并从原阶段恢复；
+- 该分类能形成 recovery checkpoint，并进入可执行的 Monitor 决策点；
 - quota 与预算等待状态可区分；
 - attached 模式不擅自启动另一个 MONITOR；
 - persistent-cli 模式不使用 ephemeral；
+- attached 动作必须匹配当前事件 ID，persistent-cli 动作必须被 supervisor 执行；
 - 受保护路径、staged 修改或脏 REVIEWER 会阻止恢复；
 - 最终状态先写入，简报后生成。
 
@@ -401,9 +426,10 @@ USAGE_FILE=...
 
 连续性应由任务、角色、Git 和结构化交接保证，不应依赖无限膨胀的 transcript。
 
-### 反模式五：命中主动预算后立即无限重启
+### 反模式五：命中主动预算后无决策地立即无限重启
 
-这只是把一个大调用拆成连续小调用，不能保护总额度。必须等待配置窗口或交还所有者。
+这只是把一个大调用拆成连续小调用，不能保护总额度。允许 Monitor 基于当前切片和
+窗口累计用量进行有限次立即续片；达到切片上限后必须等待窗口或交还所有者。
 
 ### 反模式六：把 API 等价费用当成订阅实际账单
 
@@ -419,12 +445,14 @@ USAGE_FILE=...
 4. 在 supervisor 启动事件初始化后台 MONITOR；
 5. 为非交互执行器增加 turns 与预算上限；
 6. 增加 `AUTONOMY_SLICE_LIMIT`；
-7. 增加 `WAITING_FOR_BUDGET_WINDOW`；
-8. 在遥测中记录最后一轮缓存上下文；
-9. 增加 session generation 和显式旧 ID；
-10. 更新运行清单、状态、简报和指令手册；
-11. 用假的执行器验证参数与状态路由；
-12. 用一次受控真实循环校准预算，而不是直接假定默认值完美。
+7. 增加 `AWAITING_MONITOR_ACTION`；只有 Monitor 选择等待时才进入
+   `WAITING_FOR_BUDGET_WINDOW`；
+8. 使用逐事件遥测，记录最后一轮缓存上下文与窗口累计账本；
+9. 增加 session generation 和显式旧 ID，并禁止失败启动激活预分配 ID；
+10. 为 attached 增加事件 ID 动作提交，为 persistent-cli 解析并执行动作；
+11. 更新运行清单、状态、简报和指令手册；
+12. 用假的执行器验证参数、结构化 guard、会话失败和决策状态路由；
+13. 用一次受控真实循环校准预算，而不是直接假定默认值完美。
 
 ---
 

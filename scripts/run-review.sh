@@ -113,10 +113,10 @@ claude_max_budget_usd=""
 claude_context_rotate_tokens=""
 if [[ "$reviewer_agent" == "claude" ]]; then
   claude_max_turns="$(
-    agent_runtime_config CLAUDE_REVIEWER_MAX_TURNS 24 1 1000
+    agent_runtime_config CLAUDE_REVIEWER_MAX_TURNS 18 1 1000
   )" || exit 2
   claude_max_budget_usd="$(
-    agent_runtime_decimal_config CLAUDE_REVIEWER_MAX_BUDGET_USD 4.00
+    agent_runtime_decimal_config CLAUDE_REVIEWER_MAX_BUDGET_USD 3.00
   )" || exit 2
   claude_context_rotate_tokens="$(
     agent_runtime_config CLAUDE_CONTEXT_ROTATE_TOKENS 160000 10000 1000000
@@ -240,7 +240,7 @@ run_id="review-r${next_round}-$(date -u +'%Y%m%dT%H%M%SZ')-$$"
 prompt_file="$ARTIFACT_DIR/prompt-round-${next_round}.md"
 agent_log="$ARTIFACT_DIR/${reviewer_agent}-round-${next_round}.log"
 manifest_file="$RUN_DIR/${run_id}.env"
-events_file="$ARTIFACT_DIR/${run_id}.events.$([[ "$reviewer_agent" == "codex" ]] && printf jsonl || printf json)"
+events_file="$ARTIFACT_DIR/${run_id}.events.jsonl"
 usage_file="$ARTIFACT_DIR/${run_id}.usage.json"
 
 agent_prepare_role_session \
@@ -334,12 +334,14 @@ export AGENT_SESSION_ID AGENT_SESSION_MODE AGENT_SESSION_GENERATION
 export AGENT_CLAUDE_MAX_TURNS="$claude_max_turns"
 export AGENT_CLAUDE_MAX_BUDGET_USD="$claude_max_budget_usd"
 export AGENT_EVENT_FILE="$events_file"
+export AGENT_LIVE_TELEMETRY_EXECUTOR="$reviewer_agent"
 run_agent_process \
   "REVIEWER ($reviewer_agent) round $next_round/$max_rounds" \
   "$reviewer_timeout" "$heartbeat_seconds" "$termination_grace" "$agent_log" -- \
   "$runner" REVIEWER "$reviewer_model" "$reviewer_effort" "$prompt_file" "$review_tmp"
 reviewer_exit=$?
-unset AGENT_EVENT_FILE AGENT_CLAUDE_MAX_TURNS AGENT_CLAUDE_MAX_BUDGET_USD
+unset AGENT_EVENT_FILE AGENT_LIVE_TELEMETRY_EXECUTOR
+unset AGENT_CLAUDE_MAX_TURNS AGENT_CLAUDE_MAX_BUDGET_USD
 
 if (( reviewer_exit == 0 )); then
   run_status="SUCCESS"
@@ -359,7 +361,8 @@ agent_finish_run_manifest \
   "$manifest_file" "$run_status" "$reviewer_exit" "$AGENT_RUN_REASON"
 
 if (( reviewer_exit != 0 )); then
-  agent_record_stop REVIEWER "$AGENT_RUN_REASON" "$reviewer_exit" "$agent_log"
+  agent_record_stop \
+    REVIEWER "$AGENT_RUN_REASON" "$reviewer_exit" "$agent_log" "$usage_file"
   {
     printf 'BASE_COMMIT=%s\n' "$base_commit"
     printf 'TARGET_COMMIT=%s\n' "$target_commit"

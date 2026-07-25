@@ -7,6 +7,9 @@ AGENT_DIR="$ROOT_DIR/.agent"
 ARTIFACT_DIR="$AGENT_DIR/artifacts/supervisor"
 STATE_FILE="$ARTIFACT_DIR/state.env"
 EVENT_LOG="$ARTIFACT_DIR/events.log"
+ACTION_REQUEST_FILE="$ARTIFACT_DIR/action-request.env"
+ACTION_RESPONSE_FILE="$ARTIFACT_DIR/action-response.env"
+USAGE_LEDGER_FILE="$ARTIFACT_DIR/usage-ledger.json"
 STOP_FILE="$AGENT_DIR/artifacts/runtime/last-stop.env"
 LOCK_DIR="$AGENT_DIR/.supervisor.lock"
 RUNTIME_LIB="$ROOT_DIR/scripts/lib/agent-runtime.sh"
@@ -19,6 +22,7 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/agent-supervisor.sh supervise [options]
        ./scripts/agent-supervisor.sh status
+       ./scripts/agent-supervisor.sh action ACTION [EVENT_ID]
 
 Runs one complete multi-window Agent rotation. The supervisor invokes the
 bounded parent cycle, saves safe recovery checkpoints on usage limits, waits
@@ -49,6 +53,12 @@ Recovery options:
   --resume-at DATE       Absolute first quota-resume time accepted by `date -d`.
   --quota-wait-seconds N Subsequent quota wait; default runtime.env value.
   --max-quota-resumes N  Hard recovery limit.
+
+Attached MONITOR actions:
+  CONTINUE_NOW            Resume the interrupted role in the same context.
+  ROTATE_AND_CONTINUE     Compact to a new role-session generation, then resume.
+  WAIT_FOR_QUOTA          Wait for the configured quota window.
+  STOP_OWNER              Stop safely and return control to the owner.
 EOF
 }
 
@@ -69,6 +79,7 @@ state_write() {
     printf 'CURRENT_STAGE=%s\n' "$stage"
     printf 'CURRENT_ATTEMPT=%s\n' "$attempt"
     printf 'QUOTA_RESUMES=%s\n' "$resumes"
+    printf 'AUTONOMY_SLICES=%s\n' "${slice_resumes:-0}"
     printf 'RESUME_AT=%s\n' "$resume_at"
     printf 'LAST_EXIT_CODE=%s\n' "$last_exit"
     printf 'LAST_STOP_REASON=%s\n' "$last_reason"
@@ -76,6 +87,10 @@ state_write() {
     printf 'REVIEWER=%s/%s/%s\n' "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
     printf 'MONITOR=%s/%s/%s\n' "$monitor_agent" "$monitor_model" "$monitor_effort"
     printf 'MONITOR_MODE=%s\n' "$monitor_mode"
+    printf 'PENDING_ACTION_ID=%s\n' "${pending_action_id:-}"
+    printf 'LAST_MONITOR_ACTION=%s\n' "${last_monitor_action:-}"
+    printf 'LAST_USAGE_FILE=%s\n' "${last_usage_file:-}"
+    printf 'USAGE_LEDGER=%s\n' "${USAGE_LEDGER_FILE#"$ROOT_DIR/"}"
     printf 'MAX_ROUNDS=%s\n' "$max_rounds"
     printf 'REVIEW_BASE=%s\n' "${review_base:-}"
     printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -194,11 +209,96 @@ wait_until_epoch() {
   done
 }
 
+submit_monitor_action() {
+  local action="$1"
+  local requested_event_id="${2:-}"
+  local active_event_id=""
+  local supervisor_status=""
+  local state_event_id=""
+  local response_tmp="${ACTION_RESPONSE_FILE}.tmp"
+
+  case "$action" in
+    CONTINUE_NOW|ROTATE_AND_CONTINUE|WAIT_FOR_QUOTA|STOP_OWNER) ;;
+    *)
+      printf 'Invalid MONITOR action: %s\n' "$action" >&2
+      return 2
+      ;;
+  esac
+  [[ -s "$ACTION_REQUEST_FILE" ]] || {
+    printf 'No attached MONITOR action is currently pending.\n' >&2
+    return 2
+  }
+  active_event_id="$(
+    sed -n 's/^EVENT_ID=//p' "$ACTION_REQUEST_FILE" | head -n 1
+  )"
+  [[ -n "$active_event_id" ]] || {
+    printf 'Pending MONITOR request has no event ID.\n' >&2
+    return 2
+  }
+  supervisor_status="$(
+    sed -n 's/^SUPERVISOR_STATUS=//p' "$STATE_FILE" 2>/dev/null | head -n 1
+  )"
+  state_event_id="$(
+    sed -n 's/^PENDING_ACTION_ID=//p' "$STATE_FILE" 2>/dev/null | head -n 1
+  )"
+  if [[ "$supervisor_status" != "AWAITING_MONITOR_ACTION" || \
+        "$state_event_id" != "$active_event_id" ]]; then
+    printf 'MONITOR action request is stale or supervisor is not waiting.\n' >&2
+    return 2
+  fi
+  if [[ -n "$requested_event_id" && "$requested_event_id" != "$active_event_id" ]]; then
+    printf 'MONITOR action event mismatch: expected %s, got %s.\n' \
+      "$active_event_id" "$requested_event_id" >&2
+    return 2
+  fi
+  {
+    printf 'EVENT_ID=%s\n' "$active_event_id"
+    printf 'ACTION=%s\n' "$action"
+    printf 'SUBMITTED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  } >"$response_tmp"
+  mv "$response_tmp" "$ACTION_RESPONSE_FILE"
+  printf 'Submitted MONITOR action %s for event %s.\n' \
+    "$action" "$active_event_id"
+}
+
+record_stop_usage() {
+  local stage="$1"
+  local attempt_number="$2"
+  local reason="$3"
+  local usage_relative usage_absolute
+
+  last_usage_file="$(stop_value USAGE_FILE)"
+  [[ -n "$last_usage_file" ]] || return 0
+  if [[ "$last_usage_file" == /* ]]; then
+    usage_absolute="$last_usage_file"
+  else
+    usage_absolute="$ROOT_DIR/$last_usage_file"
+  fi
+  [[ -s "$usage_absolute" ]] || return 0
+  sync_usage_ledger || return 2
+  usage_relative="${usage_absolute#"$ROOT_DIR/"}"
+  last_usage_file="$usage_relative"
+  event_record "usage synced: stage=$stage attempt=$attempt_number reason=$reason file=$last_usage_file"
+  printf '[%s] WINDOW_USAGE %s\n' \
+    "$(date -u +'%H:%M:%SZ')" \
+    "$(node "$ROOT_DIR/scripts/lib/agent-usage-ledger.mjs" summary \
+      "$USAGE_LEDGER_FILE" 2>/dev/null || true)"
+}
+
+sync_usage_ledger() {
+  node "$ROOT_DIR/scripts/lib/agent-usage-ledger.mjs" sync \
+    "$USAGE_LEDGER_FILE" "$AGENT_DIR/artifacts/runs" "$ROOT_DIR" \
+    "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+}
+
 dispatch_monitor_event() {
   local event="$1"
   local stage="$2"
   local event_exit="$3"
   local related_log="${4:-}"
+  local monitor_output=""
+
+  MONITOR_DECISION=""
 
   if [[ "$monitor_mode" == "attached" ]]; then
     event_record "attached MONITOR handoff: event=$event stage=$stage exit=$event_exit"
@@ -209,10 +309,121 @@ dispatch_monitor_event() {
   if [[ "${AGENT_SUPERVISOR_MONITOR_ON_ERROR:-1}" != "1" ]]; then
     return 0
   fi
-  "$monitor_command" \
-    --event "$event" --stage "$stage" --exit-code "$event_exit" \
-    --log-file "$related_log" \
-    --agent "$monitor_agent" --model "$monitor_model" --effort "$monitor_effort"
+  if ! monitor_output="$(
+    "$monitor_command" \
+      --event "$event" --stage "$stage" --exit-code "$event_exit" \
+      --log-file "$related_log" \
+      --agent "$monitor_agent" --model "$monitor_model" --effort "$monitor_effort"
+  )"; then
+    printf '%s\n' "$monitor_output"
+    return 1
+  fi
+  printf '%s\n' "$monitor_output"
+  MONITOR_DECISION="$(
+    printf '%s\n' "$monitor_output" |
+      sed -n 's/^MONITOR_ACTION: //p' |
+      tail -n 1
+  )"
+}
+
+request_monitor_action() {
+  local event="$1"
+  local stage="$2"
+  local event_exit="$3"
+  local related_log="${4:-}"
+  local can_continue="$5"
+  local request_tmp="${ACTION_REQUEST_FILE}.tmp"
+  local response_event response_action now deadline next_heartbeat
+
+  MONITOR_ACTION_FAILURE_REASON="MONITOR_ACTION_FAILED"
+  pending_action_id="${event}-${stage}-${attempt}-$(date +%s%N)"
+  {
+    printf 'EVENT_ID=%s\n' "$pending_action_id"
+    printf 'EVENT=%s\n' "$event"
+    printf 'STAGE=%s\n' "$stage"
+    printf 'ATTEMPT=%s\n' "$attempt"
+    printf 'CAN_CONTINUE=%s\n' "$can_continue"
+    printf 'USAGE_FILE=%s\n' "${last_usage_file:-}"
+    printf 'USAGE_LEDGER=%s\n' "${USAGE_LEDGER_FILE#"$ROOT_DIR/"}"
+    printf 'REQUESTED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  } >"$request_tmp"
+  mv "$request_tmp" "$ACTION_REQUEST_FILE"
+  rm -f -- "$ACTION_RESPONSE_FILE"
+  state_write AWAITING_MONITOR_ACTION "$stage" "$attempt" "$quota_resumes" \
+    "" "$event_exit" "$event"
+  refresh_cycle_summary "$event_exit"
+
+  if [[ "$monitor_mode" == "persistent-cli" ]]; then
+    if ! dispatch_monitor_event "$event" "$stage" "$event_exit" "$related_log"; then
+      return 1
+    fi
+    case "$MONITOR_DECISION" in
+      CONTINUE_NOW|ROTATE_AND_CONTINUE|WAIT_FOR_QUOTA|STOP_OWNER) ;;
+      CONTROL_REPAIR_REQUIRED) MONITOR_DECISION=STOP_OWNER ;;
+      *)
+        printf 'Persistent MONITOR returned no valid action: %s\n' \
+          "${MONITOR_DECISION:-missing}" >&2
+        return 1
+        ;;
+    esac
+  elif [[ -n "${AGENT_SUPERVISOR_ATTACHED_ACTION:-}" ]]; then
+    MONITOR_DECISION="$AGENT_SUPERVISOR_ATTACHED_ACTION"
+  else
+    printf '\nMONITOR decision required; no work Agent is running.\n'
+    printf '  Event ID: %s\n' "$pending_action_id"
+    printf '  Stage: %s\n' "$stage"
+    printf '  Usage: %s\n' "${last_usage_file:-unavailable}"
+    printf '  Ledger: %s\n' "${USAGE_LEDGER_FILE#"$ROOT_DIR/"}"
+    printf 'Submit from this attached MONITOR conversation:\n'
+    printf '  ./scripts/agent-cycle.sh supervisor-action ACTION %s\n' \
+      "$pending_action_id"
+    deadline=$(( $(date +%s) + monitor_action_timeout ))
+    next_heartbeat=0
+    while true; do
+      now="$(date +%s)"
+      if (( now >= deadline )); then
+        printf 'Timed out waiting for attached MONITOR action.\n' >&2
+        return 1
+      fi
+      if [[ -s "$ACTION_RESPONSE_FILE" ]]; then
+        response_event="$(
+          sed -n 's/^EVENT_ID=//p' "$ACTION_RESPONSE_FILE" | head -n 1
+        )"
+        response_action="$(
+          sed -n 's/^ACTION=//p' "$ACTION_RESPONSE_FILE" | head -n 1
+        )"
+        if [[ "$response_event" == "$pending_action_id" ]]; then
+          MONITOR_DECISION="$response_action"
+          break
+        fi
+      fi
+      if (( now >= next_heartbeat )); then
+        printf '[%s] AWAITING_MONITOR_ACTION: %ss remaining; no work Agent is running.\n' \
+          "$(date -u +'%H:%M:%SZ')" "$((deadline - now))"
+        next_heartbeat=$((now + supervisor_heartbeat))
+      fi
+      sleep 2
+    done
+  fi
+
+  case "$MONITOR_DECISION" in
+    CONTINUE_NOW|ROTATE_AND_CONTINUE)
+      if [[ "$can_continue" != "YES" ]]; then
+        printf 'Continuation denied after reaching the per-window slice limit.\n' >&2
+        MONITOR_ACTION_FAILURE_REASON="MAX_AUTONOMY_SLICES"
+        return 1
+      fi
+      ;;
+    WAIT_FOR_QUOTA|STOP_OWNER) ;;
+    *)
+      printf 'Invalid MONITOR decision: %s\n' "${MONITOR_DECISION:-missing}" >&2
+      return 1
+      ;;
+  esac
+  last_monitor_action="$MONITOR_DECISION"
+  event_record "MONITOR action $MONITOR_DECISION for $pending_action_id"
+  rm -f -- "$ACTION_REQUEST_FILE" "$ACTION_RESPONSE_FILE"
+  pending_action_id=""
 }
 
 command_name="${1:-}"
@@ -226,6 +437,11 @@ if [[ "$command_name" == "status" ]]; then
     printf 'SUPERVISOR_STATUS=NOT_STARTED\n'
   fi
   exit 0
+fi
+if [[ "$command_name" == "action" ]]; then
+  (( $# >= 1 && $# <= 2 )) || { usage >&2; exit 2; }
+  submit_monitor_action "$1" "${2:-}"
+  exit $?
 fi
 if [[ "$command_name" != "supervise" ]]; then
   usage >&2
@@ -247,6 +463,12 @@ monitor_mode="$(
 quota_wait="$(agent_runtime_config QUOTA_WAIT_SECONDS 18000 60 604800)" || exit 2
 max_resumes="$(agent_runtime_config MAX_QUOTA_RESUMES 6 1 100)" || exit 2
 supervisor_heartbeat="$(agent_runtime_config SUPERVISOR_HEARTBEAT_SECONDS 300 30 3600)" || exit 2
+max_autonomy_slices="$(
+  agent_runtime_config MAX_AUTONOMY_SLICES_PER_WINDOW 4 1 100
+)" || exit 2
+monitor_action_timeout="$(
+  agent_runtime_config MONITOR_ACTION_TIMEOUT_SECONDS 7200 60 86400
+)" || exit 2
 max_rounds="$(sed -n 's/^MAX_ROUNDS=//p' "$AGENT_DIR/state.env" | head -n 1)"
 [[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || max_rounds=3
 first_resume_at=""
@@ -383,7 +605,16 @@ cycle_args=(
 
 attempt=0
 quota_resumes=0
+slice_resumes=0
+pending_action_id=""
+last_monitor_action=""
+last_usage_file=""
 next_stage="$start_stage"
+rm -f -- "$ACTION_REQUEST_FILE" "$ACTION_RESPONSE_FILE"
+node "$ROOT_DIR/scripts/lib/agent-usage-ledger.mjs" init \
+  "$USAGE_LEDGER_FILE" \
+  "$(sed -n 's/^ACTIVE_TASK_ID=//p' "$AGENT_DIR/state.env" | head -n 1)" \
+  "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" || exit 2
 state_write INITIALIZING "$next_stage" "$attempt" "$quota_resumes" "" "" SUPERVISOR_START
 event_record "supervisor started"
 
@@ -417,6 +648,12 @@ while true; do
   fi
   "$cycle_command" "${cycle_attempt_args[@]}"
   cycle_exit=$?
+  sync_usage_ledger || {
+    state_write STOPPED "$next_stage" "$attempt" "$quota_resumes" "" \
+      4 USAGE_LEDGER_FAILED
+    refresh_cycle_summary 4
+    exit 4
+  }
   if (( cycle_exit == 0 )); then
     state_write COMPLETE COMPLETE "$attempt" "$quota_resumes" "" 0 SUCCESS
     event_record "supervisor completed"
@@ -443,13 +680,7 @@ while true; do
 
   if [[ "$stop_reason" == "USAGE_OR_BILLING_LIMIT" || \
         "$stop_reason" == "AUTONOMY_SLICE_LIMIT" ]]; then
-    if (( quota_resumes >= max_resumes )); then
-      state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
-        "$cycle_exit" MAX_QUOTA_RESUMES
-      refresh_cycle_summary "$cycle_exit"
-      printf 'Maximum quota resumes reached (%s).\n' "$max_resumes" >&2
-      exit 3
-    fi
+    record_stop_usage "$stop_stage" "$attempt" "$stop_reason" || true
     if ! create_recovery_checkpoint "$stop_stage" "$attempt"; then
       state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
         "$cycle_exit" UNSAFE_RECOVERY
@@ -459,7 +690,6 @@ while true; do
       exit 4
     fi
 
-    quota_resumes=$((quota_resumes + 1))
     resume_stage="${stop_stage,,}"
     case "$resume_stage" in
       implementer|reviewer) ;;
@@ -482,6 +712,68 @@ while true; do
       review_base=""
     fi
 
+    if [[ "$stop_reason" == "AUTONOMY_SLICE_LIMIT" ]]; then
+      slice_resumes=$((slice_resumes + 1))
+      can_continue=YES
+      if (( slice_resumes >= max_autonomy_slices )); then
+        can_continue=NO
+      fi
+      if ! request_monitor_action \
+        "$stop_reason" "$stop_stage" "$cycle_exit" "$(stop_value LOG_FILE)" \
+        "$can_continue"; then
+        rm -f -- "$ACTION_REQUEST_FILE" "$ACTION_RESPONSE_FILE"
+        pending_action_id=""
+        state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
+          6 "${MONITOR_ACTION_FAILURE_REASON:-MONITOR_ACTION_FAILED}"
+        refresh_cycle_summary 6
+        exit 6
+      fi
+      case "$MONITOR_DECISION" in
+        CONTINUE_NOW)
+          next_stage="$resume_stage"
+          state_write RESUMING "$resume_stage" "$attempt" "$quota_resumes" \
+            "" 0 MONITOR_CONTINUE
+          continue
+          ;;
+        ROTATE_AND_CONTINUE)
+          if ! agent_force_role_session_rotation \
+            "$(sed -n 's/^ACTIVE_TASK_ID=//p' "$AGENT_DIR/state.env" | head -n 1)" \
+            "$stop_stage" MONITOR_CONTEXT_EFFICIENCY; then
+            state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
+              4 SESSION_ROTATION_FAILED
+            refresh_cycle_summary 4
+            exit 4
+          fi
+          next_stage="$resume_stage"
+          state_write RESUMING "$resume_stage" "$attempt" "$quota_resumes" \
+            "" 0 MONITOR_ROTATE_AND_CONTINUE
+          continue
+          ;;
+        STOP_OWNER)
+          state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
+            3 MONITOR_STOP_OWNER
+          refresh_cycle_summary 3
+          exit 3
+          ;;
+        WAIT_FOR_QUOTA) ;;
+      esac
+      waiting_status="WAITING_FOR_BUDGET_WINDOW"
+      wait_label="MONITOR-selected quota window after budget/turn guard"
+    else
+      waiting_status="WAITING_FOR_QUOTA"
+      wait_label="actual quota"
+      dispatch_monitor_event \
+        "$stop_reason" "$stop_stage" "$cycle_exit" "$(stop_value LOG_FILE)" || true
+    fi
+
+    if (( quota_resumes >= max_resumes )); then
+      state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
+        "$cycle_exit" MAX_QUOTA_RESUMES
+      refresh_cycle_summary "$cycle_exit"
+      printf 'Maximum quota resumes reached (%s).\n' "$max_resumes" >&2
+      exit 3
+    fi
+    quota_resumes=$((quota_resumes + 1))
     now_epoch="$(date +%s)"
     if [[ -n "$first_resume_epoch" && "$first_resume_epoch" -gt "$now_epoch" ]]; then
       resume_epoch="$first_resume_epoch"
@@ -500,20 +792,9 @@ while true; do
       resume_epoch=$((now_epoch + quota_wait))
     fi
     resume_iso="$(date -u -d "@$resume_epoch" +'%Y-%m-%dT%H:%M:%SZ')"
-    if [[ "$stop_reason" == "AUTONOMY_SLICE_LIMIT" ]]; then
-      waiting_status="WAITING_FOR_BUDGET_WINDOW"
-      wait_label="budget/turn guard"
-    else
-      waiting_status="WAITING_FOR_QUOTA"
-      wait_label="quota"
-    fi
     state_write "$waiting_status" "$stop_stage" "$attempt" "$quota_resumes" \
       "$resume_iso" "$cycle_exit" "$stop_reason"
     event_record "waiting after $wait_label until $resume_iso"
-    if [[ "$monitor_mode" == "persistent-cli" ]]; then
-      dispatch_monitor_event \
-        "$stop_reason" "$stop_stage" "$cycle_exit" "$(stop_value LOG_FILE)" || true
-    fi
     refresh_cycle_summary "$cycle_exit"
     wait_until_epoch "$resume_epoch" "$supervisor_heartbeat" "$waiting_status"
     if [[ "$monitor_mode" == "persistent-cli" ]]; then
@@ -524,6 +805,7 @@ while true; do
         exit 6
       }
     fi
+    slice_resumes=0
     next_stage="$resume_stage"
     continue
   fi

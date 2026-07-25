@@ -4,7 +4,7 @@ import fs from 'node:fs';
 
 function usage() {
   console.error(
-    'Usage: agent-telemetry.mjs <final|summary|session> <claude|codex> <events-file> [output-file]',
+    'Usage: agent-telemetry.mjs <final|summary|live|session|outcome> <claude|codex> <events-file> [output-file]',
   );
 }
 
@@ -53,10 +53,42 @@ function firstNumber(...values) {
 }
 
 function claudeData(events) {
-  const result = [...events].reverse().find((event) => event?.type === 'result') ?? events.at(-1) ?? {};
+  const result =
+    [...events].reverse().find((event) => event?.type === 'result') ?? {};
   const usage = result.usage ?? {};
   const iterations = Array.isArray(usage.iterations) ? usage.iterations : [];
   const lastIteration = iterations.at(-1) ?? {};
+  const assistantEvents = events.filter(
+    (event) => event?.type === 'assistant' && event?.message?.usage,
+  );
+  const lastAssistantUsage = assistantEvents.at(-1)?.message?.usage ?? {};
+  const streamTotals = assistantEvents.reduce(
+    (total, event) => {
+      const item = event.message.usage ?? {};
+      total.inputTokens +=
+        firstNumber(item.input_tokens, item.inputTokens) ?? 0;
+      total.cachedInputTokens +=
+        firstNumber(
+          item.cache_read_input_tokens,
+          item.cached_input_tokens,
+          item.cachedInputTokens,
+        ) ?? 0;
+      total.cacheCreationInputTokens +=
+        firstNumber(
+          item.cache_creation_input_tokens,
+          item.cacheCreationInputTokens,
+        ) ?? 0;
+      total.outputTokens +=
+        firstNumber(item.output_tokens, item.outputTokens) ?? 0;
+      return total;
+    },
+    {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      outputTokens: 0,
+    },
+  );
   const modelUsage = Object.values(result.modelUsage ?? {});
   const modelTotals = modelUsage.reduce(
     (total, item) => ({
@@ -79,21 +111,49 @@ function claudeData(events) {
   );
   const preferPositive = (primary, fallback) =>
     Number.isFinite(primary) && primary > 0 ? primary : fallback || primary || null;
+  const finalResult = events.some((event) => event?.type === 'result');
+  const lastTurnCachedInputTokens = firstNumber(
+    lastIteration.cache_read_input_tokens,
+    lastIteration.cached_input_tokens,
+    lastIteration.cachedInputTokens,
+    lastAssistantUsage.cache_read_input_tokens,
+    lastAssistantUsage.cached_input_tokens,
+    lastAssistantUsage.cachedInputTokens,
+  );
   return {
     finalText: typeof result.result === 'string' ? result.result : '',
-    sessionId: result.session_id ?? '',
+    sessionId:
+      result.session_id ??
+      events.find((event) => typeof event?.session_id === 'string')
+        ?.session_id ??
+      '',
+    outcome: {
+      final: finalResult,
+      subtype: typeof result.subtype === 'string' ? result.subtype : null,
+      isError: result.is_error === true,
+      errors: Array.isArray(result.errors)
+        ? result.errors.filter((item) => typeof item === 'string')
+        : [],
+    },
     summary: {
       schemaVersion: 1,
       executor: 'claude',
       telemetryAvailable: events.length > 0,
-      sessionId: result.session_id ?? null,
-      turns: number(result.num_turns),
+      final: finalResult,
+      resultSubtype:
+        typeof result.subtype === 'string' ? result.subtype : null,
+      sessionId:
+        result.session_id ??
+        events.find((event) => typeof event?.session_id === 'string')
+          ?.session_id ??
+        null,
+      turns: firstNumber(result.num_turns, assistantEvents.length),
       durationMs: number(result.duration_ms),
       apiDurationMs: number(result.duration_api_ms),
       totalCostUsd: preferPositive(result.total_cost_usd, modelTotals.totalCostUsd),
       inputTokens: preferPositive(
         firstNumber(usage.input_tokens, usage.inputTokens),
-        modelTotals.inputTokens,
+        modelTotals.inputTokens || streamTotals.inputTokens,
       ),
       cachedInputTokens: preferPositive(
         firstNumber(
@@ -101,24 +161,21 @@ function claudeData(events) {
           usage.cached_input_tokens,
           usage.cachedInputTokens,
         ),
-        modelTotals.cachedInputTokens,
+        modelTotals.cachedInputTokens || streamTotals.cachedInputTokens,
       ),
       cacheCreationInputTokens: preferPositive(
         firstNumber(
           usage.cache_creation_input_tokens,
           usage.cacheCreationInputTokens,
         ),
-        modelTotals.cacheCreationInputTokens,
+        modelTotals.cacheCreationInputTokens ||
+          streamTotals.cacheCreationInputTokens,
       ),
       outputTokens: preferPositive(
         firstNumber(usage.output_tokens, usage.outputTokens),
-        modelTotals.outputTokens,
+        modelTotals.outputTokens || streamTotals.outputTokens,
       ),
-      lastTurnCachedInputTokens: firstNumber(
-        lastIteration.cache_read_input_tokens,
-        lastIteration.cached_input_tokens,
-        lastIteration.cachedInputTokens,
-      ),
+      lastTurnCachedInputTokens,
       speed: typeof usage.speed === 'string' ? usage.speed : null,
       fastModeState:
         typeof result.fast_mode_state === 'string' ? result.fast_mode_state : null,
@@ -170,7 +227,7 @@ function codexData(events) {
 
 const [command, executor, eventsPath, outputPath] = process.argv.slice(2);
 if (
-  !['final', 'summary', 'session'].includes(command) ||
+  !['final', 'summary', 'live', 'session', 'outcome'].includes(command) ||
   !['claude', 'codex'].includes(executor) ||
   !eventsPath
 ) {
@@ -187,10 +244,35 @@ let output = '';
 if (command === 'final') output = data.finalText;
 if (command === 'session') output = data.sessionId;
 if (command === 'summary') output = `${JSON.stringify(data.summary, null, 2)}\n`;
+if (command === 'live') output = `${JSON.stringify(data.summary)}\n`;
+if (command === 'outcome') {
+  if (executor !== 'claude') {
+    console.error('The outcome command currently supports Claude events only.');
+    process.exit(2);
+  }
+  const { final, subtype, isError, errors } = data.outcome;
+  const safeErrors = errors
+    .map((item) => item.replace(/\s+/g, ' ').slice(0, 300))
+    .join(' | ');
+  output = `CLAUDE_RESULT final=${final} subtype=${subtype ?? 'missing'} error=${isError}${
+    safeErrors ? ` details=${safeErrors}` : ''
+  }\n`;
+}
 
 if (outputPath) {
   fs.writeFileSync(outputPath, output);
 } else {
   process.stdout.write(output);
   if (command === 'session' && output) process.stdout.write('\n');
+}
+
+if (command === 'outcome') {
+  if (!data.outcome.final) process.exit(4);
+  if (
+    data.outcome.subtype === 'error_max_turns' ||
+    data.outcome.subtype === 'error_max_budget_usd'
+  ) {
+    process.exit(75);
+  }
+  if (data.outcome.isError || data.outcome.subtype !== 'success') process.exit(1);
 }

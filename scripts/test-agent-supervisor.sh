@@ -10,6 +10,12 @@ ARGS_FILE="$TEST_DIR/second-args"
 FAKE_SUMMARY="$TEST_DIR/fake-summary.sh"
 FAKE_MONITOR="$TEST_DIR/fake-monitor.sh"
 MONITOR_COUNT_FILE="$TEST_DIR/monitor-count"
+ACTION_REQUEST_FILE="$ROOT_DIR/.agent/artifacts/supervisor/action-request.env"
+ACTION_RESPONSE_FILE="$ROOT_DIR/.agent/artifacts/supervisor/action-response.env"
+USAGE_LEDGER_FILE="$ROOT_DIR/.agent/artifacts/supervisor/usage-ledger.json"
+USAGE_LEDGER_BACKUP="$TEST_DIR/usage-ledger.backup"
+ATTACHED_LOG="$TEST_DIR/attached-handshake.log"
+SUPERVISOR_TEST_PID=""
 SUMMARY_CAPTURE="$TEST_DIR/summary-state.env"
 TEST_REVIEW_BASE="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 STOP_FILE="$ROOT_DIR/.agent/artifacts/runtime/last-stop.env"
@@ -21,6 +27,7 @@ EVENT_BACKUP="$TEST_DIR/events.backup"
 
 mkdir -p "$TEST_DIR" "$(dirname "$STOP_FILE")"
 rm -f -- "$COUNT_FILE" "$ARGS_FILE" "$STOP_BACKUP" "$STATE_BACKUP" "$EVENT_BACKUP"
+rm -f -- "$USAGE_LEDGER_BACKUP"
 rm -f -- "$MONITOR_COUNT_FILE"
 if [[ -f "$STOP_FILE" ]]; then
   cp "$STOP_FILE" "$STOP_BACKUP"
@@ -31,8 +38,16 @@ fi
 if [[ -f "$EVENT_FILE" ]]; then
   cp "$EVENT_FILE" "$EVENT_BACKUP"
 fi
+if [[ -f "$USAGE_LEDGER_FILE" ]]; then
+  cp "$USAGE_LEDGER_FILE" "$USAGE_LEDGER_BACKUP"
+fi
 
 cleanup() {
+  if [[ -n "$SUPERVISOR_TEST_PID" ]] && \
+     kill -0 "$SUPERVISOR_TEST_PID" 2>/dev/null; then
+    kill -TERM "$SUPERVISOR_TEST_PID" 2>/dev/null || true
+    wait "$SUPERVISOR_TEST_PID" 2>/dev/null || true
+  fi
   if [[ -f "$STOP_BACKUP" ]]; then
     cp "$STOP_BACKUP" "$STOP_FILE"
   else
@@ -48,6 +63,12 @@ cleanup() {
   else
     rm -f -- "$EVENT_FILE"
   fi
+  if [[ -f "$USAGE_LEDGER_BACKUP" ]]; then
+    cp "$USAGE_LEDGER_BACKUP" "$USAGE_LEDGER_FILE"
+  else
+    rm -f -- "$USAGE_LEDGER_FILE"
+  fi
+  rm -f -- "$ACTION_REQUEST_FILE" "$ACTION_RESPONSE_FILE"
 }
 trap cleanup EXIT
 
@@ -58,7 +79,7 @@ count=0
 [[ -f "$COUNT_FILE" ]] && count="\$(sed -n '1p' "$COUNT_FILE")"
 count=\$((count + 1))
 printf '%s\n' "\$count" >"$COUNT_FILE"
-if (( count == 1 )); then
+if (( count <= \${AGENT_FAKE_STOP_COUNT:-1} )); then
   {
     printf 'STOPPED_AT_UTC=2026-07-23T00:00:00Z\n'
     printf 'STAGE=REVIEWER\n'
@@ -86,6 +107,7 @@ set -uo pipefail
 count=0
 [[ -f "$MONITOR_COUNT_FILE" ]] && count="\$(sed -n '1p' "$MONITOR_COUNT_FILE")"
 printf '%s\n' "\$((count + 1))" >"$MONITOR_COUNT_FILE"
+printf 'MONITOR_ACTION: CONTINUE_NOW\n'
 exit 0
 EOF
 chmod +x "$FAKE_MONITOR"
@@ -96,6 +118,7 @@ AGENT_SUPERVISOR_NO_SLEEP=1 \
 AGENT_SUPERVISOR_SKIP_RECOVERY=1 \
 AGENT_SUPERVISOR_ALLOW_DIRTY_TEST=1 \
 AGENT_SUPERVISOR_MONITOR_ON_ERROR=0 \
+AGENT_SUPERVISOR_ATTACHED_ACTION=CONTINUE_NOW \
   "$ROOT_DIR/scripts/agent-supervisor.sh" supervise \
     --quota-wait-seconds 60 \
     --quota-anchor "2026-07-23 00:00:00 UTC" \
@@ -166,13 +189,35 @@ AGENT_SUPERVISOR_MONITOR_ON_ERROR=0 \
     --monitor-mode attached \
     --implementer claude --implementer-model sonnet --implementer-effort high \
     --reviewer claude --reviewer-model sonnet --reviewer-effort max \
-    --monitor codex --monitor-model gpt-5.6-terra --monitor-effort medium
+    --monitor codex --monitor-model gpt-5.6-terra --monitor-effort medium \
+    >"$ATTACHED_LOG" 2>&1 &
+SUPERVISOR_TEST_PID=$!
+attached_event_id=""
+for _ in $(seq 1 100); do
+  if [[ -s "$ACTION_REQUEST_FILE" ]]; then
+    attached_event_id="$(
+      sed -n 's/^EVENT_ID=//p' "$ACTION_REQUEST_FILE" | head -n 1
+    )"
+    [[ -n "$attached_event_id" ]] && break
+  fi
+  sleep 0.05
+done
+if [[ -n "$attached_event_id" ]]; then
+  "$ROOT_DIR/scripts/agent-cycle.sh" \
+    supervisor-action CONTINUE_NOW "$attached_event_id" >/dev/null
+fi
+wait "$SUPERVISOR_TEST_PID"
 slice_supervisor_exit=$?
+SUPERVISOR_TEST_PID=""
 if (( slice_supervisor_exit == 0 )) && \
-   [[ "$(sed -n '1p' "$COUNT_FILE" 2>/dev/null)" == "2" ]]; then
-  printf 'PASS  autonomy slice guard checkpoints and resumes through the same bounded route\n'
+   [[ -n "$attached_event_id" ]] && \
+   [[ "$(sed -n '1p' "$COUNT_FILE" 2>/dev/null)" == "2" ]] && \
+   grep -Fqx 'QUOTA_RESUMES=0' "$STATE_FILE" && \
+   grep -Fqx 'AUTONOMY_SLICES=1' "$STATE_FILE"; then
+  printf 'PASS  autonomy guard resumes immediately without pretending quota was exhausted\n'
 else
-  printf 'FAIL  supervisor did not recover a simulated autonomy slice stop\n' >&2
+  printf 'FAIL  autonomy guard was incorrectly routed through quota recovery\n' >&2
+  sed -n '1,120p' "$ATTACHED_LOG" >&2
   failure_count=$((failure_count + 1))
 fi
 
@@ -196,11 +241,52 @@ AGENT_SUPERVISOR_MONITOR_ON_ERROR=1 \
     --monitor codex --monitor-model gpt-5.6-terra --monitor-effort medium
 persistent_supervisor_exit=$?
 if (( persistent_supervisor_exit == 0 )) && \
-   [[ "$(sed -n '1p' "$MONITOR_COUNT_FILE" 2>/dev/null)" == "3" ]]; then
-  printf 'PASS  persistent CLI MONITOR is invoked at start, guard stop and window resume\n'
+   [[ "$(sed -n '1p' "$MONITOR_COUNT_FILE" 2>/dev/null)" == "2" ]] && \
+   grep -Fqx 'LAST_MONITOR_ACTION=CONTINUE_NOW' "$STATE_FILE"; then
+  printf 'PASS  persistent CLI MONITOR action controls the autonomy-guard resume\n'
 else
-  printf 'FAIL  persistent CLI MONITOR event routing is incomplete\n' >&2
+  printf 'FAIL  persistent CLI MONITOR action was not executed by supervisor\n' >&2
   failure_count=$((failure_count + 1))
+fi
+
+rm -f -- "$COUNT_FILE" "$ARGS_FILE" "$MONITOR_COUNT_FILE"
+AGENT_FAKE_STOP_REASON=AUTONOMY_SLICE_LIMIT \
+AGENT_FAKE_STOP_COUNT=4 \
+AGENT_SUPERVISOR_CYCLE_COMMAND="$FAKE_CYCLE" \
+AGENT_SUPERVISOR_MONITOR_COMMAND="$FAKE_MONITOR" \
+AGENT_SUPERVISOR_SUMMARY_COMMAND="$FAKE_SUMMARY" \
+AGENT_SUPERVISOR_NO_SLEEP=1 \
+AGENT_SUPERVISOR_SKIP_RECOVERY=1 \
+AGENT_SUPERVISOR_ALLOW_DIRTY_TEST=1 \
+AGENT_SUPERVISOR_MONITOR_ON_ERROR=1 \
+  "$ROOT_DIR/scripts/agent-supervisor.sh" supervise \
+    --quota-wait-seconds 60 \
+    --max-quota-resumes 2 \
+    --max-rounds 1 \
+    --monitor-mode persistent-cli \
+    --implementer claude --implementer-model sonnet --implementer-effort high \
+    --reviewer claude --reviewer-model sonnet --reviewer-effort max \
+    --monitor codex --monitor-model gpt-5.6-terra --monitor-effort medium \
+    >/dev/null 2>&1
+slice_limit_exit=$?
+if (( slice_limit_exit == 6 )) && \
+   [[ "$(sed -n '1p' "$COUNT_FILE" 2>/dev/null)" == "4" ]] && \
+   grep -Fqx 'AUTONOMY_SLICES=4' "$STATE_FILE" && \
+   grep -Fqx 'LAST_STOP_REASON=MAX_AUTONOMY_SLICES' "$STATE_FILE" && \
+   grep -Fqx 'PENDING_ACTION_ID=' "$STATE_FILE" && \
+   [[ ! -e "$ACTION_REQUEST_FILE" && ! -e "$ACTION_RESPONSE_FILE" ]]; then
+  printf 'PASS  per-window slice limit prevents persistent MONITOR from restarting forever\n'
+else
+  printf 'FAIL  per-window slice limit did not stop repeated automatic resumes\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+if "$ROOT_DIR/scripts/agent-cycle.sh" \
+     supervisor-action WAIT_FOR_QUOTA stale-event >/dev/null 2>&1; then
+  printf 'FAIL  attached MONITOR accepted an action with no pending event\n' >&2
+  failure_count=$((failure_count + 1))
+else
+  printf 'PASS  attached MONITOR rejects stale or unsolicited actions\n'
 fi
 
 if (( failure_count != 0 )); then

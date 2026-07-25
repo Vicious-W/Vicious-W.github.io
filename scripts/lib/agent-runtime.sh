@@ -115,14 +115,23 @@ agent_finalize_role_session() {
   local detected_id=""
   local session_tmp="${AGENT_SESSION_FILE}.tmp"
   local telemetry_script="$AGENT_RUNTIME_ROOT/scripts/lib/agent-telemetry.mjs"
+  local reusable=0
 
   if [[ -s "$events_file" && -x "$telemetry_script" ]]; then
     detected_id="$(node "$telemetry_script" session "$executor" "$events_file" 2>/dev/null)"
   fi
-  [[ -n "$detected_id" ]] && AGENT_SESSION_ID="$detected_id"
+  if [[ -n "$detected_id" ]]; then
+    AGENT_SESSION_ID="$detected_id"
+    case "$run_status" in
+      SUCCESS|AUTONOMY_SLICE_LIMIT|USAGE_OR_BILLING_LIMIT|TIMEOUT)
+        reusable=1
+        ;;
+    esac
+  fi
 
-  # A Codex session cannot be resumed until its generated thread ID has been
-  # observed. Claude receives an explicit UUID before launch.
+  # Never mark a merely preallocated ID active. Authentication, model and
+  # startup failures may occur before the executor persists a resumable
+  # conversation even though Claude was given an explicit UUID.
   if [[ -z "$AGENT_SESSION_ID" ]]; then
     return 0
   fi
@@ -135,7 +144,11 @@ agent_finalize_role_session() {
   done <"$AGENT_SESSION_FILE" >"$session_tmp"
   {
     printf 'SESSION_ID=%s\n' "$AGENT_SESSION_ID"
-    printf 'STATUS=ACTIVE\n'
+    if (( reusable == 1 )); then
+      printf 'STATUS=ACTIVE\n'
+    else
+      printf 'STATUS=FAILED\n'
+    fi
     printf 'LAST_RUN_STATUS=%s\n' "$run_status"
     printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   } >>"$session_tmp"
@@ -175,6 +188,45 @@ agent_mark_role_session_rotation() {
   } >>"$session_tmp"
   mv "$session_tmp" "$AGENT_SESSION_FILE"
   return 0
+}
+
+agent_force_role_session_rotation() {
+  local task_id="$1"
+  local role="$2"
+  local reason="${3:-MONITOR_DECISION}"
+  local session_dir="$AGENT_RUNTIME_ROOT/.agent/artifacts/sessions"
+  local task_slug role_slug session_file session_status session_tmp
+
+  task_slug="$(printf '%s' "$task_id" | tr -c '[:alnum:]_.-' '_')"
+  role_slug="$(printf '%s' "$role" | tr '[:upper:]' '[:lower:]')"
+  session_file="$session_dir/${task_slug}-${role_slug}.env"
+  [[ -s "$session_file" ]] || {
+    printf 'Cannot rotate missing role session: %s\n' "$session_file" >&2
+    return 2
+  }
+  session_status="$(agent_session_value "$session_file" STATUS)"
+  if [[ "$session_status" == "ROTATE_REQUIRED" ]]; then
+    return 0
+  fi
+  [[ "$session_status" == "ACTIVE" ]] || {
+    printf 'Cannot rotate role session in status %s: %s\n' \
+      "${session_status:-unknown}" "$session_file" >&2
+    return 2
+  }
+
+  session_tmp="${session_file}.tmp"
+  while IFS= read -r line; do
+    case "$line" in
+      STATUS=*|UPDATED_AT_UTC=*|ROTATION_REASON=*) ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done <"$session_file" >"$session_tmp"
+  {
+    printf 'STATUS=ROTATE_REQUIRED\n'
+    printf 'ROTATION_REASON=%s\n' "$reason"
+    printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  } >>"$session_tmp"
+  mv "$session_tmp" "$session_file"
 }
 
 agent_record_telemetry() {
@@ -553,12 +605,17 @@ agent_record_stop() {
   local reason="$2"
   local exit_code="$3"
   local log_file="$4"
+  local usage_file="${5:-}"
   local stop_dir="$AGENT_RUNTIME_ROOT/.agent/artifacts/runtime"
   local relative_log="$log_file"
+  local relative_usage="$usage_file"
 
   mkdir -p "$stop_dir"
   if [[ "$relative_log" == "$AGENT_RUNTIME_ROOT/"* ]]; then
     relative_log="${relative_log#"$AGENT_RUNTIME_ROOT/"}"
+  fi
+  if [[ "$relative_usage" == "$AGENT_RUNTIME_ROOT/"* ]]; then
+    relative_usage="${relative_usage#"$AGENT_RUNTIME_ROOT/"}"
   fi
   {
     printf 'STOPPED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -566,6 +623,7 @@ agent_record_stop() {
     printf 'STOP_REASON=%s\n' "$reason"
     printf 'EXIT_CODE=%s\n' "$exit_code"
     printf 'LOG_FILE=%s\n' "$relative_log"
+    printf 'USAGE_FILE=%s\n' "$relative_usage"
   } >"$stop_dir/last-stop.env"
 }
 
@@ -633,7 +691,10 @@ run_agent_process() {
   local poll_seconds=2
   local elapsed=0
   local next_heartbeat="$heartbeat_seconds"
-  local log_bytes child_exit timed_out=0
+  local log_bytes event_bytes child_exit timed_out=0 live_telemetry=""
+  local telemetry_executor="${AGENT_LIVE_TELEMETRY_EXECUTOR:-}"
+  local events_file="${AGENT_EVENT_FILE:-}"
+  local telemetry_script="$AGENT_RUNTIME_ROOT/scripts/lib/agent-telemetry.mjs"
   AGENT_ACTIVE_GRACE_SECONDS="$grace_seconds"
 
   setsid "$@" </dev/null >"$log_file" 2>&1 &
@@ -656,6 +717,18 @@ run_agent_process() {
       log_bytes="$(wc -c <"$log_file" | tr -d '[:space:]')"
       printf '[%s] %s is still running (%ss elapsed, %s log bytes).\n' \
         "$(date -u +'%H:%M:%SZ')" "$label" "$elapsed" "${log_bytes:-0}"
+      if [[ -n "$telemetry_executor" && -n "$events_file" && \
+            -s "$events_file" && -x "$telemetry_script" ]]; then
+        event_bytes="$(wc -c <"$events_file" | tr -d '[:space:]')"
+        live_telemetry="$(
+          node "$telemetry_script" live "$telemetry_executor" "$events_file" \
+            2>/dev/null || true
+        )"
+        if [[ -n "$live_telemetry" ]]; then
+          printf '[%s] LIVE_USAGE event_bytes=%s %s\n' \
+            "$(date -u +'%H:%M:%SZ')" "${event_bytes:-0}" "$live_telemetry"
+        fi
+      fi
       next_heartbeat=$((elapsed + heartbeat_seconds))
     fi
     sleep "$poll_seconds"

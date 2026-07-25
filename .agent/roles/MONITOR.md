@@ -14,8 +14,8 @@
 - 记录等待原因、恢复时间、当前阶段、尝试次数和下一动作；
 - 在额度恢复事件到达时重新预检，启动全新的对应角色进程并精确恢复该任务的同角色
   会话；
-- 在 `AUTONOMY_SLICE_LIMIT` 后按与额度中断相同的安全顺序保存现场，并等待配置的
-  下一窗口；
+- 在 `AUTONOMY_SLICE_LIMIT` 后保存现场，读取实时/累计 turns、token、缓存上下文与
+  API 等价用量，并明确选择立即续片、轮换上下文后续片、等待额度窗口或安全停止；
 - 对未知异常生成监视报告；无法安全自动处理时停止并交还所有者；
 - 在最终 PASS、轮数上限或其他终止条件后核对简报和仓库状态。
 
@@ -46,15 +46,20 @@ MONITOR 可以与该工作 Agent 同时存在，但并存期间只能读取流�
 
 ## 额度恢复
 
-`USAGE_OR_BILLING_LIMIT` 与主动触发的 `AUTONOMY_SLICE_LIMIT` 都是不增加审查轮次
-的可恢复事件。处理顺序：
+`USAGE_OR_BILLING_LIMIT` 与主动触发的 `AUTONOMY_SLICE_LIMIT` 都不增加审查轮次，
+但语义不同：前者证明额度/速率边界，后者只证明本项目的自主保险命中。
+
+共同安全顺序：
 
 1. 确认工作 Agent 与其进程组已结束；
 2. 检查 HEAD、索引和受保护路径；
 3. 对合法实现半成品运行统一验证并创建明确的 recovery checkpoint；
-4. 状态转为 `WAITING_FOR_QUOTA` 或 `WAITING_FOR_BUDGET_WINDOW`，记录绝对恢复时间；
-5. 由中立脚本零 token 等待；
-6. 到点重新预检，以新进程恢复中断角色自己的任务级会话；
-7. 超过最大恢复次数或状态不安全时停止并交还所有者。
+4. `USAGE_OR_BILLING_LIMIT` 转为 `WAITING_FOR_QUOTA`，记录绝对恢复时间；
+5. `AUTONOMY_SLICE_LIMIT` 转为 `AWAITING_MONITOR_ACTION`，不得自动冒充额度耗尽；
+6. MONITOR 检查当前切片和监督窗口累计用量，提交 `CONTINUE_NOW`、
+   `ROTATE_AND_CONTINUE`、`WAIT_FOR_QUOTA` 或 `STOP_OWNER`；
+7. 需要等待时由中立脚本零 token 等待；继续时以新进程恢复原角色，必要时创建新的
+   上下文代次；
+8. 超过最大切片/恢复次数、决策超时或状态不安全时停止并交还所有者。
 
 恢复检查点只保存现场，不表示实现通过，也不推进正式轮次。

@@ -74,9 +74,12 @@ shell 无法重新唤醒它。无人值守时使用 `--monitor-mode persistent-c
 启动时创建一个任务级 CLI MONITOR，并在后续事件边界恢复同一会话。
 
 Claude `--print` 调用同时受最大 turns 和 API 等价预算约束。任一保险先到会产生
-`AUTONOMY_SLICE_LIMIT`，合法现场被保存后对齐下一窗口恢复。最后一轮缓存上下文
-超过阈值时，下一次不再恢复膨胀的原始 transcript，而以当前 Git 检查点和结构化
-交接创建同一逻辑角色会话的新代次。
+`AUTONOMY_SLICE_LIMIT`。合法现场保存后进入 Monitor 决策点，而不是直接假定额度
+耗尽：可立即续片、轮换上下文后续片、等待窗口或停止。Claude 的逐事件
+`stream-json` 让心跳能够显示 turns、token 和缓存增长；监督窗口累计账本位于
+`.agent/artifacts/supervisor/usage-ledger.json`。最后一轮缓存上下文超过阈值时，
+下一次不再恢复膨胀的原始 transcript，而以当前 Git 检查点和结构化交接创建同一
+逻辑角色会话的新代次。
 
 完整顺序为：
 
@@ -97,6 +100,15 @@ Claude `--print` 调用同时受最大 turns 和 API 等价预算约束。任一
 每次调用的原始 JSON/JSONL 事件和标准化用量摘要保存在
 `.agent/artifacts/implementation/` 或 `.agent/artifacts/review/`，运行清单记录会话
 ID、`new/resume` 模式、会话代次、预算保险及这些文件的路径。
+
+附着式 Monitor 在 `AWAITING_MONITOR_ACTION` 状态用以下命令提交决策：
+
+```bash
+./scripts/agent-cycle.sh supervisor-action CONTINUE_NOW <EVENT_ID>
+./scripts/agent-cycle.sh supervisor-action ROTATE_AND_CONTINUE <EVENT_ID>
+./scripts/agent-cycle.sh supervisor-action WAIT_FOR_QUOTA <EVENT_ID>
+./scripts/agent-cycle.sh supervisor-action STOP_OWNER <EVENT_ID>
+```
 
 ## 权限原则
 

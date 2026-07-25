@@ -97,7 +97,8 @@ run_claude() {
     --permission-mode dontAsk \
     --exclude-dynamic-system-prompt-sections \
     --prompt-suggestions false \
-    --output-format json \
+    --verbose \
+    --output-format stream-json \
     "${limit_args[@]}" \
     "${session_args[@]}" \
     --allowedTools "$permission_tools" \
@@ -113,32 +114,48 @@ emit_final() {
   fi
 }
 
+finish_claude() {
+  local claude_exit="$1"
+  local outcome_exit=0
+
+  if node "$telemetry_script" outcome claude "$event_file"; then
+    outcome_exit=0
+  else
+    outcome_exit=$?
+  fi
+  if (( outcome_exit != 0 )); then
+    # A structured guard result is authoritative even if a particular CLI
+    # version exits zero for that result subtype.
+    if (( outcome_exit == 75 )); then
+      return 75
+    fi
+    (( claude_exit != 0 )) && return "$claude_exit"
+    return "$outcome_exit"
+  fi
+  (( claude_exit == 0 )) || return "$claude_exit"
+  emit_final
+}
+
 case "$role" in
   IMPLEMENTER)
-    if run_claude \
+    claude_exit=0
+    run_claude \
       "Read(./**),Write(./**),Edit(./**),Glob,Grep,Bash(./scripts/run-validation.sh),Bash(npm run *),Bash(npm test),Bash(npm install *),Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git rev-parse *),Bash(git ls-files *),Bash(rg *),Bash(find *),Bash(sed *),Bash(ls *),Bash(curl http://localhost:*),Bash(curl http://127.0.0.1:*),WebSearch,WebFetch,mcp__playwright__*" \
-      "NotebookEdit,Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git reset *),Bash(git clean *),Bash(git checkout *),Bash(git switch *),Bash(git rebase *),Bash(git rm *),Bash(rm -rf *),Bash(sudo *),Bash(env),Bash(printenv *),Task,Agent"; then
-      emit_final
-    else
-      claude_exit=$?
-      [[ -s "$event_file" ]] && sed -n '1,80p' "$event_file"
-      exit "$claude_exit"
-    fi
+      "NotebookEdit,Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git reset *),Bash(git clean *),Bash(git checkout *),Bash(git switch *),Bash(git rebase *),Bash(git rm *),Bash(rm -rf *),Bash(sudo *),Bash(env),Bash(printenv *),Task,Agent" \
+      || claude_exit=$?
+    finish_claude "$claude_exit"
     ;;
   REVIEWER|MONITOR)
     if [[ "$output_file" == "-" ]]; then
       printf 'Claude %s requires a report output file.\n' "$role" >&2
       exit 2
     fi
-    if run_claude \
+    claude_exit=0
+    run_claude \
       "Read(./**),Glob,Grep,Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git rev-parse *),Bash(git ls-files *),Bash(rg *),Bash(find *),Bash(sed *),Bash(ls *),Bash(curl http://localhost:*),Bash(curl http://127.0.0.1:*),WebSearch,WebFetch,mcp__playwright__*" \
-      "Write,Edit,NotebookEdit,Bash(npm install *),Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git reset *),Bash(git clean *),Bash(git checkout *),Bash(git switch *),Bash(git rebase *),Bash(git rm *),Bash(rm *),Bash(sudo *),Bash(env),Bash(printenv *),Task,Agent"; then
-      emit_final
-    else
-      claude_exit=$?
-      [[ -s "$event_file" ]] && sed -n '1,80p' "$event_file"
-      exit "$claude_exit"
-    fi
+      "Write,Edit,NotebookEdit,Bash(npm install *),Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git reset *),Bash(git clean *),Bash(git checkout *),Bash(git switch *),Bash(git rebase *),Bash(git rm *),Bash(rm *),Bash(sudo *),Bash(env),Bash(printenv *),Task,Agent" \
+      || claude_exit=$?
+    finish_claude "$claude_exit"
     ;;
   *)
     printf 'Unsupported Claude role: %s\n' "$role" >&2

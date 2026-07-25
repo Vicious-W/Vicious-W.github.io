@@ -1,6 +1,6 @@
 # 项目参与者指令手册
 
-版本：v4.0
+版本：v4.1
 
 更新日期：2026-07-24
 
@@ -112,15 +112,17 @@ MONITOR_MODEL=gpt-5.6-terra
 MONITOR_EFFORT=medium
 MONITOR_TIMEOUT_SECONDS=900
 MONITOR_MODE=attached
-CLAUDE_IMPLEMENTER_MAX_TURNS=36
-CLAUDE_IMPLEMENTER_MAX_BUDGET_USD=6.00
-CLAUDE_REVIEWER_MAX_TURNS=24
-CLAUDE_REVIEWER_MAX_BUDGET_USD=4.00
+CLAUDE_IMPLEMENTER_MAX_TURNS=24
+CLAUDE_IMPLEMENTER_MAX_BUDGET_USD=4.00
+CLAUDE_REVIEWER_MAX_TURNS=18
+CLAUDE_REVIEWER_MAX_BUDGET_USD=3.00
 CLAUDE_MONITOR_MAX_TURNS=8
 CLAUDE_MONITOR_MAX_BUDGET_USD=1.00
 CLAUDE_CONTEXT_ROTATE_TOKENS=160000
 QUOTA_WAIT_SECONDS=18000
 MAX_QUOTA_RESUMES=6
+MAX_AUTONOMY_SLICES_PER_WINDOW=4
+MONITOR_ACTION_TIMEOUT_SECONDS=7200
 ```
 
 这只是默认调用配置，不是永久身份绑定。可以在每次 `cycle` 启动时覆盖。
@@ -261,17 +263,40 @@ agent-supervisor.sh：跨额度窗口、恢复次数、定时等待、异常交�
     └── REVIEWER
 ```
 
-额度中断或 Claude 主动预算保险触发时，监督器会先确认工作 Agent 已退出。若实现阶段留下合法半成品，它运行
-统一验证并创建标题明确的 recovery checkpoint；该提交只保存现场，不代表通过，
-也不增加审查轮次。额度事件进入 `WAITING_FOR_QUOTA`，主动预算保险进入
-`WAITING_FOR_BUDGET_WINDOW`，随后都由 shell 的 `sleep` 等待。这段等待不会调用
-模型，因此不会消耗 Agent token。
+额度中断或 Claude 主动预算保险触发时，监督器会先确认工作 Agent 已退出。若实现
+阶段留下合法半成品，它运行统一验证并创建标题明确的 recovery checkpoint；该提交
+只保存现场，不代表通过，也不增加审查轮次。真实额度事件进入
+`WAITING_FOR_QUOTA`，由 shell 零 token 等待。主动预算保险只说明当前自主切片结束，
+进入 `AWAITING_MONITOR_ACTION`，不能直接冒充额度耗尽。
 
 Claude 非交互调用不是一次模型请求，而是工具调用—模型调用循环。为防止几十分钟内
 重复读取数千万缓存 token，默认对 IMPLEMENTER、REVIEWER 和后台 MONITOR 分别设置
 最大 turns 与 API 等价预算。命中任一值记录为 `AUTONOMY_SLICE_LIMIT`，状态进入
-`WAITING_FOR_BUDGET_WINDOW`。这些金额是控制 Claude CLI 返回的等价用量，不等于
-订阅账单金额。
+Monitor 决策点。Claude 使用 `stream-json`，监督心跳实时显示精简的 turns、token、
+缓存增长；最终结果和监督窗口累计账本还记录 API 等价用量。这些金额是 Claude CLI
+返回的等价用量，不等于订阅账单金额。
+
+Monitor 根据当前切片和
+`.agent/artifacts/supervisor/usage-ledger.json` 选择：
+
+- `CONTINUE_NOW`：当前上下文效率正常且真实额度仍可能充足，立即恢复原角色；
+- `ROTATE_AND_CONTINUE`：缓存上下文相对产出过大，创建新会话代次后继续；
+- `WAIT_FOR_QUOTA`：已有真实额度边界证据，等待固定窗口；
+- `STOP_OWNER`：状态不安全或需要所有者决定。
+
+附着式 Monitor 使用 supervisor 输出的事件 ID 提交：
+
+```bash
+./scripts/agent-cycle.sh supervisor-action CONTINUE_NOW <EVENT_ID>
+```
+
+无人值守的 `persistent-cli` Monitor 会输出同一组 `MONITOR_ACTION`；supervisor 会
+读取并真正执行，不再只保存报告。
+
+默认每个真实额度窗口最多连续运行 4 个自主切片；达到
+`MAX_AUTONOMY_SLICES_PER_WINDOW` 后，即使 Monitor 请求继续，supervisor 也会拒绝，
+防止自动小切片变成无限额度消耗。attached 决策默认最多等待 7200 秒，可在
+`.agent/runtime.env` 调整。
 
 到点后，监督器从中断角色启动全新进程：实现阶段中断就继续 IMPLEMENTER，已有
 实现检查点后的审查中断就直接继续 REVIEWER；新进程会精确恢复同一任务的对应角色
@@ -306,15 +331,16 @@ Claude 非交互调用不是一次模型请求，而是工具调用—模型调�
 `HEAD^..HEAD`。若 `.agent/state.env` 已记录 `LAST_IMPLEMENTATION_BASE_COMMIT`，
 可以省略该参数。
 
-`SCHEDULED`、`WAITING_FOR_QUOTA` 和 `WAITING_FOR_BUDGET_WINDOW` 表示没有工作
-Agent 在运行；`RUNNING` 表示正在执行一个有界 cycle；`COMPLETE` 或 `STOPPED`
+`SCHEDULED`、`AWAITING_MONITOR_ACTION`、`WAITING_FOR_QUOTA` 和
+`WAITING_FOR_BUDGET_WINDOW` 表示没有工作 Agent 在运行；`RESUMING` 是已收到决策、
+即将以新进程恢复；`RUNNING` 表示正在执行一个有界 cycle；`COMPLETE` 或 `STOPPED`
 是终态。
 
 单个 Agent 的 timeout 只累计监督循环实际运行的轮询时间。Windows 睡眠或 WSL
 暂停期间 Agent 没有工作，这段墙上时间不计入 timeout；恢复后继续累计。supervisor
-会先写入 `COMPLETE`、`STOPPED`、`WAITING_FOR_QUOTA` 或
-`WAITING_FOR_BUDGET_WINDOW`，再重新生成简报，因此简报看到的是同一事件的最终
-外层状态。
+会先写入 `COMPLETE`、`STOPPED`、`AWAITING_MONITOR_ACTION`、
+`WAITING_FOR_QUOTA` 或 `WAITING_FOR_BUDGET_WINDOW`，再重新生成简报，因此简报
+看到的是同一事件的最终外层状态。
 
 `--start-at` 默认也作为固定额度窗口锚点。例如首次恢复为 10:42、窗口为 5 小时，
 后续会对齐 15:42、20:42，而不是从 Agent 实际中断时刻再等待整整 5 小时。首次
@@ -334,6 +360,7 @@ Agent 在运行；`RUNNING` 表示正在执行一个有界 cycle；`COMPLETE` �
 | `cycle [options]` | 完整串行循环 | 是 |
 | `supervise [options]` | 跨额度窗口运行完整轮转 | 串行启动 |
 | `supervisor-status` | 查看外层监督状态和恢复时间 | 否 |
+| `supervisor-action ACTION [EVENT_ID]` | 附着式 Monitor 提交安全边界决策 | 否 |
 | `implement [options]` | 单独运行一轮 IMPLEMENTER 并提交 | 一个 |
 | `review [options] [target base]` | 单独运行一次只读 REVIEWER | 一个 |
 | `validate` | 统一构建/测试检查 | 否 |
@@ -461,6 +488,7 @@ cat .agent/artifacts/runtime/last-stop.env
 | 分类 | 含义 | 处理 |
 | --- | --- | --- |
 | `USAGE_OR_BILLING_LIMIT` | 额度、余额或速率限制 | `supervise` 自动保存并定时续跑 |
+| `AUTONOMY_SLICE_LIMIT` | 项目 turns/预算保险命中，不等于额度耗尽 | Monitor 根据实时/累计用量决定立即续片、轮换、等待或停止 |
 | `AUTHENTICATION` | 登录或令牌失效 | 在普通终端恢复对应 CLI 登录 |
 | `MODEL_UNAVAILABLE` | 模型标识无效或账户无访问权 | 改用 CLI 支持的别名/完整 slug 后重新预检 |
 | `PERMISSION` | 角色所需能力未授权 | 只调整确有需要的最小权限 |

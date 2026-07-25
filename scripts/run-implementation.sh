@@ -97,10 +97,10 @@ claude_max_budget_usd=""
 claude_context_rotate_tokens=""
 if [[ "$implementer_agent" == "claude" ]]; then
   claude_max_turns="$(
-    agent_runtime_config CLAUDE_IMPLEMENTER_MAX_TURNS 36 1 1000
+    agent_runtime_config CLAUDE_IMPLEMENTER_MAX_TURNS 24 1 1000
   )" || exit 2
   claude_max_budget_usd="$(
-    agent_runtime_decimal_config CLAUDE_IMPLEMENTER_MAX_BUDGET_USD 6.00
+    agent_runtime_decimal_config CLAUDE_IMPLEMENTER_MAX_BUDGET_USD 4.00
   )" || exit 2
   claude_context_rotate_tokens="$(
     agent_runtime_config CLAUDE_CONTEXT_ROTATE_TOKENS 160000 10000 1000000
@@ -192,7 +192,7 @@ run_id="implementation-r${implementation_round}-$(date -u +'%Y%m%dT%H%M%SZ')-$$"
 prompt_file="$ARTIFACT_DIR/prompt-round-${implementation_round}.md"
 agent_log="$ARTIFACT_DIR/${implementer_agent}-round-${implementation_round}.log"
 manifest_file="$RUN_DIR/${run_id}.env"
-events_file="$ARTIFACT_DIR/${run_id}.events.$([[ "$implementer_agent" == "codex" ]] && printf jsonl || printf json)"
+events_file="$ARTIFACT_DIR/${run_id}.events.jsonl"
 usage_file="$ARTIFACT_DIR/${run_id}.usage.json"
 
 agent_prepare_role_session \
@@ -303,12 +303,14 @@ export AGENT_SESSION_ID AGENT_SESSION_MODE AGENT_SESSION_GENERATION
 export AGENT_CLAUDE_MAX_TURNS="$claude_max_turns"
 export AGENT_CLAUDE_MAX_BUDGET_USD="$claude_max_budget_usd"
 export AGENT_EVENT_FILE="$events_file"
+export AGENT_LIVE_TELEMETRY_EXECUTOR="$implementer_agent"
 run_agent_process \
   "IMPLEMENTER ($implementer_agent) round $implementation_round/$max_rounds" \
   "$implementer_timeout" "$heartbeat_seconds" "$termination_grace" "$agent_log" -- \
   "$runner" IMPLEMENTER "$implementer_model" "$implementer_effort" "$prompt_file" -
 implementer_exit=$?
-unset AGENT_EVENT_FILE AGENT_CLAUDE_MAX_TURNS AGENT_CLAUDE_MAX_BUDGET_USD
+unset AGENT_EVENT_FILE AGENT_LIVE_TELEMETRY_EXECUTOR
+unset AGENT_CLAUDE_MAX_TURNS AGENT_CLAUDE_MAX_BUDGET_USD
 
 if (( implementer_exit == 0 )); then
   run_status="SUCCESS"
@@ -328,7 +330,8 @@ agent_finish_run_manifest \
   "$manifest_file" "$run_status" "$implementer_exit" "$AGENT_RUN_REASON"
 
 if (( implementer_exit != 0 )); then
-  agent_record_stop IMPLEMENTER "$AGENT_RUN_REASON" "$implementer_exit" "$agent_log"
+  agent_record_stop \
+    IMPLEMENTER "$AGENT_RUN_REASON" "$implementer_exit" "$agent_log" "$usage_file"
   printf 'IMPLEMENTER stopped (exit %s, reason %s). Changes were left for inspection.\n' \
     "$implementer_exit" "$AGENT_RUN_REASON" >&2
   printf 'Log: %s\n' "$agent_log" >&2

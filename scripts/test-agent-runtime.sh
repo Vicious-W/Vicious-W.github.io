@@ -16,6 +16,8 @@ CLAUDE_ARGS="$TEST_DIR/claude-args.txt"
 SESSION_EVENTS="$TEST_DIR/session-events.json"
 SESSION_TEST_TASK="runtime-session-test-$(date +%s%N)-$$"
 MONITOR_SESSION_TEST_TASK="runtime-monitor-session-test-$(date +%s%N)-$$"
+LEDGER_TEST="$TEST_DIR/usage-ledger.json"
+LEDGER_RUN_DIR="$TEST_DIR/ledger-runs"
 
 # shellcheck source=scripts/lib/agent-runtime.sh
 source "$ROOT_DIR/scripts/lib/agent-runtime.sh"
@@ -147,7 +149,7 @@ agent_prepare_role_session "$SESSION_TEST_TASK" IMPLEMENTER claude opus-4.8 high
 first_session_id="$AGENT_SESSION_ID"
 first_session_mode="$AGENT_SESSION_MODE"
 printf '%s\n' \
-  "{\"type\":\"result\",\"session_id\":\"$first_session_id\",\"result\":\"session created\"}" \
+  "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$first_session_id\",\"result\":\"session created\"}" \
   >"$SESSION_EVENTS"
 agent_finalize_role_session claude "$SESSION_EVENTS" SUCCESS
 agent_prepare_role_session "$SESSION_TEST_TASK" IMPLEMENTER claude opus-4.8 high
@@ -184,7 +186,7 @@ else
 fi
 
 printf '%s\n' \
-  '{"type":"result","session_id":"11111111-1111-4111-a111-111111111111","num_turns":4,"duration_ms":1200,"total_cost_usd":0,"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0},"modelUsage":{"router":{"inputTokens":100,"cacheReadInputTokens":80,"cacheCreationInputTokens":20,"outputTokens":30,"costUSD":1.25}},"result":"final report"}' \
+  '{"type":"result","subtype":"success","is_error":false,"session_id":"11111111-1111-4111-a111-111111111111","num_turns":4,"duration_ms":1200,"total_cost_usd":0,"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0},"modelUsage":{"router":{"inputTokens":100,"cacheReadInputTokens":80,"cacheCreationInputTokens":20,"outputTokens":30,"costUSD":1.25}},"result":"final report"}' \
   >"$CLAUDE_EVENTS"
 if [[ "$(node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" final claude "$CLAUDE_EVENTS")" == \
       "final report" ]] && \
@@ -205,27 +207,140 @@ else
   failure_count=$((failure_count + 1))
 fi
 
+failed_task="runtime-failed-session-$$"
+agent_prepare_role_session "$failed_task" IMPLEMENTER claude opus high
+failed_preallocated_id="$AGENT_SESSION_ID"
+: >"$TEST_DIR/failed-session.events.jsonl"
+agent_finalize_role_session \
+  claude "$TEST_DIR/failed-session.events.jsonl" AUTHENTICATION
+failed_status="$(sed -n 's/^STATUS=//p' "$AGENT_SESSION_FILE" | head -n 1)"
+agent_prepare_role_session "$failed_task" IMPLEMENTER claude opus high
+if [[ "$failed_status" == "FAILED" && "$AGENT_SESSION_MODE" == "new" && \
+      "$AGENT_SESSION_ID" != "$failed_preallocated_id" ]]; then
+  printf 'PASS  startup failures never activate or resume a preallocated Claude session\n'
+else
+  printf 'FAIL  failed Claude startup left a resumable role session\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+printf '%s\n' \
+  '{"type":"system","subtype":"init","session_id":"44444444-4444-4444-a444-444444444444"}' \
+  '{"type":"assistant","session_id":"44444444-4444-4444-a444-444444444444","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":1200,"cache_creation_input_tokens":30,"output_tokens":40}}}' \
+  '{"type":"assistant","session_id":"44444444-4444-4444-a444-444444444444","message":{"usage":{"input_tokens":11,"cache_read_input_tokens":1400,"cache_creation_input_tokens":31,"output_tokens":41}}}' \
+  >"$TEST_DIR/live.events.jsonl"
+live_usage="$(
+  node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" \
+    live claude "$TEST_DIR/live.events.jsonl"
+)"
+if [[ "$live_usage" == *'"turns":2'* && \
+      "$live_usage" == *'"cachedInputTokens":2600'* && \
+      "$live_usage" == *'"lastTurnCachedInputTokens":1400'* ]]; then
+  printf 'PASS  Claude stream telemetry exposes live turns and cache growth\n'
+else
+  printf 'FAIL  Claude live telemetry did not aggregate streaming events\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+printf '%s\n' \
+  '{"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"44444444-4444-4444-a444-444444444444","num_turns":3,"total_cost_usd":2.5}' \
+  >"$TEST_DIR/guard.events.jsonl"
+if node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" \
+     outcome claude "$TEST_DIR/guard.events.jsonl" >/dev/null 2>&1; then
+  guard_outcome_exit=0
+else
+  guard_outcome_exit=$?
+fi
+if (( guard_outcome_exit == 75 )); then
+  printf 'PASS  structured Claude guard results receive a dedicated nonzero exit\n'
+else
+  printf 'FAIL  structured Claude guard result exit was %s, expected 75\n' \
+    "$guard_outcome_exit" >&2
+  failure_count=$((failure_count + 1))
+fi
+
+mkdir -p "$LEDGER_RUN_DIR"
+printf '%s\n' \
+  '{"executor":"claude","turns":3,"totalCostUsd":2.5,"inputTokens":10,"cachedInputTokens":2000,"cacheCreationInputTokens":20,"outputTokens":50}' \
+  >"$TEST_DIR/ledger-usage.json"
+{
+  printf 'RUN_ID=ledger-test\n'
+  printf 'TASK_ID=ledger-task\n'
+  printf 'ROLE=IMPLEMENTER\n'
+  printf 'ROUND=1\n'
+  printf 'MODEL=opus\n'
+  printf 'EFFORT=high\n'
+  printf 'STARTED_AT_UTC=2026-07-24T00:00:01Z\n'
+  printf 'FINISHED_AT_UTC=2026-07-24T00:01:00Z\n'
+  printf 'STATUS=AUTONOMY_SLICE_LIMIT\n'
+  printf 'USAGE_FILE=%s\n' "${TEST_DIR#"$ROOT_DIR/"}/ledger-usage.json"
+} >"$LEDGER_RUN_DIR/ledger-test.env"
+node "$ROOT_DIR/scripts/lib/agent-usage-ledger.mjs" init \
+  "$LEDGER_TEST" ledger-task 2026-07-24T00:00:00Z
+node "$ROOT_DIR/scripts/lib/agent-usage-ledger.mjs" sync \
+  "$LEDGER_TEST" "$LEDGER_RUN_DIR" "$ROOT_DIR" 2026-07-24T00:02:00Z
+ledger_totals="$(
+  node "$ROOT_DIR/scripts/lib/agent-usage-ledger.mjs" summary "$LEDGER_TEST"
+)"
+if [[ "$ledger_totals" == *'"runs":1'* && \
+      "$ledger_totals" == *'"turns":3'* && \
+      "$ledger_totals" == *'"totalCostUsd":2.5'* ]]; then
+  printf 'PASS  supervisor usage ledger accumulates run manifests without double counting\n'
+else
+  printf 'FAIL  supervisor usage ledger totals are incomplete\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
 cat >"$FAKE_BIN/claude" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >"$AGENT_FAKE_CLAUDE_ARGS"
 printf '%s\n' \
-  '{"type":"result","session_id":"33333333-3333-4333-a333-333333333333","num_turns":1,"duration_ms":1,"usage":{"iterations":[{"cache_read_input_tokens":10}]},"result":"fake final"}'
+  '{"type":"system","subtype":"init","session_id":"33333333-3333-4333-a333-333333333333"}' \
+  '{"type":"result","subtype":"success","is_error":false,"session_id":"33333333-3333-4333-a333-333333333333","num_turns":1,"duration_ms":1,"usage":{"iterations":[{"cache_read_input_tokens":10}]},"result":"fake final"}'
 EOF
 chmod +x "$FAKE_BIN/claude"
 AGENT_FAKE_CLAUDE_ARGS="$CLAUDE_ARGS" \
 AGENT_SESSION_ID="33333333-3333-4333-a333-333333333333" \
 AGENT_SESSION_MODE=new \
-AGENT_EVENT_FILE="$TEST_DIR/fake-runner-events.json" \
+AGENT_EVENT_FILE="$TEST_DIR/fake-runner-events.jsonl" \
 AGENT_CLAUDE_MAX_TURNS=36 \
 AGENT_CLAUDE_MAX_BUDGET_USD=6.00 \
 PATH="$FAKE_BIN:$PATH" \
   "$ROOT_DIR/scripts/agent-runners/claude.sh" \
     IMPLEMENTER opus high "$PROMPT_TEST" - >/dev/null
 if grep -Fq -- '--max-turns 36' "$CLAUDE_ARGS" && \
-   grep -Fq -- '--max-budget-usd 6.00' "$CLAUDE_ARGS"; then
-  printf 'PASS  Claude adapter forwards autonomous turn and budget guards\n'
+   grep -Fq -- '--max-budget-usd 6.00' "$CLAUDE_ARGS" && \
+   grep -Fq -- '--output-format stream-json' "$CLAUDE_ARGS"; then
+  printf 'PASS  Claude adapter forwards guards and enables streaming telemetry\n'
 else
   printf 'FAIL  Claude adapter omitted one or more autonomous guards\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+cat >"$FAKE_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' \
+  '{"type":"system","subtype":"init","session_id":"55555555-5555-4555-a555-555555555555"}' \
+  '{"type":"result","subtype":"error_max_budget_usd","is_error":true,"session_id":"55555555-5555-4555-a555-555555555555","num_turns":2,"total_cost_usd":6}'
+exit 0
+EOF
+chmod +x "$FAKE_BIN/claude"
+if AGENT_SESSION_ID="55555555-5555-4555-a555-555555555555" \
+   AGENT_SESSION_MODE=new \
+   AGENT_EVENT_FILE="$TEST_DIR/fake-guard-events.jsonl" \
+   AGENT_CLAUDE_MAX_TURNS=36 \
+   AGENT_CLAUDE_MAX_BUDGET_USD=6.00 \
+   PATH="$FAKE_BIN:$PATH" \
+     "$ROOT_DIR/scripts/agent-runners/claude.sh" \
+       IMPLEMENTER opus high "$PROMPT_TEST" - >/dev/null 2>&1; then
+  fake_guard_exit=0
+else
+  fake_guard_exit=$?
+fi
+if (( fake_guard_exit == 75 )); then
+  printf 'PASS  Claude adapter rejects a structured guard result even when CLI exits zero\n'
+else
+  printf 'FAIL  Claude adapter returned %s for a structured budget guard\n' \
+    "$fake_guard_exit" >&2
   failure_count=$((failure_count + 1))
 fi
 
