@@ -14,13 +14,13 @@
 
 import {
   createSessionController, MODES, CONTROL_OWNERS, AUTO_PHASES,
-  FULL_POWER, PULSE_POWER_LIMIT
+  FULL_POWER, PULSE_POWER_LIMIT, POWER_TRIP
 } from "../src/scenes/reactor/sessionController.js";
 import {
   createDamageState, registerImpact, buildFragmentGeometries, impactEnergy
 } from "../src/scenes/reactor/glassDamage.js";
 import { createReactorModel } from "../src/scenes/reactor/reactorModel.js";
-import { createWaterSystem } from "../src/scenes/reactor/waterSystem.js";
+import { createWaterSystem, cherenkovIntensity } from "../src/scenes/reactor/waterSystem.js";
 import { HALL_BOUNDS, HALL_COLLIDERS } from "../src/scenes/reactor/labEnvironment.js";
 
 let failures = 0;
@@ -434,6 +434,98 @@ const reactor = createReactorModel({ reduceMotion: false });
   assert(HALL_BOUNDS.ceiling > reactor.poolBounds.surfaceY, "相机天花限位高于水面");
   assert(FLOOR_RING_FACTOR >= Math.SQRT2, "楼板扇环覆盖方形大厅四角");
   assert(HALL_COLLIDERS.floorTop < reactor.deck.y, "厂房楼板低于池边走道");
+}
+
+// ————————————— 9. 审查 R-001…R-005 的回归断言 —————————————
+section("review regressions: TRANS drive / control-owner source / cherenkov / trip");
+{
+  // R-001：OPERATE 工况下 TRANS 与另外两根棒一样可人工连续提插
+  const c = freshUnlocked();
+  c.startup();
+  assert(c.state.mode === "OPERATE" && !c.state.scrammed, "MANUAL 启动后进入 OPERATE");
+  assert(c.state.rodDriveEnabled.TRANS === true, "OPERATE 下 TRANS 驱动可用（控制台拨杆点亮）");
+  assert(c.rodStart("TRANS", +1) === true, "OPERATE 下接受 TRANS 提出指令");
+  let prev = c.state.rod.TRANS.pos;
+  let monotonic = true, maxRate = 0;
+  for (let i = 0; i < 180; i++) {
+    c.update(1 / 60);
+    const now = c.state.rod.TRANS.pos;
+    if (now < prev - 1e-12) monotonic = false;
+    maxRate = Math.max(maxRate, (now - prev) * 60);
+    prev = now;
+  }
+  assert(monotonic && c.state.rod.TRANS.pos > 0.3,
+    "按住 3 s 后 TRANS 棒位单调增长: " + c.state.rod.TRANS.pos.toFixed(3));
+  assert(maxRate <= 0.145, "TRANS 提出速率不超过驱动机构速率: " + maxRate.toFixed(3));
+  c.rodStop("TRANS");
+  const held = c.state.rod.TRANS.pos;
+  run(c, 2, 1 / 60);
+  assert(Math.abs(c.state.rod.TRANS.pos - held) < 1e-9, "松开后 TRANS 停在原位（不自动回座）");
+  // TRANS 提出后棒价值真的进入反应性（不是只动图形）
+  assert(c.state.rodReactivity > 0.5, "TRANS 行程进入反应性: " + c.state.rodReactivity.toFixed(2));
+
+  // PULSE 工况：TRANS 交给气动机构，人工驱动被联锁拒绝且棒回座
+  c.setMode("PULSE");
+  c.update(1 / 60);
+  assert(c.state.rodDriveEnabled.TRANS === false, "PULSE 下 TRANS 驱动被联锁禁用（拨杆压暗）");
+  assert(c.rodStart("TRANS", +1) === false, "PULSE 下 TRANS 人工驱动指令被拒绝");
+  assert(c.state.rodDriveEnabled.SHIM === true, "PULSE 下 SHIM/REG 仍可人工驱动");
+  run(c, 2, 1 / 60);
+  assert(c.state.rod.TRANS.pos <= 0.02, "PULSE 工况下 TRANS 被气缸拉回座上待发");
+}
+{
+  // R-002：MANUAL 安全停堆后，控制台以外的交互不得静默交回控制权
+  const c = freshUnlocked();
+  c.startup();
+  c.rodStart("SHIM", +1);
+  run(c, 6, 1 / 60);
+  c.rodStop("SHIM");
+  assert(c.state.controlOwner === "MANUAL", "人工指令进入 MANUAL");
+  c.scram();
+  run(c, 5, 1 / 60);
+  assert(c.state.autoAvailable === true, "安全停堆后 AUTO 方钮变为可用");
+  assert(c.sceneInteraction() === false, "MANUAL 下的控制台外交互不请求 AUTO");
+  assert(c.state.controlOwner === "MANUAL", "转相机/滚轮/拖玻璃不夺走控制权");
+  assert(c.state.autoPhase !== "INTERLOCKED_RESET" || c.state.controlOwner === "MANUAL",
+    "自动程序未被静默重放");
+  assert(c.requestAuto() === true && c.state.controlOwner === "AUTO",
+    "控制台 AUTO 方钮仍可在安全停堆后重入完整 AUTO");
+  assert(c.state.autoPhase === "INTERLOCKED_RESET", "重入的 AUTO 从联锁复位开始");
+
+  // 首次分流本身不受影响：NONE 时控制台外交互仍然进入 AUTO
+  const f = freshUnlocked();
+  assert(f.state.controlOwner === "NONE", "新会话没有控制权所有者");
+  assert(f.sceneInteraction() === true && f.state.controlOwner === "AUTO",
+    "首次控制台外交互仍进入 AUTO");
+  assert(f.sceneInteraction() === false && f.state.controlOwner === "AUTO",
+    "AUTO 运行中的控制台外交互不重启程序");
+}
+{
+  // R-003：切伦科夫稳态通道按资料阈值软起辉，无阶跃
+  assert(cherenkovIntensity(0.001, 0) === 0, "250 W 代理下稳态辉光为 0");
+  assert(cherenkovIntensity(0.29, 0) === 0, "powerProxy 0.29（< 100 kW 阈值区）仍为 0");
+  const samples = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.8, 1.0].map(p => cherenkovIntensity(p, 0));
+  let mono = true, maxJump = 0;
+  for (let i = 1; i < samples.length; i++) {
+    if (samples[i] < samples[i - 1]) mono = false;
+    maxJump = Math.max(maxJump, samples[i] - samples[i - 1]);
+  }
+  assert(mono && samples[samples.length - 1] === 1, "0.3 → 1.0 区间单调升到满强度");
+  assert(maxJump < 0.35, "相邻采样点之间没有阶跃: 最大跳变 " + maxJump.toFixed(3));
+  assert(cherenkovIntensity(0.45, 0) > 0 && cherenkovIntensity(0.45, 0) < 1,
+    "100 kW 附近处于连续过渡中段");
+  assert(cherenkovIntensity(0, 1) > 0.7, "低功率下的历史脉冲仍然照亮池水（脉冲通道独立）");
+}
+{
+  // 保护回路：人工把三根棒全提出来不会停在“无限升功率”状态
+  const c = freshUnlocked();
+  c.startup();
+  ["SHIM", "REG", "TRANS"].forEach(n => c.rodStart(n, +1));
+  run(c, 60, 1 / 60);
+  assert(c.state.protectionTrips >= 1, "越过高功率整定值触发保护回路自动 SCRAM");
+  assert(c.state.scrammed && c.state.powerProxy < POWER_TRIP,
+    "保护动作后已停堆且功率回落: " + c.state.powerProxy.toFixed(3));
+  assert(c.state.powerProxy <= 2.6, "功率始终有界");
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

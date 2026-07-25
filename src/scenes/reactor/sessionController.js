@@ -98,6 +98,11 @@ export const FULL_POWER = 1.0;         // 250 kW 稳态功率代理
 export const PULSE_POWER_LIMIT = 4e-4;
 const SAFE_SHUTDOWN_POWER = 0.02;      // 允许重新进入完整 AUTO 的停堆功率上限
 const SAFE_SHUTDOWN_ROD = 0.02;        // 允许重新进入完整 AUTO 的棒位上限
+// 保护回路（RP-009）高功率整定值：125% 满功率自动 SCRAM。人工可以把三根棒都提
+// 出来（真实 TRIGA 的稳态工况同样允许定位瞬发棒），但保护系统会在功率越过整定值
+// 时插棒，所以控制台无法把反应堆停在"无限升功率"这种物理上荒谬的状态。脉冲通道
+// 是独立标度，不参与该整定值。
+export const POWER_TRIP = 1.25;
 
 // S 形积分棒价值：p=0→0，p=1→1，微分价值在中段最大
 function rodShape(p) {
@@ -115,6 +120,9 @@ export function createSessionController({ reduceMotion } = {}) {
     controlOwner: "NONE",
     autoPhase: "INTERLOCKED_RESET", // AUTO 程序阶段（加载即联锁复位）
     autoAvailable: false,           // 当前是否允许启动完整 AUTO（控制台无文字反馈）
+    // 三套棒驱动当前是否接受指令（控制台无文字反馈：被联锁禁止的拨杆压暗）
+    rodDriveEnabled: { SHIM: false, REG: false, TRANS: false },
+    protectionTrips: 0,             // 保护回路自动 SCRAM 次数
 
     // 运行
     mode: "SHUTDOWN",
@@ -200,10 +208,14 @@ export function createSessionController({ reduceMotion } = {}) {
     return true;
   };
 
+  // 某根棒的驱动机构当前是否接受指令。控制台用同一条规则压暗对应拨杆
+  // （state.rodDriveEnabled），所以"被联锁禁止"在无文字页面上仍可分辨。
+  const rodDriveAllowed = name =>
+    !state.scrammed && !!state.rod[name] && !(name === "TRANS" && state.mode === "PULSE");
+
   // 棒驱动：dir=+1 提出，-1 插入；停止调用 cmdRodStop
   const cmdRodStart = (name, dir) => {
-    if (state.scrammed || !state.rod[name]) return false;
-    if (name === "TRANS" && state.mode === "PULSE") return false; // 脉冲模式 TRANS 由气动机构控制
+    if (!rodDriveAllowed(name)) return false;
     state.rod[name].vel = dir * ROD_DRIVE_RATE;
     return true;
   };
@@ -274,7 +286,19 @@ export function createSessionController({ reduceMotion } = {}) {
     emit("control_owner", { owner: "MANUAL", previous });
   }
 
-  // 请求进入完整 AUTO 连续运行程序
+  // 场景层「控制台以外的交互」入口（点空处、拖玻璃、转相机、滚轮、按键）。
+  //
+  // 只有**真正的首次分流**——还没有控制权所有者——才请求 AUTO。用户一旦接管为
+  // MANUAL，这些操作就只是在看/摆弄场景，不得静默把控制权交回自动程序：从
+  // MANUAL 重新进入完整 AUTO 必须由控制台上的无文字 AUTO 方钮显式触发
+  // （REACTOR_POOL_SYSTEM.md §4.4）。首次分流与重入 AUTO 是两件事。
+  function sceneInteraction() {
+    unlock();
+    if (state.controlOwner !== "NONE") return false;
+    return requestAuto();
+  }
+
+  // 请求进入完整 AUTO 连续运行程序（控制台的无文字 AUTO 方钮）
   function requestAuto() {
     if (!state.unlocked) return false;
     if (state.controlOwner === "AUTO") return false;
@@ -316,12 +340,19 @@ export function createSessionController({ reduceMotion } = {}) {
       for (const k in r) r[k].pos = Math.max(0, r[k].pos - SCRAM_RATE * dt);
       return;
     }
-    // 驱动（TRANS 在脉冲进行中由气动时序接管）
+    // SHIM / REG：驱动电机连续提插（TRANS 有自己的气动/驱动分支，见下）
     for (const k in r) {
-      if (k === "TRANS" && state.pulse) continue;
+      if (k === "TRANS") continue;
       if (r[k].vel !== 0) r[k].pos = clamp(r[k].pos + r[k].vel * dt, 0, 1);
     }
-    // TRANS 气动时序（脉冲进行中）
+    // TRANS 的三种状态：
+    //   1. 脉冲进行中 —— 气动时序完全接管（弹出 → 停留 → 复位）；
+    //   2. PULSE 工况但未点火 —— 气缸把棒拉回座上待发，人工驱动被联锁禁止
+    //      （cmdRodStart 直接拒绝），控制台把该拨杆压暗表示"现在动不了"；
+    //   3. 其余工况（OPERATE）—— 和另外两根棒一样由驱动电机连续提插。真实
+    //      TRIGA 的瞬发棒在稳态工况下同样可以由驱动机构定位，只有进入脉冲
+    //      工况才交给气动系统（REACTOR_POOL_SYSTEM.md RP-005：三套驱动各自
+    //      独立）。
     if (state.pulse) {
       const t = state.pulse.clock;
       if (t < TRANS_EJECT_TIME) {
@@ -332,9 +363,10 @@ export function createSessionController({ reduceMotion } = {}) {
         const rt = (t - TRANS_EJECT_TIME - TRANS_DWELL) / TRANS_REINSERT_TIME;
         r.TRANS.pos = clamp(1 - rt, 0, 1);
       }
-    } else if (state.mode !== "PULSE") {
-      // OPERATE 下 TRANS 保持在座
+    } else if (state.mode === "PULSE") {
       r.TRANS.pos = Math.max(0, r.TRANS.pos - SCRAM_RATE * dt);
+    } else if (r.TRANS.vel !== 0) {
+      r.TRANS.pos = clamp(r.TRANS.pos + r.TRANS.vel * dt, 0, 1);
     }
   }
 
@@ -455,6 +487,14 @@ export function createSessionController({ reduceMotion } = {}) {
     stepThermal(dt);
     updatePeriod(dt);
 
+    // 保护回路：稳态功率越过高功率整定值 → 自动 SCRAM（人工和 AUTO 一视同仁）
+    if (!state.scrammed && state.powerProxy > POWER_TRIP) {
+      state.protectionTrips += 1;
+      cmdScram();
+      emit("protection_trip", { power: state.powerProxy });
+    }
+
+    for (const k in state.rod) state.rodDriveEnabled[k] = rodDriveAllowed(k);
     state.autoAvailable = state.controlOwner !== "AUTO" && isSafeShutdown();
     // 脉冲联锁的可见状态：控制台据此点亮/压暗脉冲钮，用户不用文字也能看出
     // “现在能不能点火”（PROJECT_SPEC：无文字，但含义必须可辨认）。
@@ -470,6 +510,7 @@ export function createSessionController({ reduceMotion } = {}) {
     update,
     // 控制权
     requestAuto,
+    sceneInteraction,
     isSafeShutdown,
     // 人工操作员指令 API（由控制台点击调用；每次调用都原位夺取控制权）
     startup: manual(cmdStartup),

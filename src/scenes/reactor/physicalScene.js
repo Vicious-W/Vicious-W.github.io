@@ -314,10 +314,12 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   // 控制权分流（PROJECT_SPEC / SOURCE_SCENE.md §5）：
   //   控制台热点以外的任何有效交互（点击空处、拖玻璃、右键转相机、滚轮、键盘）
   //   → 解锁并进入 AUTO；控制台热点上的交互 → 由该控件自己的指令进入 MANUAL。
-  // AUTO 运行中再点空处不会重启程序；MANUAL 之后只有安全停堆才会被接受。
+  // 分流只发生在**第一次**（controlOwner === "NONE"）：之后转相机/缩放/拖玻璃
+  // 都不改变控制权，从 MANUAL 重入完整 AUTO 只能按控制台的 AUTO 方钮。该判断
+  // 放在 sessionController.sceneInteraction() 里，与命令、联锁同处一个模块。
   const interactOutsideConsole = () => {
     unlockAll();
-    session.requestAuto();
+    session.sceneInteraction();
   };
 
   // —— 立方体 ——
@@ -356,7 +358,11 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     if (idx2 >= 0) cubes.splice(idx2, 1);
     const midx = meshes.indexOf(mesh);
     if (midx >= 0) meshes.splice(midx, 1);
-    if (mesh.material !== materials[entry.matIndex]) mesh.material.dispose();
+    if (mesh.material !== materials[entry.matIndex]) {
+      // 裂纹贴图是 applyCrackVisual 生成的 canvas 纹理，破碎时一并释放
+      if (mesh.material.map) mesh.material.map.dispose();
+      mesh.material.dispose();
+    }
 
     const shards = buildFragmentGeometries(CUBE, cubes.length + fragments.length + 1);
     const basePos = body.position;
@@ -992,7 +998,18 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     stop();
     section.classList.remove("physical-ready");
   };
+  // 上下文恢复：在**同一会话**内继续。场景图、刚体、反应堆状态和玻璃耐久都活在
+  // 本闭包里，从未被销毁；three.js 在下一次 render 时重新上传 GPU 资源，所以这里
+  // 只需要重新布局并恢复帧循环——不重建场景，因此不产生新会话
+  // （PROJECT_SPEC：WebGL 恢复不得错误触发新会话）。
+  const onContextRestored = () => {
+    if (disposed) return;
+    if (!layout()) return;
+    section.classList.add("physical-ready");
+    start();
+  };
   canvas.addEventListener("webglcontextlost", onContextLost);
+  canvas.addEventListener("webglcontextrestored", onContextRestored);
 
   return {
     dispose() {
@@ -1008,6 +1025,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("contextmenu", onContextMenu);
       canvas.removeEventListener("webglcontextlost", onContextLost);
+      canvas.removeEventListener("webglcontextrestored", onContextRestored);
       window.removeEventListener("keydown", onKeyDown);
       cubes.forEach(({ body }) => body.removeEventListener("collide", onCollide));
       fragments.forEach(({ body }) => body.removeEventListener("collide", onCollide));

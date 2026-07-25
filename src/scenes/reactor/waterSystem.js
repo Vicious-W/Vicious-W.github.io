@@ -57,6 +57,19 @@ void main() {
 
 const CHERENKOV = new THREE.Color(0.45, 0.72, 1.0);
 
+// 切伦科夫辉光强度（0..1）。
+//
+// 稳态通道按资料基线软起辉：REACTOR_POOL_SYSTEM.md §4.7「切伦科夫在超过约 100 kW
+// 后逐渐可见，不瞬间开灯」。本项目标度 powerProxy 1.0 = 250 kW，100 kW 对应 0.4，
+// 因此用 smoothstep(0.3, 0.6) 做连续过渡：0.3 以下严格为 0，越过阈值后平滑增长，
+// 没有任何阶跃基值。脉冲通道是独立标度（1.0 = 250 MW），毫秒级强闪单独叠加，
+// 因此低功率下的历史脉冲照样把池水照亮。
+export function cherenkovIntensity(powerProxy = 0, pulsePowerProxy = 0, reduceMotion = false) {
+  const steady = THREE.MathUtils.smoothstep(powerProxy, 0.3, 0.6);
+  const burst = THREE.MathUtils.clamp(pulsePowerProxy * (reduceMotion ? 0.15 : 0.75), 0, 1);
+  return Math.min(1, steady + burst);
+}
+
 export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePosition, reduceMotion }) {
   const group = new THREE.Group();
   const disposables = [];
@@ -224,9 +237,11 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
       }
     }
 
-    const flash = sessionState ? Math.min(1, sessionState.powerProxy + sessionState.pulsePowerProxy * (reduceMotion ? 0.15 : 0.75)) : 0;
-    glowMat.uniforms.uIntensity.value = flash > 0.001 ? 0.15 + flash * 1.4 : 0;
-    haloMat.uniforms.uIntensity.value = flash > 0.001 ? 0.08 + flash * 0.45 : 0;
+    const flash = sessionState
+      ? cherenkovIntensity(sessionState.powerProxy, sessionState.pulsePowerProxy, reduceMotion)
+      : 0;
+    glowMat.uniforms.uIntensity.value = flash * 1.55;
+    haloMat.uniforms.uIntensity.value = flash * 0.53;
 
     if (sessionState) {
       const diff = THREE.MathUtils.clamp(sessionState.fuelTemperatureProxy - sessionState.poolTemperatureProxy, 0, 1);

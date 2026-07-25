@@ -242,6 +242,13 @@ export function createControlConsole({ commands, position = [0, 0, 6.8], facing 
       rl.bar.fill.scale.y = clamp(pos, 0.001, 1);
       rl.bar.fill.position.y = -rl.bar.h / 2 + (rl.bar.h * rl.bar.fill.scale.y) / 2;
       rl.bar.fillMat.emissiveIntensity = 0.3 + pos * 0.6;
+      // 无文字的“这根棒现在能不能动”反馈：驱动被联锁禁止（停堆，或 PULSE 工况下
+      // TRANS 交给气动机构）时把该棒的提/插拨杆压暗，与脉冲钮同一套语言。
+      const live = state.rodDriveEnabled ? state.rodDriveEnabled[name] : !state.scrammed;
+      [rl.up, rl.dn].forEach(lv => {
+        lv.stem.material.emissiveIntensity = live ? 0.45 : 0.02;
+        lv.tri.material.emissiveIntensity = live ? 0.9 : 0.04;
+      });
     });
 
     // 模式拨杆倾角
