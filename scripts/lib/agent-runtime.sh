@@ -632,7 +632,7 @@ agent_classify_log() {
 
   if grep -Eiq '(error_max_turns|reached max turns|maximum (agentic )?turns|max turns[^[:cntrl:]]*(reached|exceeded)|error_max_budget_usd|max(imum)? budget[^[:cntrl:]]*(reached|exceeded)|budget[^[:cntrl:]]*limit)' "$log_file" 2>/dev/null; then
     printf 'AUTONOMY_SLICE_LIMIT\n'
-  elif grep -Eiq '(monthly spend limit|usage limit|billing limit|quota (has been )?(exceeded|reached)|insufficient (credits|balance)|credit balance[^[:cntrl:]]*(low|empty|exhausted)|rate limit[^[:cntrl:]]*(exceeded|reached))' "$log_file" 2>/dev/null; then
+  elif grep -Eiq '(USAGE_OR_BILLING_LIMIT|monthly spend limit|usage limit|billing limit|quota (has been )?(exceeded|reached)|insufficient (credits|balance)|credit balance[^[:cntrl:]]*(low|empty|exhausted)|rate limit[^[:cntrl:]]*(exceeded|reached|status=rejected))' "$log_file" 2>/dev/null; then
     printf 'USAGE_OR_BILLING_LIMIT\n'
   elif grep -Eiq '(not logged in|authentication (failed|required)|unauthorized|invalid (api key|token)|token (has )?expired|oauth[^[:cntrl:]]*(failed|expired)|http[^[:cntrl:]]*401)' "$log_file" 2>/dev/null; then
     printf 'AUTHENTICATION\n'

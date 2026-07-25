@@ -126,8 +126,8 @@ finish_claude() {
   if (( outcome_exit != 0 )); then
     # A structured guard result is authoritative even if a particular CLI
     # version exits zero for that result subtype.
-    if (( outcome_exit == 75 )); then
-      return 75
+    if (( outcome_exit == 75 || outcome_exit == 76 )); then
+      return "$outcome_exit"
     fi
     (( claude_exit != 0 )) && return "$claude_exit"
     return "$outcome_exit"

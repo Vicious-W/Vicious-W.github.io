@@ -68,6 +68,30 @@ function claudeData(events) {
     }
   }
   const invocationEvents = events.slice(previousResultIndex + 1);
+  const rateLimitEvents = invocationEvents.filter(
+    (event) => event?.type === 'rate_limit_event' && event?.rate_limit_info,
+  );
+  const lastRateLimitInfo = rateLimitEvents.at(-1)?.rate_limit_info ?? {};
+  const rejectedRateLimit = [...rateLimitEvents]
+    .reverse()
+    .find((event) => event?.rate_limit_info?.status === 'rejected')
+    ?.rate_limit_info;
+  const resultText = typeof result.result === 'string' ? result.result : '';
+  const terminalReason =
+    typeof result.terminal_reason === 'string' ? result.terminal_reason : null;
+  const apiErrorStatus = number(result.api_error_status);
+  const guardSubtype =
+    result.subtype === 'error_max_turns' ||
+    result.subtype === 'error_max_budget_usd';
+  const quotaText =
+    /(monthly spend limit|usage limit|billing limit|quota|rate limit|five[- ]hour)/i.test(
+      resultText,
+    );
+  const quotaLimited =
+    !guardSubtype &&
+    (apiErrorStatus === 429 ||
+      rejectedRateLimit !== undefined ||
+      (terminalReason === 'api_error' && quotaText));
   const usage = result.usage ?? {};
   const iterations = Array.isArray(usage.iterations) ? usage.iterations : [];
   const lastIteration = iterations.at(-1) ?? {};
@@ -134,7 +158,7 @@ function claudeData(events) {
     lastAssistantUsage.cachedInputTokens,
   );
   return {
-    finalText: typeof result.result === 'string' ? result.result : '',
+    finalText: resultText,
     sessionId:
       result.session_id ??
       [...events].reverse().find((event) => typeof event?.session_id === 'string')
@@ -144,6 +168,19 @@ function claudeData(events) {
       final: finalResult,
       subtype: typeof result.subtype === 'string' ? result.subtype : null,
       isError: result.is_error === true,
+      terminalReason,
+      apiErrorStatus,
+      quotaLimited,
+      rateLimitStatus:
+        typeof lastRateLimitInfo.status === 'string'
+          ? lastRateLimitInfo.status
+          : null,
+      rateLimitType:
+        typeof lastRateLimitInfo.rateLimitType === 'string'
+          ? lastRateLimitInfo.rateLimitType
+          : null,
+      rateLimitResetsAt: number(lastRateLimitInfo.resetsAt),
+      resultText,
       errors: Array.isArray(result.errors)
         ? result.errors.filter((item) => typeof item === 'string')
         : [],
@@ -155,6 +192,18 @@ function claudeData(events) {
       final: finalResult,
       resultSubtype:
         typeof result.subtype === 'string' ? result.subtype : null,
+      terminalReason,
+      apiErrorStatus,
+      quotaLimited,
+      rateLimitStatus:
+        typeof lastRateLimitInfo.status === 'string'
+          ? lastRateLimitInfo.status
+          : null,
+      rateLimitType:
+        typeof lastRateLimitInfo.rateLimitType === 'string'
+          ? lastRateLimitInfo.rateLimitType
+          : null,
+      rateLimitResetsAt: number(lastRateLimitInfo.resetsAt),
       sessionId:
         result.session_id ??
         [...events].reverse().find((event) => typeof event?.session_id === 'string')
@@ -269,13 +318,33 @@ if (command === 'outcome') {
     console.error('The outcome command currently supports Claude events only.');
     process.exit(2);
   }
-  const { final, subtype, isError, errors } = data.outcome;
+  const {
+    final,
+    subtype,
+    isError,
+    errors,
+    terminalReason,
+    apiErrorStatus,
+    quotaLimited,
+    rateLimitStatus,
+    rateLimitType,
+    rateLimitResetsAt,
+    resultText,
+  } = data.outcome;
   const safeErrors = errors
     .map((item) => item.replace(/\s+/g, ' ').slice(0, 300))
     .join(' | ');
-  output = `CLAUDE_RESULT final=${final} subtype=${subtype ?? 'missing'} error=${isError}${
-    safeErrors ? ` details=${safeErrors}` : ''
-  }\n`;
+  const safeResult = resultText.replace(/\s+/g, ' ').slice(0, 300);
+  output =
+    `CLAUDE_RESULT final=${final} subtype=${subtype ?? 'missing'} error=${isError}` +
+    ` terminal_reason=${terminalReason ?? 'missing'}` +
+    ` api_error_status=${apiErrorStatus ?? 'missing'}` +
+    ` quota=${quotaLimited}` +
+    ` rate_limit_status=${rateLimitStatus ?? 'missing'}` +
+    ` rate_limit_type=${rateLimitType ?? 'missing'}` +
+    ` resets_at=${rateLimitResetsAt ?? 'missing'}` +
+    `${quotaLimited ? ' reason=USAGE_OR_BILLING_LIMIT' : ''}` +
+    `${safeErrors ? ` details=${safeErrors}` : safeResult ? ` details=${safeResult}` : ''}\n`;
 }
 
 if (outputPath) {
@@ -293,5 +362,6 @@ if (command === 'outcome') {
   ) {
     process.exit(75);
   }
+  if (data.outcome.quotaLimited) process.exit(76);
   if (data.outcome.isError || data.outcome.subtype !== 'success') process.exit(1);
 }

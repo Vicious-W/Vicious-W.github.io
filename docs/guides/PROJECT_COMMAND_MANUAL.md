@@ -533,6 +533,11 @@ cat .agent/artifacts/runtime/last-stop.env
 | 达到本次 `TARGET_ROUND` | 已完成所有者请求的实现次数 | 查看最终实现，再决定接受或追加轮回 |
 | 达到 `MAX_QUOTA_RESUMES` | 额度恢复次数上限 | 停止并由所有者调整计划 |
 
+Claude 偶尔会在真实 429 额度事件中同时返回 `subtype=success` 与 `is_error=true`。
+控制面会优先读取 `terminal_reason=api_error`、HTTP 429、
+`rate_limit_event.status=rejected` 和 `resetsAt`，将其归入
+`USAGE_OR_BILLING_LIMIT`，保留原角色会话并使用事件给出的准确恢复时间。
+
 不要使用这些命令恢复：
 
 ```text

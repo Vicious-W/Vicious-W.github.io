@@ -174,6 +174,12 @@ agentic-turn 保险；流式 `assistantEvents` 是另一种进度计数，二者
 共同审计。最终 usage 与中间聚合冲突时，审计采用最终 usage，但必须记录解析差异
 供控制面维护。
 
+Claude 的额度终态可能出现 `subtype=success` 与 `is_error=true` 并存。此时不得只看
+subtype：`terminal_reason=api_error`、HTTP 429、`rate_limit_event.status=rejected`
+和 `rateLimitType/resetsAt` 是更高优先级的结构化额度证据。应归类为
+`USAGE_OR_BILLING_LIMIT`、保留角色会话为 `ACTIVE`，并按 `resetsAt` 记录准确恢复
+时间；不能误记为不可恢复的子进程错误。
+
 清单用于审计实际调用配置，不取代 `PROJECT_SPEC.md`、角色契约或正式交接报告。
 部分订阅执行器不提供费用字段；此时保留空值或 `null`，不能把缺失值写成零。
 

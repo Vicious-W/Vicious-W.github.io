@@ -10,11 +10,13 @@ PROMPT_TEST="$TEST_DIR/test-prompt.md"
 FAKE_BIN="$TEST_DIR/fake-bin"
 FAKE_DATE_COUNTER="$TEST_DIR/fake-date-counter"
 CLAUDE_EVENTS="$TEST_DIR/claude-events.json"
+CLAUDE_QUOTA_EVENTS="$TEST_DIR/claude-quota.events.jsonl"
 CODEX_EVENTS="$TEST_DIR/codex-events.jsonl"
 USAGE_SUMMARY="$TEST_DIR/usage-summary.json"
 CLAUDE_ARGS="$TEST_DIR/claude-args.txt"
 SESSION_EVENTS="$TEST_DIR/session-events.json"
 SESSION_TEST_TASK="runtime-session-test-$(date +%s%N)-$$"
+QUOTA_SESSION_TEST_TASK="runtime-quota-session-test-$(date +%s%N)-$$"
 MONITOR_SESSION_TEST_TASK="runtime-monitor-session-test-$(date +%s%N)-$$"
 LEDGER_TEST="$TEST_DIR/usage-ledger.json"
 LEDGER_RUN_DIR="$TEST_DIR/ledger-runs"
@@ -234,6 +236,26 @@ else
   failure_count=$((failure_count + 1))
 fi
 
+agent_prepare_role_session \
+  "$QUOTA_SESSION_TEST_TASK" IMPLEMENTER claude opus high
+quota_session_id="$AGENT_SESSION_ID"
+printf '%s\n' \
+  "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$quota_session_id\"}" \
+  "{\"type\":\"rate_limit_event\",\"session_id\":\"$quota_session_id\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":1784977200,\"rateLimitType\":\"five_hour\"}}" \
+  "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"terminal_reason\":\"api_error\",\"api_error_status\":429,\"session_id\":\"$quota_session_id\",\"num_turns\":2,\"result\":\"You have hit your monthly spend limit\"}" \
+  >"$CLAUDE_QUOTA_EVENTS"
+agent_finalize_role_session \
+  claude "$CLAUDE_QUOTA_EVENTS" USAGE_OR_BILLING_LIMIT
+agent_prepare_role_session \
+  "$QUOTA_SESSION_TEST_TASK" IMPLEMENTER claude opus high
+if [[ "$AGENT_SESSION_MODE" == "resume" && \
+      "$AGENT_SESSION_ID" == "$quota_session_id" ]]; then
+  printf 'PASS  structured quota stops preserve the exact resumable role session\n'
+else
+  printf 'FAIL  structured quota stop discarded a resumable role session\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
 printf '%s\n' \
   '{"type":"system","subtype":"init","session_id":"44444444-4444-4444-a444-444444444444"}' \
   '{"type":"assistant","session_id":"44444444-4444-4444-a444-444444444444","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":1200,"cache_creation_input_tokens":30,"output_tokens":40}}}' \
@@ -308,6 +330,31 @@ if (( guard_outcome_exit == 75 )); then
 else
   printf 'FAIL  structured Claude guard result exit was %s, expected 75\n' \
     "$guard_outcome_exit" >&2
+  failure_count=$((failure_count + 1))
+fi
+
+printf '%s\n' \
+  '{"type":"system","subtype":"init","session_id":"66666666-6666-4666-a666-666666666666"}' \
+  '{"type":"rate_limit_event","session_id":"66666666-6666-4666-a666-666666666666","rate_limit_info":{"status":"rejected","resetsAt":1784977200,"rateLimitType":"five_hour","isUsingOverage":false}}' \
+  '{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"session_id":"66666666-6666-4666-a666-666666666666","num_turns":11,"result":"You have hit your monthly spend limit"}' \
+  >"$CLAUDE_QUOTA_EVENTS"
+if node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" \
+     outcome claude "$CLAUDE_QUOTA_EVENTS" >"$TEST_DIR/quota-outcome.log" 2>&1; then
+  quota_outcome_exit=0
+else
+  quota_outcome_exit=$?
+fi
+agent_record_telemetry claude "$CLAUDE_QUOTA_EVENTS" "$USAGE_SUMMARY" 24 4.00
+if (( quota_outcome_exit == 76 )) && \
+   grep -Fq 'reason=USAGE_OR_BILLING_LIMIT' "$TEST_DIR/quota-outcome.log" && \
+   grep -Fq '"quotaLimited": true' "$USAGE_SUMMARY" && \
+   grep -Fq '"rateLimitType": "five_hour"' "$USAGE_SUMMARY" && \
+   grep -Fq '"rateLimitResetsAt": 1784977200' "$USAGE_SUMMARY" && \
+   [[ "$(agent_classify_log "$TEST_DIR/quota-outcome.log")" == \
+      "USAGE_OR_BILLING_LIMIT" ]]; then
+  printf 'PASS  contradictory Claude success/429 results classify as recoverable quota\n'
+else
+  printf 'FAIL  structured Claude 429 result was not preserved as a quota event\n' >&2
   failure_count=$((failure_count + 1))
 fi
 
@@ -394,6 +441,38 @@ if (( fake_guard_exit == 75 )); then
 else
   printf 'FAIL  Claude adapter returned %s for a structured budget guard\n' \
     "$fake_guard_exit" >&2
+  failure_count=$((failure_count + 1))
+fi
+
+cat >"$FAKE_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' \
+  '{"type":"system","subtype":"init","session_id":"77777777-7777-4777-a777-777777777777"}' \
+  '{"type":"rate_limit_event","session_id":"77777777-7777-4777-a777-777777777777","rate_limit_info":{"status":"rejected","resetsAt":1784977200,"rateLimitType":"five_hour"}}' \
+  '{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"session_id":"77777777-7777-4777-a777-777777777777","num_turns":2,"result":"You have hit your monthly spend limit"}'
+exit 0
+EOF
+chmod +x "$FAKE_BIN/claude"
+if AGENT_SESSION_ID="77777777-7777-4777-a777-777777777777" \
+   AGENT_SESSION_MODE=new \
+   AGENT_EVENT_FILE="$TEST_DIR/fake-quota-events.jsonl" \
+   AGENT_CLAUDE_MAX_TURNS=36 \
+   AGENT_CLAUDE_MAX_BUDGET_USD=6.00 \
+   PATH="$FAKE_BIN:$PATH" \
+     "$ROOT_DIR/scripts/agent-runners/claude.sh" \
+       IMPLEMENTER opus high "$PROMPT_TEST" - \
+       >"$TEST_DIR/fake-quota-runner.log" 2>&1; then
+  fake_quota_exit=0
+else
+  fake_quota_exit=$?
+fi
+if (( fake_quota_exit == 76 )) && \
+   [[ "$(agent_classify_log "$TEST_DIR/fake-quota-runner.log")" == \
+      "USAGE_OR_BILLING_LIMIT" ]]; then
+  printf 'PASS  Claude adapter preserves structured quota status despite subtype success\n'
+else
+  printf 'FAIL  Claude adapter returned %s for a structured quota event\n' \
+    "$fake_quota_exit" >&2
   failure_count=$((failure_count + 1))
 fi
 

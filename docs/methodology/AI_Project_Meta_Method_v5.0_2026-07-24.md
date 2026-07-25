@@ -331,6 +331,9 @@ API 等价量只用于项目内部控制和相对比较，不等于订阅页面�
   当前调用的终态结果和进程退出为准；
 - 执行器最终报告的 turns 可能超过命令行保险的名义值，因此 max turns 不能替代
   max budget、timeout 和窗口累计账本；
+- 额度终态可能出现 `subtype=success` 与 `is_error=true` 并存；HTTP 429、
+  `terminal_reason=api_error`、拒绝型 `rate_limit_event` 及其 `resetsAt` 比 subtype
+  字面值更有分类优先级，应保留会话并按准确时间恢复；
 - 中间流式聚合适合观察趋势，最终审计必须使用执行器终态 usage。
 
 适配器应为每次调用建立明确的事件边界；在无法可靠区分回放与新事件时，实时界面必须
