@@ -233,6 +233,8 @@ agent_record_telemetry() {
   local executor="$1"
   local events_file="$2"
   local usage_file="$3"
+  local max_agentic_turns="${4:-}"
+  local max_budget_usd="${5:-}"
   local telemetry_script="$AGENT_RUNTIME_ROOT/scripts/lib/agent-telemetry.mjs"
 
   mkdir -p "$(dirname "$usage_file")"
@@ -243,6 +245,27 @@ agent_record_telemetry() {
   else
     printf '{"schemaVersion":1,"executor":"%s","telemetryAvailable":false}\n' \
       "$executor" >"$usage_file"
+  fi
+  if [[ "$executor" == "claude" && -s "$usage_file" ]]; then
+    node -e '
+      const fs = require("fs");
+      const file = process.argv[1];
+      const turns = Number(process.argv[2]);
+      const budget = Number(process.argv[3]);
+      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+      data.guard = {
+        maxAgenticTurns: Number.isFinite(turns) && turns > 0 ? turns : null,
+        maxBudgetUsd: Number.isFinite(budget) && budget > 0 ? budget : null,
+        semantics: "executor-agentic-turn-guard",
+        reportedTurnsExceedNominalGuard:
+          Number.isFinite(data.reportedTurns) &&
+          Number.isFinite(turns) &&
+          turns > 0 &&
+          data.reportedTurns > turns,
+        authority: "terminal-result-subtype",
+      };
+      fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`);
+    ' "$usage_file" "$max_agentic_turns" "$max_budget_usd" 2>/dev/null || true
   fi
 }
 

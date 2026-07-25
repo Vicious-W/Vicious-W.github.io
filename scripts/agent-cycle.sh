@@ -19,13 +19,16 @@ Usage: ./scripts/agent-cycle.sh <command> [args]
 Commands:
   preflight [options]    Verify configured executors, permissions and readiness;
                          never starts an Agent.
-  cycle [options]        IMPLEMENTER -> validate/checkpoint -> REVIEWER; repeat
-                         serially until PASS or the bounded round limit.
+  cycle [options]        Run a bounded number of rounds. One round is one
+                         IMPLEMENTER invocation; reviews occur only between
+                         implementations. The final round stops after IMPLEMENTER.
   implement [options]    Run one IMPLEMENTER round and local checkpoint.
   validate               Run the unified configured checks.
   review [options]       Run one read-only REVIEWER round.
   status                 Show Git, task, validation, handoff and runtime state.
   summary                Print the concise report for current/recent rounds.
+  accept                 Accept the pending final implementation without
+                         REVIEWER, then create a local state checkpoint.
   archive                Archive latest-review.md if not already archived.
   supervise [options]     Run the multi-window, quota-aware outer supervisor.
   supervisor-status      Show persisted outer-supervisor state.
@@ -39,11 +42,14 @@ Cycle options:
   --reviewer, --reviewer-agent claude|codex
   --reviewer-model MODEL
   --reviewer-effort low|medium|high|xhigh|max
-  --max-rounds N         Override this cycle's round limit without changing
-                         .agent/state.env.
+  --rounds N             Number of additional rounds requested now (default 1).
+                         One round is exactly one implementation.
+  --max-rounds N         Deprecated alias for --rounds.
+  --target-round N       Absolute implementation target used by the supervisor
+                         to preserve progress across process/quota resumes.
   --start-stage implementer|reviewer
-  --review-base COMMIT    Base for a direct REVIEWER resume; defaults to the
-                          recorded owner-checkpoint base, then HEAD^.
+  --review-base COMMIT    Exact base for a REVIEWER process/quota resume;
+                         normally read from pending-review state.
 
 Defaults come from .agent/runtime.env. Roles are not tied to executors: the same
 executor may fill both roles in separate fresh processes, and roles may be
@@ -117,7 +123,8 @@ case "$command_name" in
     reviewer_effort="$(agent_runtime_effort_config REVIEWER_EFFORT high)" || exit 2
     next_stage="implementer"
     review_base_override=""
-    max_rounds_override=""
+    requested_rounds="1"
+    target_round_override=""
 
     while (( $# > 0 )); do
       case "$1" in
@@ -151,9 +158,14 @@ case "$command_name" in
           reviewer_effort="$2"
           shift 2
           ;;
-        --max-rounds)
+        --rounds|--max-rounds)
           [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { usage >&2; exit 2; }
-          max_rounds_override="$2"
+          requested_rounds="$2"
+          shift 2
+          ;;
+        --target-round)
+          [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { usage >&2; exit 2; }
+          target_round_override="$2"
           shift 2
           ;;
         --start-stage)
@@ -226,7 +238,21 @@ case "$command_name" in
     printf '  REVIEWER:    %s / %s / %s\n' \
       "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
     printf '  START STAGE: %s\n' "$next_stage"
-    printf '  MAX ROUNDS:  %s\n' "${max_rounds_override:-state default}"
+    starting_round="$(state_value CURRENT_ROUND)"
+    [[ "$starting_round" =~ ^[0-9]+$ ]] || starting_round=0
+    if [[ -n "$target_round_override" ]]; then
+      target_round="$target_round_override"
+    else
+      target_round="$((starting_round + requested_rounds))"
+    fi
+    if (( target_round < starting_round )); then
+      printf 'Target round %s is behind current round %s.\n' \
+        "$target_round" "$starting_round" >&2
+      exit 2
+    fi
+    printf '  ROUNDS NOW:  %s\n' "$requested_rounds"
+    printf '  TARGET:      implementation round %s (current %s)\n' \
+      "$target_round" "$starting_round"
 
     preflight_args=(
       --implementer-agent "$implementer_agent" \
@@ -236,9 +262,7 @@ case "$command_name" in
       --reviewer-model "$reviewer_model" \
       --reviewer-effort "$reviewer_effort"
     )
-    if [[ -n "$max_rounds_override" ]]; then
-      preflight_args+=(--max-rounds "$max_rounds_override")
-    fi
+    preflight_args+=(--max-rounds "$target_round")
     if ! "$ROOT_DIR/scripts/agent-preflight.sh" "${preflight_args[@]}"; then
       printf 'Automatic cycle stopped at preflight; no Agent was started.\n' >&2
       exit 6
@@ -247,104 +271,116 @@ case "$command_name" in
     mkdir -p "$ROOT_DIR/.agent/artifacts/cycle"
     {
       printf 'TASK_ID=%s\n' "$(state_value ACTIVE_TASK_ID)"
-      printf 'EFFECTIVE_MAX_ROUNDS=%s\n' \
-        "${max_rounds_override:-$(state_value MAX_ROUNDS)}"
+      printf 'STARTING_ROUND=%s\n' "$starting_round"
+      printf 'REQUESTED_ROUNDS=%s\n' "$requested_rounds"
+      printf 'TARGET_ROUND=%s\n' "$target_round"
       printf 'STARTED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
     } >"$ROOT_DIR/.agent/artifacts/cycle/runtime.env"
 
     while true; do
       task_status="$(state_value ACTIVE_TASK_STATUS)"
       current_round="$(state_value CURRENT_ROUND)"
-      configured_max_rounds="$(state_value MAX_ROUNDS)"
+      pending_review="$(state_value PENDING_REVIEW)"
       [[ "$current_round" =~ ^[0-9]+$ ]] || current_round=0
-      [[ "$configured_max_rounds" =~ ^[1-9][0-9]*$ ]] || configured_max_rounds=3
-      max_rounds="${max_rounds_override:-$configured_max_rounds}"
 
       if [[ "$task_status" == "COMPLETE" ]]; then
         printf 'Active task already has a PASS verdict. Nothing to run.\n'
         exit 0
       fi
-      if (( current_round >= max_rounds )); then
-        printf 'Maximum review rounds reached (%s). Returning control to the owner.\n' \
-          "$max_rounds" >&2
-        exit 3
-      fi
 
-      if [[ "$next_stage" == "implementer" ]]; then
-        printf '\n=== IMPLEMENTER (%s) round %s/%s ===\n' \
-          "$implementer_agent" "$((current_round + 1))" "$max_rounds"
-        AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-implementation.sh" \
-          --agent "$implementer_agent" \
-          --model "$implementer_model" \
-          --effort "$implementer_effort" \
-          --max-rounds "$max_rounds"
-        implementation_exit=$?
-        if (( implementation_exit != 0 )); then
-          printf 'Cycle stopped during IMPLEMENTER (exit %s).\n' "$implementation_exit" >&2
-          exit "$implementation_exit"
+      # A pending final implementation is reviewed only when the owner requests
+      # more work. This review closes the previous round and prepares the next
+      # implementation; a reviewer retry lands here as well.
+      if [[ "$pending_review" == "YES" || "$next_stage" == "reviewer" ]]; then
+        if [[ "$pending_review" != "YES" ]]; then
+          printf 'Cannot start REVIEWER: no implementation is pending review.\n' >&2
+          exit 3
         fi
-      else
-        printf '\nResuming directly at REVIEWER for the existing implementation checkpoint.\n'
-      fi
-
-      implementation_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
-      if [[ "$next_stage" == "reviewer" ]]; then
+        implementation_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
         base_commit="$review_base_override"
         if [[ -z "$base_commit" ]]; then
-          recorded_base="$(state_value LAST_IMPLEMENTATION_BASE_COMMIT)"
+          recorded_base="$(state_value PENDING_REVIEW_BASE_COMMIT)"
+          [[ -n "$recorded_base" ]] || \
+            recorded_base="$(state_value LAST_IMPLEMENTATION_BASE_COMMIT)"
           if [[ -n "$recorded_base" ]]; then
             base_commit="$(
               git -C "$ROOT_DIR" rev-parse --verify "$recorded_base^{commit}" 2>/dev/null
             )" || base_commit=""
           fi
         fi
-      else
-        base_commit=""
-      fi
-      if [[ -z "$base_commit" ]]; then
-        base_commit="$(git -C "$ROOT_DIR" rev-parse "$implementation_commit^")"
-      fi
-      if ! git -C "$ROOT_DIR" merge-base --is-ancestor \
-        "$base_commit" "$implementation_commit"; then
-        printf 'Review base is not an ancestor of the target: %s\n' "$base_commit" >&2
-        exit 2
+        if [[ -z "$base_commit" ]]; then
+          base_commit="$(git -C "$ROOT_DIR" rev-parse "$implementation_commit^")"
+        fi
+        if ! git -C "$ROOT_DIR" merge-base --is-ancestor \
+          "$base_commit" "$implementation_commit"; then
+          printf 'Review base is not an ancestor of the target: %s\n' "$base_commit" >&2
+          exit 2
+        fi
+
+        printf '\n=== REVIEWER (%s) for implementation round %s ===\n' \
+          "$reviewer_agent" "$current_round"
+        AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-review.sh" \
+          --agent "$reviewer_agent" \
+          --model "$reviewer_model" \
+          --effort "$reviewer_effort" \
+          --max-rounds "$target_round" \
+          "$implementation_commit" "$base_commit"
+        review_exit=$?
+        if (( review_exit != 0 )); then
+          printf 'Cycle stopped during REVIEWER (exit %s).\n' "$review_exit" >&2
+          exit "$review_exit"
+        fi
+
+        reviewed_round="$(state_value CURRENT_ROUND)"
+        verdict="$(state_value LAST_REVIEW_VERDICT)"
+        commit_review_handoff "$reviewed_round"
+        handoff_exit=$?
+        if (( handoff_exit != 0 )); then
+          printf 'Cycle stopped while checkpointing review (exit %s).\n' "$handoff_exit" >&2
+          exit "$handoff_exit"
+        fi
+
+        printf 'Review checkpoint: %s\n' "$(git -C "$ROOT_DIR" rev-parse HEAD)"
+        printf 'Verdict: %s\n' "$verdict"
+        if [[ "$verdict" == "PASS" ]]; then
+          printf 'The pending implementation passed review; returning control to the owner.\n'
+          exit 0
+        fi
+        if [[ "$verdict" != "CHANGES_REQUIRED" ]]; then
+          printf 'Unknown review verdict; stopping: %s\n' "$verdict" >&2
+          exit 4
+        fi
+        next_stage="implementer"
+        review_base_override=""
+        current_round="$(state_value CURRENT_ROUND)"
       fi
 
-      printf '\n=== REVIEWER (%s) round %s/%s ===\n' \
-        "$reviewer_agent" "$((current_round + 1))" "$max_rounds"
-      AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-review.sh" \
-        --agent "$reviewer_agent" \
-        --model "$reviewer_model" \
-        --effort "$reviewer_effort" \
-        --max-rounds "$max_rounds" \
-        "$implementation_commit" "$base_commit"
-      review_exit=$?
-      if (( review_exit != 0 )); then
-        printf 'Cycle stopped during REVIEWER (exit %s).\n' "$review_exit" >&2
-        exit "$review_exit"
-      fi
-
-      reviewed_round="$(state_value CURRENT_ROUND)"
-      verdict="$(state_value LAST_REVIEW_VERDICT)"
-      commit_review_handoff "$reviewed_round"
-      handoff_exit=$?
-      if (( handoff_exit != 0 )); then
-        printf 'Cycle stopped while checkpointing review (exit %s).\n' "$handoff_exit" >&2
-        exit "$handoff_exit"
-      fi
-
-      printf 'Review checkpoint: %s\n' "$(git -C "$ROOT_DIR" rev-parse HEAD)"
-      printf 'Verdict: %s\n' "$verdict"
-      if [[ "$verdict" == "PASS" ]]; then
-        printf 'Automatic Agent cycle completed successfully.\n'
+      if (( current_round >= target_round )); then
+        printf 'Requested implementation target %s is already reached.\n' \
+          "$target_round"
         exit 0
       fi
-      if [[ "$verdict" != "CHANGES_REQUIRED" ]]; then
-        printf 'Unknown review verdict; stopping: %s\n' "$verdict" >&2
-        exit 4
+
+      printf '\n=== IMPLEMENTER (%s) round %s (target %s) ===\n' \
+        "$implementer_agent" "$((current_round + 1))" "$target_round"
+      AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-implementation.sh" \
+        --agent "$implementer_agent" \
+        --model "$implementer_model" \
+        --effort "$implementer_effort" \
+        --max-rounds "$target_round"
+      implementation_exit=$?
+      if (( implementation_exit != 0 )); then
+        printf 'Cycle stopped during IMPLEMENTER (exit %s).\n' "$implementation_exit" >&2
+        exit "$implementation_exit"
       fi
-      next_stage="implementer"
-      review_base_override=""
+
+      current_round="$(state_value CURRENT_ROUND)"
+      if (( current_round >= target_round )); then
+        printf 'Final requested round completed after IMPLEMENTER %s.\n' "$current_round"
+        printf 'No REVIEWER was started; the owner now inspects the implementation.\n'
+        exit 0
+      fi
+      next_stage="reviewer"
     done
     ;;
   preflight)
@@ -389,6 +425,55 @@ case "$command_name" in
     if (( $# != 0 )); then usage >&2; exit 2; fi
     summary_path="$("$SUMMARY_SCRIPT")" || exit $?
     sed -n '1,360p' "$summary_path"
+    ;;
+  accept)
+    if (( $# != 0 )); then usage >&2; exit 2; fi
+    if ! agent_acquire_lock "$LOCK_DIR" 'owner acceptance'; then
+      exit 2
+    fi
+    accept_cleanup() {
+      local accept_exit=$?
+      trap - EXIT
+      agent_release_lock "$LOCK_DIR" || true
+      exit "$accept_exit"
+    }
+    trap accept_cleanup EXIT
+    if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)" ]]; then
+      printf 'Owner acceptance requires a clean working tree.\n' >&2
+      exit 2
+    fi
+    if [[ "$(state_value PENDING_REVIEW)" != "YES" || \
+          "$(state_value ACTIVE_TASK_STATUS)" != "AWAITING_OWNER" ]]; then
+      printf 'No final implementation is awaiting owner acceptance.\n' >&2
+      exit 3
+    fi
+    accepted_round="$(state_value CURRENT_ROUND)"
+    state_tmp="$STATE_FILE.tmp"
+    while IFS= read -r state_line; do
+      case "$state_line" in
+        ACTIVE_TASK_STATUS=*|PENDING_REVIEW=*|PENDING_REVIEW_ROUND=*|PENDING_REVIEW_BASE_COMMIT=*|FINAL_DECISION=*) ;;
+        *) printf '%s\n' "$state_line" ;;
+      esac
+    done <"$STATE_FILE" >"$state_tmp"
+    {
+      printf 'ACTIVE_TASK_STATUS=COMPLETE\n'
+      printf 'PENDING_REVIEW=NO\n'
+      printf 'PENDING_REVIEW_ROUND=\n'
+      printf 'PENDING_REVIEW_BASE_COMMIT=\n'
+      printf 'FINAL_DECISION=OWNER_ACCEPTED\n'
+    } >>"$state_tmp"
+    mv "$state_tmp" "$STATE_FILE"
+    git -C "$ROOT_DIR" add -- .agent/state.env
+    git -C "$ROOT_DIR" \
+      -c core.hooksPath=/dev/null \
+      -c commit.gpgSign=false \
+      commit -m "agent: owner accepts implementation round $accepted_round" \
+      >"$ROOT_DIR/.agent/artifacts/cycle/owner-accept-round-${accepted_round}.log" 2>&1 || {
+        printf 'Could not checkpoint owner acceptance; state change was preserved.\n' >&2
+        exit 4
+      }
+    printf 'Owner accepted implementation round %s without formal review.\n' \
+      "$accepted_round"
     ;;
   archive)
     if (( $# != 0 )); then usage >&2; exit 2; fi

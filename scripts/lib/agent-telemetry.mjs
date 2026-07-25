@@ -53,12 +53,25 @@ function firstNumber(...values) {
 }
 
 function claudeData(events) {
-  const result =
-    [...events].reverse().find((event) => event?.type === 'result') ?? {};
+  // A resumed Claude stream may replay the previous invocation's terminal
+  // result before emitting events for the new invocation. Only a result at the
+  // end of the current stream is terminal for the process we are observing.
+  const terminalResult =
+    events.at(-1)?.type === 'result' ? events.at(-1) : null;
+  const result = terminalResult ?? {};
+  const terminalIndex = terminalResult ? events.length - 1 : events.length;
+  let previousResultIndex = -1;
+  for (let index = terminalIndex - 1; index >= 0; index -= 1) {
+    if (events[index]?.type === 'result') {
+      previousResultIndex = index;
+      break;
+    }
+  }
+  const invocationEvents = events.slice(previousResultIndex + 1);
   const usage = result.usage ?? {};
   const iterations = Array.isArray(usage.iterations) ? usage.iterations : [];
   const lastIteration = iterations.at(-1) ?? {};
-  const assistantEvents = events.filter(
+  const assistantEvents = invocationEvents.filter(
     (event) => event?.type === 'assistant' && event?.message?.usage,
   );
   const lastAssistantUsage = assistantEvents.at(-1)?.message?.usage ?? {};
@@ -111,7 +124,7 @@ function claudeData(events) {
   );
   const preferPositive = (primary, fallback) =>
     Number.isFinite(primary) && primary > 0 ? primary : fallback || primary || null;
-  const finalResult = events.some((event) => event?.type === 'result');
+  const finalResult = terminalResult !== null;
   const lastTurnCachedInputTokens = firstNumber(
     lastIteration.cache_read_input_tokens,
     lastIteration.cached_input_tokens,
@@ -124,7 +137,7 @@ function claudeData(events) {
     finalText: typeof result.result === 'string' ? result.result : '',
     sessionId:
       result.session_id ??
-      events.find((event) => typeof event?.session_id === 'string')
+      [...events].reverse().find((event) => typeof event?.session_id === 'string')
         ?.session_id ??
       '',
     outcome: {
@@ -144,10 +157,16 @@ function claudeData(events) {
         typeof result.subtype === 'string' ? result.subtype : null,
       sessionId:
         result.session_id ??
-        events.find((event) => typeof event?.session_id === 'string')
+        [...events].reverse().find((event) => typeof event?.session_id === 'string')
           ?.session_id ??
         null,
-      turns: firstNumber(result.num_turns, assistantEvents.length),
+      // `num_turns` is Claude's final agentic-turn metric. Streaming assistant
+      // events are a progress signal with different semantics and must never be
+      // substituted for it.
+      turns: finalResult ? number(result.num_turns) : null,
+      reportedTurns: finalResult ? number(result.num_turns) : null,
+      assistantEvents: assistantEvents.length,
+      turnMetric: 'executor-final-agentic-turns',
       durationMs: number(result.duration_ms),
       apiDurationMs: number(result.duration_api_ms),
       totalCostUsd: preferPositive(result.total_cost_usd, modelTotals.totalCostUsd),

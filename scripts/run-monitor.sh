@@ -186,7 +186,9 @@ else
   run_status="$AGENT_RUN_REASON"
 fi
 agent_finalize_role_session "$monitor_agent" "$events_file" "$run_status"
-agent_record_telemetry "$monitor_agent" "$events_file" "$usage_file"
+agent_record_telemetry \
+  "$monitor_agent" "$events_file" "$usage_file" \
+  "$claude_max_turns" "$claude_max_budget_usd"
 session_rotation="NO"
 if agent_mark_role_session_rotation \
   "$monitor_agent" "$usage_file" "${claude_context_rotate_tokens:-1000000}"; then

@@ -77,13 +77,15 @@ task_id="$(state_value ACTIVE_TASK_ID)"
 task_slug="$(printf '%s' "${task_id:-unknown}" | tr -c '[:alnum:]_.-' '_')"
 task_status="$(state_value ACTIVE_TASK_STATUS)"
 current_round="$(state_value CURRENT_ROUND)"
-max_rounds="$(state_value MAX_ROUNDS)"
+completed_reviews="$(state_value COMPLETED_REVIEWS)"
+pending_review="$(state_value PENDING_REVIEW)"
 last_verdict="$(state_value LAST_REVIEW_VERDICT)"
 [[ "$current_round" =~ ^[0-9]+$ ]] || current_round=0
-[[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || max_rounds=3
+[[ "$completed_reviews" =~ ^[0-9]+$ ]] || completed_reviews=0
+target_round="$current_round"
 if [[ "$(cycle_runtime_value TASK_ID)" == "$task_id" && \
-      "$(cycle_runtime_value EFFECTIVE_MAX_ROUNDS)" =~ ^[1-9][0-9]*$ ]]; then
-  max_rounds="$(cycle_runtime_value EFFECTIVE_MAX_ROUNDS)"
+      "$(cycle_runtime_value TARGET_ROUND)" =~ ^[1-9][0-9]*$ ]]; then
+  target_round="$(cycle_runtime_value TARGET_ROUND)"
 fi
 
 first_implementation_manifest=""
@@ -150,18 +152,20 @@ stop_exit="$(stop_value EXIT_CODE)"
 stop_time="$(stop_value STOPPED_AT_UTC)"
 display_rounds="$current_round"
 if [[ "$stop_stage" == "IMPLEMENTER" || "$stop_stage" == "CLAUDE" ]] && \
-   (( current_round < max_rounds )); then
+   (( current_round < target_round )); then
   display_rounds=$((current_round + 1))
 fi
 (( display_rounds > 0 )) || display_rounds=1
-(( display_rounds <= max_rounds )) || display_rounds="$max_rounds"
 
 {
-  printf '# Agent 循环简报\n\n'
+  printf '# Agent 轮回简报\n\n'
   printf -- '- 生成时间：`%s`\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   printf -- '- 任务：`%s`\n' "${task_id:-unknown}"
   printf -- '- 当前状态：`%s`\n' "${task_status:-unknown}"
-  printf -- '- 已完成审查：`%s/%s`\n' "$current_round" "$max_rounds"
+  printf -- '- 已完成实现轮回：`%s`；本次目标：`%s`\n' \
+    "$current_round" "$target_round"
+  printf -- '- 已完成审查：`%s`；待审查实现：`%s`\n' \
+    "$completed_reviews" "${pending_review:-NO}"
   printf -- '- 最新结论：`%s`\n' "${last_verdict:-NOT_REVIEWED}"
   printf -- '- 本轮基准提交：`%s`\n' "$cycle_base"
   if [[ -n "$CYCLE_EXIT" ]]; then
@@ -262,7 +266,7 @@ fi
       printf -- '- 会话：`%s`，模式 `%s`\n' \
         "$(manifest_value "$implementation_manifest" RESOLVED_SESSION_ID)" \
         "$(manifest_value "$implementation_manifest" SESSION_MODE)"
-      printf -- '- 会话代次：`%s`；Claude 保险：turns `%s`，budget `$%s`\n' \
+      printf -- '- 会话代次：`%s`；Claude agentic-turn 保险 `%s`，budget `$%s`\n' \
         "$(manifest_value "$implementation_manifest" SESSION_GENERATION)" \
         "$(manifest_value "$implementation_manifest" MAX_TURNS)" \
         "$(manifest_value "$implementation_manifest" MAX_BUDGET_USD)"
@@ -295,14 +299,18 @@ fi
       if (( finding_count == 0 )); then printf -- '- 发现的问题：无。\n'; fi
       printf -- '- 详细报告：`git show %s:.agent/latest-review.md`\n' "$review_commit"
     else
-      printf -- '- 未运行。\n'
+      if [[ "$pending_review" == "YES" && "$round" == "$current_round" ]]; then
+        printf -- '- 按最终轮回规则未运行；等待所有者查看。若追加轮回，将先审查本实现。\n'
+      else
+        printf -- '- 未运行。\n'
+      fi
     fi
     if [[ -n "$review_manifest" && \
           -n "$(manifest_value "$review_manifest" SESSION_MODE)" ]]; then
       printf -- '- 会话：`%s`，模式 `%s`\n' \
         "$(manifest_value "$review_manifest" RESOLVED_SESSION_ID)" \
         "$(manifest_value "$review_manifest" SESSION_MODE)"
-      printf -- '- 会话代次：`%s`；Claude 保险：turns `%s`，budget `$%s`\n' \
+      printf -- '- 会话代次：`%s`；Claude agentic-turn 保险 `%s`，budget `$%s`\n' \
         "$(manifest_value "$review_manifest" SESSION_GENERATION)" \
         "$(manifest_value "$review_manifest" MAX_TURNS)" \
         "$(manifest_value "$review_manifest" MAX_BUDGET_USD)"
@@ -314,9 +322,10 @@ fi
 
   printf '## 接下来怎么做\n\n'
   if [[ "$task_status" == "COMPLETE" && "$last_verdict" == "PASS" ]]; then
-    printf -- '- 自动循环已经通过；所有者可以进行主观观感与手感验收。\n'
-  elif (( current_round >= max_rounds )); then
-    printf -- '- 已达到轮数上限；启动新循环前请先作出产品或技术决定。\n'
+    printf -- '- 已审查通过；所有者可以进行主观观感与手感验收。\n'
+  elif [[ "$pending_review" == "YES" ]]; then
+    printf -- '- 最终实现已完成，当前不自动审查；请由所有者查看。\n'
+    printf -- '- 若追加轮回，父脚本会先审查当前实现，再决定是否进入下一次实现。\n'
   elif [[ -n "$stop_reason" ]]; then
     if [[ "$supervisor_status" == "AWAITING_MONITOR_ACTION" ]]; then
       printf -- '- 工作 Agent 已退出；由附着式 Monitor 根据用量提交下一动作。\n'

@@ -42,7 +42,7 @@ Options:
   --reviewer-agent NAME       claude or codex.
   --reviewer-model MODEL
   --reviewer-effort LEVEL
-  --max-rounds N             Check this run-specific round limit.
+  --max-rounds N             Check this run's absolute implementation target.
   --allow-dirty               Diagnostic: do not fail on dirty worktree.
   --skip-git-write            Diagnostic: do not probe .git write access.
   --skip-external             Diagnostic: skip authentication and MCP checks.
@@ -424,15 +424,28 @@ else
 fi
 
 current_round="$(sed -n 's/^CURRENT_ROUND=//p' "$STATE_FILE" | head -n 1)"
-max_rounds="$(sed -n 's/^MAX_ROUNDS=//p' "$STATE_FILE" | head -n 1)"
-effective_max_rounds="${max_rounds_override:-$max_rounds}"
+default_rounds="$(sed -n 's/^DEFAULT_ROUNDS=//p' "$STATE_FILE" | head -n 1)"
+[[ "$current_round" =~ ^[0-9]+$ ]] || current_round=0
+[[ "$default_rounds" =~ ^[1-9][0-9]*$ ]] || default_rounds=1
+effective_max_rounds="${max_rounds_override:-$((current_round + default_rounds))}"
 task_status="$(sed -n 's/^ACTIVE_TASK_STATUS=//p' "$STATE_FILE" | head -n 1)"
-if [[ "$current_round" =~ ^[0-9]+$ && "$effective_max_rounds" =~ ^[1-9][0-9]*$ ]] && \
-   (( current_round < effective_max_rounds )) && \
-   [[ "$task_status" == "READY" || "$task_status" == "NEEDS_CHANGES" ]]; then
-  record_pass "active task can run: status=$task_status, round=$current_round/$effective_max_rounds"
+pending_review="$(sed -n 's/^PENDING_REVIEW=//p' "$STATE_FILE" | head -n 1)"
+task_can_run=0
+if [[ "$current_round" =~ ^[0-9]+$ && "$effective_max_rounds" =~ ^[1-9][0-9]*$ ]]; then
+  if [[ "$pending_review" == "YES" && "$task_status" == "AWAITING_OWNER" && \
+        "$check_review" == "1" ]]; then
+    task_can_run=1
+  elif [[ "$pending_review" != "YES" && \
+          ( "$task_status" == "READY" || "$task_status" == "NEEDS_CHANGES" ) && \
+          "$check_implementation" == "1" ]] && \
+       (( current_round < effective_max_rounds )); then
+    task_can_run=1
+  fi
+fi
+if (( task_can_run == 1 )); then
+  record_pass "active task can run: status=$task_status, implementation=$current_round/$effective_max_rounds, pending_review=${pending_review:-NO}"
 else
-  record_fail "active task cannot run: status=$task_status, round=$current_round/$effective_max_rounds"
+  record_fail "active task cannot run: status=$task_status, implementation=$current_round/$effective_max_rounds, pending_review=${pending_review:-NO}"
 fi
 
 dirty_status="$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all 2>/dev/null)"

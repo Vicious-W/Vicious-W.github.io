@@ -197,13 +197,15 @@ else
   printf 'FAIL  Claude telemetry extraction failed\n' >&2
   failure_count=$((failure_count + 1))
 fi
-agent_record_telemetry claude "$CLAUDE_EVENTS" "$USAGE_SUMMARY"
+agent_record_telemetry claude "$CLAUDE_EVENTS" "$USAGE_SUMMARY" 3 2.00
 if grep -Fq '"inputTokens": 100' "$USAGE_SUMMARY" && \
    grep -Fq '"totalCostUsd": 1.25' "$USAGE_SUMMARY" && \
-   grep -Fq '"lastTurnCachedInputTokens":' "$USAGE_SUMMARY"; then
-  printf 'PASS  Claude telemetry falls back to per-model usage totals\n'
+   grep -Fq '"lastTurnCachedInputTokens":' "$USAGE_SUMMARY" && \
+   grep -Fq '"reportedTurnsExceedNominalGuard": true' "$USAGE_SUMMARY" && \
+   grep -Fq '"authority": "terminal-result-subtype"' "$USAGE_SUMMARY"; then
+  printf 'PASS  Claude telemetry audits usage and nominal guard variance\n'
 else
-  printf 'FAIL  Claude telemetry lost per-model usage data\n' >&2
+  printf 'FAIL  Claude telemetry lost usage or guard audit data\n' >&2
   failure_count=$((failure_count + 1))
 fi
 
@@ -232,12 +234,54 @@ live_usage="$(
   node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" \
     live claude "$TEST_DIR/live.events.jsonl"
 )"
-if [[ "$live_usage" == *'"turns":2'* && \
+if [[ "$live_usage" == *'"turns":null'* && \
+      "$live_usage" == *'"assistantEvents":2'* && \
       "$live_usage" == *'"cachedInputTokens":2600'* && \
       "$live_usage" == *'"lastTurnCachedInputTokens":1400'* ]]; then
-  printf 'PASS  Claude stream telemetry exposes live turns and cache growth\n'
+  printf 'PASS  Claude stream telemetry separates live events from final turns\n'
 else
   printf 'FAIL  Claude live telemetry did not aggregate streaming events\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+printf '%s\n' \
+  '{"type":"result","subtype":"success","is_error":false,"session_id":"44444444-4444-4444-a444-444444444444","num_turns":0,"result":"replayed result"}' \
+  '{"type":"system","subtype":"init","session_id":"44444444-4444-4444-a444-444444444444"}' \
+  '{"type":"assistant","session_id":"44444444-4444-4444-a444-444444444444","message":{"usage":{"input_tokens":7,"cache_read_input_tokens":900,"output_tokens":8}}}' \
+  >"$TEST_DIR/replayed-result.events.jsonl"
+replayed_usage="$(
+  node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" \
+    live claude "$TEST_DIR/replayed-result.events.jsonl"
+)"
+if node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" \
+     outcome claude "$TEST_DIR/replayed-result.events.jsonl" >/dev/null 2>&1; then
+  replayed_outcome_exit=0
+else
+  replayed_outcome_exit=$?
+fi
+if [[ "$replayed_usage" == *'"final":false'* && \
+      "$replayed_usage" == *'"turns":null'* && \
+      "$replayed_usage" == *'"assistantEvents":1'* && \
+      "$replayed_outcome_exit" == "4" ]]; then
+  printf 'PASS  resumed Claude streams ignore a replayed historical result\n'
+else
+  printf 'FAIL  replayed Claude result was mistaken for the current terminal result\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+printf '%s\n' \
+  '{"type":"result","subtype":"success","is_error":false,"session_id":"44444444-4444-4444-a444-444444444444","num_turns":5,"result":"current result"}' \
+  >>"$TEST_DIR/replayed-result.events.jsonl"
+completed_replay_usage="$(
+  node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" \
+    live claude "$TEST_DIR/replayed-result.events.jsonl"
+)"
+if [[ "$completed_replay_usage" == *'"final":true'* && \
+      "$completed_replay_usage" == *'"turns":5'* && \
+      "$completed_replay_usage" == *'"assistantEvents":1'* ]]; then
+  printf 'PASS  resumed Claude stream accepts only its last result as terminal\n'
+else
+  printf 'FAIL  current Claude terminal result was not isolated from replay history\n' >&2
   failure_count=$((failure_count + 1))
 fi
 

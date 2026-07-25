@@ -24,7 +24,7 @@ Usage: ./scripts/agent-supervisor.sh supervise [options]
        ./scripts/agent-supervisor.sh status
        ./scripts/agent-supervisor.sh action ACTION [EVENT_ID]
 
-Runs one complete multi-window Agent rotation. The supervisor invokes the
+Runs one complete multi-window Agent run. The supervisor invokes the
 bounded parent cycle, saves safe recovery checkpoints on usage limits, waits
 without an AI process, and resumes at the interrupted role.
 
@@ -42,11 +42,13 @@ Role options:
                          attached: the visible MONITOR conversation owns this
                          foreground process; persistent-cli: start/resume one
                          task-scoped CLI MONITOR at event boundaries.
-  --max-rounds N         Override this supervised task's formal round limit.
+  --rounds N             Additional rounds requested now (default 1). One
+                         round is exactly one IMPLEMENTER invocation.
+  --max-rounds N         Deprecated alias for --rounds.
 
 Recovery options:
   --start-stage ROLE     Start at implementer or reviewer; default implementer.
-  --review-base COMMIT   Required comparison base for an owner-checkpoint review.
+  --review-base COMMIT   Exact comparison base for a REVIEWER recovery.
   --start-at DATE        Wait before the first cycle attempt; accepted by `date -d`.
                          Also becomes the fixed quota-window anchor by default.
   --quota-anchor DATE    Fixed quota reset anchor; defaults to --start-at.
@@ -87,11 +89,12 @@ state_write() {
     printf 'REVIEWER=%s/%s/%s\n' "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
     printf 'MONITOR=%s/%s/%s\n' "$monitor_agent" "$monitor_model" "$monitor_effort"
     printf 'MONITOR_MODE=%s\n' "$monitor_mode"
+    printf 'REQUESTED_ROUNDS=%s\n' "${max_rounds:-1}"
+    printf 'TARGET_ROUND=%s\n' "${target_round:-}"
     printf 'PENDING_ACTION_ID=%s\n' "${pending_action_id:-}"
     printf 'LAST_MONITOR_ACTION=%s\n' "${last_monitor_action:-}"
     printf 'LAST_USAGE_FILE=%s\n' "${last_usage_file:-}"
     printf 'USAGE_LEDGER=%s\n' "${USAGE_LEDGER_FILE#"$ROOT_DIR/"}"
-    printf 'MAX_ROUNDS=%s\n' "$max_rounds"
     printf 'REVIEW_BASE=%s\n' "${review_base:-}"
     printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   } >"$tmp"
@@ -469,8 +472,8 @@ max_autonomy_slices="$(
 monitor_action_timeout="$(
   agent_runtime_config MONITOR_ACTION_TIMEOUT_SECONDS 7200 60 86400
 )" || exit 2
-max_rounds="$(sed -n 's/^MAX_ROUNDS=//p' "$AGENT_DIR/state.env" | head -n 1)"
-[[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || max_rounds=3
+max_rounds="$(sed -n 's/^DEFAULT_ROUNDS=//p' "$AGENT_DIR/state.env" | head -n 1)"
+[[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || max_rounds=1
 first_resume_at=""
 start_at=""
 quota_anchor_at=""
@@ -489,7 +492,7 @@ while (( $# > 0 )); do
     --monitor-model) monitor_model="${2:-}"; shift 2 ;;
     --monitor-effort) monitor_effort="${2:-}"; shift 2 ;;
     --monitor-mode) monitor_mode="${2:-}"; shift 2 ;;
-    --max-rounds) max_rounds="${2:-}"; shift 2 ;;
+    --rounds|--max-rounds) max_rounds="${2:-}"; shift 2 ;;
     --start-stage) start_stage="${2:-}"; shift 2 ;;
     --review-base) review_base="${2:-}"; shift 2 ;;
     --start-at) start_at="${2:-}"; shift 2 ;;
@@ -517,7 +520,7 @@ case "$monitor_mode" in
 esac
 [[ "$quota_wait" =~ ^[0-9]+$ && "$quota_wait" -ge 60 ]] || { printf 'Invalid quota wait.\n' >&2; exit 2; }
 [[ "$max_resumes" =~ ^[1-9][0-9]*$ ]] || { printf 'Invalid max resumes.\n' >&2; exit 2; }
-[[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || { printf 'Invalid max rounds.\n' >&2; exit 2; }
+[[ "$max_rounds" =~ ^[1-9][0-9]*$ ]] || { printf 'Invalid requested rounds.\n' >&2; exit 2; }
 case "$start_stage" in
   implementer|reviewer) ;;
   *) printf 'Invalid --start-stage: %s\n' "$start_stage" >&2; exit 2 ;;
@@ -602,6 +605,12 @@ cycle_args=(
   --reviewer-effort "$reviewer_effort"
   --max-rounds "$max_rounds"
 )
+supervisor_start_round="$(
+  sed -n 's/^CURRENT_ROUND=//p' "$AGENT_DIR/state.env" | head -n 1
+)"
+[[ "$supervisor_start_round" =~ ^[0-9]+$ ]] || supervisor_start_round=0
+target_round=$((supervisor_start_round + max_rounds))
+cycle_args+=(--target-round "$target_round")
 
 attempt=0
 quota_resumes=0
@@ -658,17 +667,18 @@ while true; do
     state_write COMPLETE COMPLETE "$attempt" "$quota_resumes" "" 0 SUCCESS
     event_record "supervisor completed"
     refresh_cycle_summary 0
-    printf 'Supervised Agent rotation completed.\n'
+    printf 'Supervised Agent run completed at implementation target %s.\n' \
+      "$target_round"
     exit 0
   fi
 
   if (( cycle_exit == 3 )) && [[ ! -s "$STOP_FILE" ]]; then
     state_write STOPPED COMPLETE "$attempt" "$quota_resumes" "" \
-      "$cycle_exit" MAX_ROUNDS_REACHED
-    event_record "supervisor reached the configured formal round limit"
+      "$cycle_exit" OBSOLETE_ROUND_GUARD
+    event_record "supervisor reached an obsolete absolute round guard"
     refresh_cycle_summary "$cycle_exit"
-    printf 'Supervised Agent rotation reached its configured round limit (%s).\n' \
-      "$max_rounds"
+    printf 'Supervised Agent run reached an obsolete round guard (%s).\n' \
+      "$target_round"
     exit 3
   fi
 

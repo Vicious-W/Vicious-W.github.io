@@ -26,7 +26,7 @@ cd /home/vicious/projects/Vicious-W.github.io
 ## 2. 最常用命令
 
 ```bash
-# 查看 Git、默认角色配置、任务、轮次和停止原因
+# 查看 Git、默认角色配置、任务、轮回和停止原因
 ./scripts/agent-cycle.sh status
 
 # 启动本地网页
@@ -35,10 +35,10 @@ npm run dev -- --port 8000
 # 只预检，不启动任何 Agent
 ./scripts/agent-cycle.sh preflight
 
-# 按 runtime.env 默认配置启动完整循环
+# 按 runtime.env 默认配置启动一次轮回
 ./scripts/agent-cycle.sh cycle
 
-# 启动可跨多个额度窗口的监督循环
+# 启动可跨多个额度窗口的监督流程
 ./scripts/agent-cycle.sh supervise
 
 # 查看各轮中文简报
@@ -58,7 +58,7 @@ npm run dev -- --port 8000
 | 运行参数 | model / effort / timeout / permissions | 这次调用怎样运行 |
 
 `GENERAL` 是默认身份：所有者直接请一个 Agent 进入项目而没有指定专用身份时，它
-作为通用协作者工作，不自动写正式交接或推进循环。
+作为通用协作者工作，不自动写正式交接或推进轮回。
 
 `MONITOR` 是跨额度窗口的监督身份：只检查流程、进程、Git 和恢复证据，不评价业务
 质量。`attached` 模式由当前可见 MONITOR 对话从开始到终止持有 supervisor；
@@ -157,24 +157,25 @@ MONITOR_ACTION_TIMEOUT_SECONDS=7200
   --reviewer-effort high
 ```
 
-角色间仍是两个独立会话、两个独立进程；同一任务后续轮次只恢复自己的角色会话，
+角色间仍是两个独立会话、两个独立进程；同一任务后续轮回只恢复自己的角色会话，
 审查进程仍强制只读。
 
 模型名必须是对应 CLI 支持的实际值。`effort` 可用
 `low`、`medium`、`high`、`xhigh`、`max`；具体模型是否支持某个强度由 CLI
 最终判断。改变默认值或覆盖参数后先运行同样参数的预检。
 
-## 6. 完整自动循环
+## 6. 完整自动轮回
 
 启动前确认：
 
 1. `PROJECT_SPEC.md` 已写入当前正式目标；
 2. `.agent/next-task.md` 是本次可执行切片；
-3. `.agent/state.env` 状态为 `READY` 或 `NEEDS_CHANGES`；
-4. `CURRENT_ROUND < MAX_ROUNDS`；
+3. `.agent/state.env` 状态为 `READY`、`NEEDS_CHANGES`，或存在
+   `PENDING_REVIEW=YES` 的待定最终实现；
+4. 已决定本次要追加几次轮回；
 5. Git 工作区完全干净；
 6. 选中的执行器已登录，Playwright MCP 可用；
-7. 没有另一个循环持有 `.agent/.cycle.lock`。
+7. 没有另一个流程持有 `.agent/.cycle.lock`。
 
 推荐：
 
@@ -184,11 +185,11 @@ MONITOR_ACTION_TIMEOUT_SECONDS=7200
 ./scripts/agent-cycle.sh cycle
 ```
 
-只运行一次实现和一次审查，不改项目默认轮数：
+只追加一次轮回（一次实现，结束后由所有者查看）：
 
 ```bash
 ./scripts/agent-cycle.sh cycle \
-  --max-rounds 1 \
+  --rounds 1 \
   --implementer claude --implementer-model opus-4.8 --implementer-effort high \
   --reviewer codex --reviewer-model gpt-5.6-sol --reviewer-effort high
 ```
@@ -200,10 +201,11 @@ Cycle configuration
   IMPLEMENTER: claude / sonnet / high
   REVIEWER:    codex / gpt-5.6-sol / high
 
-=== IMPLEMENTER (claude) round 1/3 ===
+=== IMPLEMENTER (claude) round 2 (target 2) ===
 ```
 
-流程严格串行：
+一次轮回固定为一次 IMPLEMENTER。审查只为下一次实现准备，因此请求三次轮回时严格
+串行为：
 
 ```text
 预检
@@ -211,19 +213,33 @@ Cycle configuration
 → 越权检查、统一验证、本地实现提交
 → REVIEWER 新进程（只读，恢复本任务的 REVIEWER 专属会话）
 → 报告格式检查、归档、本地审查提交
-→ PASS 结束；CHANGES_REQUIRED 进入下一轮
+→ IMPLEMENTER
+→ REVIEWER
+→ IMPLEMENTER
+→ 停止并由所有者查看
+```
+
+请求一次时只有最后一项 IMPLEMENTER，不机械启动 REVIEWER。若所有者随后追加轮回，
+父脚本会先审查当前待定实现；PASS 时直接返回，`CHANGES_REQUIRED` 时才启动下一次
+IMPLEMENTER。同一 `ACTIVE_TASK_ID` 下，两个角色分别恢复自己的原会话；任务、角色、
+执行器、模型或 effort 改变时才新建，达到上下文阈值时则以新 generation 压缩续接。
+
+若最终实现已经满意，不需要补审查，直接记录所有者接受：
+
+```bash
+./scripts/agent-cycle.sh accept
 ```
 
 Agent 不负责启动下一个 Agent。中立父脚本一直等待子进程结束，确认交接后再启动
 下一阶段，因此不会因为自动交接而让两个 Agent 长时间并行运行。
 
-默认最多三轮；`--max-rounds N` 只覆盖当前 cycle/supervise，不修改
-`.agent/state.env` 的默认值。权限、认证、额度、MCP、超时、脏工作区、越权、无效报告或未知
+默认请求一次轮回；`--rounds N` 指定这次追加的实现次数，`--max-rounds` 仅为兼容
+旧命令保留。权限、认证、额度、MCP、超时、脏工作区、越权、无效报告或未知
 结论都会立即停止。流程不会 push、部署、reset、clean、rebase 或无限重试。
 
-### 6.1 跨额度窗口的监督循环
+### 6.1 跨额度窗口的监督流程
 
-如果预计单次额度不足以完成全部轮次，使用：
+如果预计单次额度不足以完成全部轮回，使用：
 
 ```bash
 ./scripts/agent-cycle.sh supervise \
@@ -258,22 +274,23 @@ Agent 不负责启动下一个 Agent。中立父脚本一直等待子进程结�
 
 ```text
 agent-supervisor.sh：跨额度窗口、恢复次数、定时等待、异常交接
-└── agent-cycle.sh：最多 N 轮的实现—审查状态机
+└── agent-cycle.sh：N 次实现轮回、相邻实现间按需审查的状态机
     ├── IMPLEMENTER
     └── REVIEWER
 ```
 
 额度中断或 Claude 主动预算保险触发时，监督器会先确认工作 Agent 已退出。若实现
 阶段留下合法半成品，它运行统一验证并创建标题明确的 recovery checkpoint；该提交
-只保存现场，不代表通过，也不增加审查轮次。真实额度事件进入
+只保存现场，不代表通过，也不增加审查次数。真实额度事件进入
 `WAITING_FOR_QUOTA`，由 shell 零 token 等待。主动预算保险只说明当前自主切片结束，
 进入 `AWAITING_MONITOR_ACTION`，不能直接冒充额度耗尽。
 
 Claude 非交互调用不是一次模型请求，而是工具调用—模型调用循环。为防止几十分钟内
 重复读取数千万缓存 token，默认对 IMPLEMENTER、REVIEWER 和后台 MONITOR 分别设置
 最大 turns 与 API 等价预算。命中任一值记录为 `AUTONOMY_SLICE_LIMIT`，状态进入
-Monitor 决策点。Claude 使用 `stream-json`，监督心跳实时显示精简的 turns、token、
-缓存增长；最终结果和监督窗口累计账本还记录 API 等价用量。这些金额是 Claude CLI
+Monitor 决策点。Claude 使用 `stream-json`，监督心跳实时显示精简的 assistant 事件、
+token 和缓存增长；最终 agentic turns 只采用终态结果，监督窗口累计账本还记录
+API 等价用量。这些金额是 Claude CLI
 返回的等价用量，不等于订阅账单金额。
 
 Monitor 根据当前切片和
@@ -331,8 +348,8 @@ Monitor 根据当前切片和
 ./scripts/agent-cycle.sh status
 ```
 
-若所有者在正式 cycle 之外形成了一个已经验证的实现检查点，可以直接从审查阶段
-开始，但必须保留完整比较基准：
+`--start-stage reviewer` 只用于恢复已经登记为 `PENDING_REVIEW=YES` 的审查阶段，
+并保留完整比较基准：
 
 ```bash
 ./scripts/agent-cycle.sh supervise \
@@ -342,15 +359,17 @@ Monitor 根据当前切片和
 ```
 
 `--review-base` 会一直随 REVIEWER 的额度中断恢复传递，避免恢复后错误地只审查
-`HEAD^..HEAD`。若 `.agent/state.env` 已记录 `LAST_IMPLEMENTATION_BASE_COMMIT`，
-可以省略该参数。
+`HEAD^..HEAD`。正常情况下 `.agent/state.env` 已记录
+`PENDING_REVIEW_BASE_COMMIT`，可以省略该参数。正式轮回之外的实现应通过
+`./scripts/agent-cycle.sh implement` 形成检查点和 pending 状态，不再接受未登记的
+任意 HEAD 直接进入正式审查。
 
 `SCHEDULED`、`AWAITING_MONITOR_ACTION`、`WAITING_FOR_QUOTA` 和
 `WAITING_FOR_BUDGET_WINDOW` 表示没有工作 Agent 在运行；`RESUMING` 是已收到决策、
 即将以新进程恢复；`RUNNING` 表示正在执行一个有界 cycle；`COMPLETE` 或 `STOPPED`
 是终态。
 
-单个 Agent 的 timeout 只累计监督循环实际运行的轮询时间。Windows 睡眠或 WSL
+单个 Agent 的 timeout 只累计监督流程实际运行的轮询时间。Windows 睡眠或 WSL
 暂停期间 Agent 没有工作，这段墙上时间不计入 timeout；恢复后继续累计。supervisor
 会先写入 `COMPLETE`、`STOPPED`、`AWAITING_MONITOR_ACTION`、
 `WAITING_FOR_QUOTA` 或 `WAITING_FOR_BUDGET_WINDOW`，再重新生成简报，因此简报
@@ -371,14 +390,15 @@ Monitor 根据当前切片和
 | --- | --- | --- |
 | `status` | 查看状态、默认配置、验证和停止原因 | 否 |
 | `preflight [options]` | 检查选定配置 | 否 |
-| `cycle [options]` | 完整串行循环 | 是 |
-| `supervise [options]` | 跨额度窗口运行完整轮转 | 串行启动 |
+| `cycle [options]` | 运行指定次数的串行轮回 | 是 |
+| `supervise [options]` | 跨额度窗口运行指定轮回 | 串行启动 |
 | `supervisor-status` | 查看外层监督状态和恢复时间 | 否 |
 | `supervisor-action ACTION [EVENT_ID]` | 附着式 Monitor 提交安全边界决策 | 否 |
-| `implement [options]` | 单独运行一轮 IMPLEMENTER 并提交 | 一个 |
+| `implement [options]` | 单独运行一次 IMPLEMENTER 轮回并提交 | 一个 |
 | `review [options] [target base]` | 单独运行一次只读 REVIEWER | 一个 |
 | `validate` | 统一构建/测试检查 | 否 |
 | `summary` | 生成并打印多轮简报 | 否 |
+| `accept` | 接受待定最终实现并创建状态提交 | 否 |
 | `archive` | 手动归档尚未归档的最近审查 | 否 |
 
 查看完整参数：
@@ -460,7 +480,7 @@ typecheck。未配置的项目写 `NOT CONFIGURED`，不能算作 PASS。摘要�
 ```
 
 每个 `.agent/artifacts/runs/*.env` 都记录角色、执行器、模型、effort、权限、
-任务、轮次和提交边界。Git 历史中的自动标题为：
+任务、轮回编号和提交边界。Git 历史中的自动标题为：
 
 ```text
 agent: implementation round N
@@ -509,7 +529,7 @@ cat .agent/artifacts/runtime/last-stop.env
 | `MCP_OR_BROWSER` | Playwright 或浏览器不可用 | 修复注册/浏览器后重新预检 |
 | `TIMEOUT` | 超过单轮活跃监督时限 | 检查日志，拆小任务或合理调时限；系统休眠不计入 |
 | `POLICY_VIOLATION` | 实现者触碰控制面 | 检查保留现场，不自动提交 |
-| 达到 `MAX_ROUNDS` | 纠错上限到达 | 阅读简报，由所有者决定 |
+| 达到本次 `TARGET_ROUND` | 已完成所有者请求的实现次数 | 查看最终实现，再决定接受或追加轮回 |
 | 达到 `MAX_QUOTA_RESUMES` | 额度恢复次数上限 | 停止并由所有者调整计划 |
 
 不要使用这些命令恢复：
@@ -523,7 +543,7 @@ git checkout -- .
 它们可能删除所有者文件或尚未检查的 Agent 半成品。中断后先查看 Git 状态、停止
 原因、运行清单和日志。
 
-## 12. 一轮或多轮结束后
+## 12. 一次或多次轮回结束后
 
 1. 运行 `./scripts/agent-cycle.sh summary`；
 2. 确认最终结论和各轮实际执行器；

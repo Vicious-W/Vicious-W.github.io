@@ -28,7 +28,7 @@ Options:
   --agent claude|codex  Override REVIEWER_AGENT.
   --model MODEL         Override REVIEWER_MODEL.
   --effort LEVEL        Override REVIEWER_EFFORT.
-  --max-rounds N        Override the round limit for this invocation only.
+  --max-rounds N        Internal absolute round target (compatibility option).
 
 The tree must be clean. The wrapper runs validation, starts one REVIEWER with a
 read-only profile, validates the report, then installs and archives it.
@@ -203,7 +203,7 @@ else
 fi
 
 current_round="$(sed -n 's/^CURRENT_ROUND=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
-configured_max_rounds="$(sed -n 's/^MAX_ROUNDS=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
+configured_default_rounds="$(sed -n 's/^DEFAULT_ROUNDS=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 last_reviewed_commit="$(sed -n 's/^LAST_REVIEWED_COMMIT=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 last_verdict="$(sed -n 's/^LAST_REVIEW_VERDICT=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 active_task_id="$(sed -n 's/^ACTIVE_TASK_ID=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
@@ -211,20 +211,39 @@ active_task_status="$(sed -n 's/^ACTIVE_TASK_STATUS=//p' "$STATE_FILE" 2>/dev/nu
 last_implementer_agent="$(sed -n 's/^LAST_IMPLEMENTER_AGENT=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 last_implementer_model="$(sed -n 's/^LAST_IMPLEMENTER_MODEL=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 last_implementer_effort="$(sed -n 's/^LAST_IMPLEMENTER_EFFORT=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
+pending_review="$(sed -n 's/^PENDING_REVIEW=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
+pending_review_round="$(sed -n 's/^PENDING_REVIEW_ROUND=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
+pending_review_base="$(sed -n 's/^PENDING_REVIEW_BASE_COMMIT=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
+completed_reviews="$(sed -n 's/^COMPLETED_REVIEWS=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
 
 [[ "$current_round" =~ ^[0-9]+$ ]] || current_round=0
-[[ "$configured_max_rounds" =~ ^[1-9][0-9]*$ ]] || configured_max_rounds=3
-max_rounds="${max_rounds_override:-$configured_max_rounds}"
+[[ "$configured_default_rounds" =~ ^[1-9][0-9]*$ ]] || configured_default_rounds=1
+max_rounds="${max_rounds_override:-$current_round}"
+[[ "$completed_reviews" =~ ^[0-9]+$ ]] || completed_reviews=0
 
-if [[ "$last_verdict" == "PASS" && -n "$last_reviewed_commit" && \
-      "$target_commit" != "$last_reviewed_commit" ]]; then
-  current_round=0
-fi
-if (( current_round >= max_rounds )); then
-  printf 'Maximum review rounds reached (%s). Ask the project owner how to proceed.\n' "$max_rounds" >&2
+if [[ "$pending_review" != "YES" ]]; then
+  printf 'No implementation is pending review; refusing a duplicate formal review.\n' >&2
   exit 3
 fi
-next_round=$((current_round + 1))
+if [[ "$active_task_status" != "AWAITING_OWNER" ]]; then
+  printf 'Pending review has inconsistent task status: %s\n' "$active_task_status" >&2
+  exit 3
+fi
+if [[ "$pending_review_round" =~ ^[1-9][0-9]*$ ]]; then
+  next_round="$pending_review_round"
+else
+  next_round="$current_round"
+fi
+if [[ "$next_round" != "$current_round" ]]; then
+  printf 'Pending review round %s does not match current implementation round %s.\n' \
+    "$next_round" "$current_round" >&2
+  exit 3
+fi
+if [[ -n "$pending_review_base" && "$base_commit" != "$pending_review_base" ]]; then
+  printf 'Review base does not match the pending implementation base.\n' >&2
+  printf 'Expected: %s\nActual:   %s\n' "$pending_review_base" "$base_commit" >&2
+  exit 3
+fi
 
 if "$ROOT_DIR/scripts/run-validation.sh"; then
   validation_status="PASS"
@@ -289,7 +308,8 @@ roles, edit repository files, or start another Agent. The review profile is
 read-only. This role session never contains IMPLEMENTER invocations.
 
 Task: $active_task_id
-Round: $next_round of at most $max_rounds
+Reviewing implementation round: $next_round
+Absolute implementation target for this parent run: $max_rounds
 Review target: $target_commit
 Compare against: $base_commit
 Working tree at launch: clean
@@ -349,7 +369,9 @@ else
   run_status="$AGENT_RUN_REASON"
 fi
 agent_finalize_role_session "$reviewer_agent" "$events_file" "$run_status"
-agent_record_telemetry "$reviewer_agent" "$events_file" "$usage_file"
+agent_record_telemetry \
+  "$reviewer_agent" "$events_file" "$usage_file" \
+  "$claude_max_turns" "$claude_max_budget_usd"
 session_rotation="NO"
 if agent_mark_role_session_rotation \
   "$reviewer_agent" "$usage_file" "${claude_context_rotate_tokens:-1000000}"; then
@@ -435,14 +457,19 @@ install -m 0644 "$review_tmp" "$archive_path"
 
 state_tmp="$AGENT_DIR/state.env.tmp"
 {
-  printf 'CURRENT_ROUND=%s\n' "$next_round"
+  printf 'CURRENT_ROUND=%s\n' "$current_round"
+  printf 'COMPLETED_REVIEWS=%s\n' "$((completed_reviews + 1))"
   printf 'ACTIVE_TASK_ID=%s\n' "$active_task_id"
   printf 'ACTIVE_TASK_STATUS=%s\n' "$active_task_status"
+  printf 'PENDING_REVIEW=NO\n'
+  printf 'PENDING_REVIEW_ROUND=\n'
+  printf 'PENDING_REVIEW_BASE_COMMIT=\n'
+  printf 'LAST_IMPLEMENTATION_BASE_COMMIT=%s\n' "$base_commit"
   printf 'LAST_IMPLEMENTATION_COMMIT=%s\n' "$target_commit"
   printf 'LAST_REVIEWED_COMMIT=%s\n' "$target_commit"
   printf 'LAST_REVIEW_VERDICT=%s\n' "$verdict"
   printf 'LAST_VALIDATION_STATUS=%s\n' "$validation_status"
-  printf 'MAX_ROUNDS=%s\n' "$configured_max_rounds"
+  printf 'DEFAULT_ROUNDS=%s\n' "$configured_default_rounds"
   printf 'LAST_IMPLEMENTER_AGENT=%s\n' "$last_implementer_agent"
   printf 'LAST_IMPLEMENTER_MODEL=%s\n' "$last_implementer_model"
   printf 'LAST_IMPLEMENTER_EFFORT=%s\n' "$last_implementer_effort"

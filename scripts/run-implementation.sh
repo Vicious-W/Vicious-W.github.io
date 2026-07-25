@@ -28,7 +28,7 @@ Options:
   --agent claude|codex  Override IMPLEMENTER_AGENT.
   --model MODEL         Override IMPLEMENTER_MODEL.
   --effort LEVEL        Override IMPLEMENTER_EFFORT.
-  --max-rounds N        Override the round limit for this invocation only.
+  --max-rounds N        Internal absolute round target (compatibility option).
 EOF
 }
 
@@ -165,22 +165,29 @@ fi
 active_task_id="$(sed -n 's/^ACTIVE_TASK_ID=//p' "$STATE_FILE" | head -n 1)"
 active_task_status="$(sed -n 's/^ACTIVE_TASK_STATUS=//p' "$STATE_FILE" | head -n 1)"
 current_round="$(sed -n 's/^CURRENT_ROUND=//p' "$STATE_FILE" | head -n 1)"
-configured_max_rounds="$(sed -n 's/^MAX_ROUNDS=//p' "$STATE_FILE" | head -n 1)"
+configured_default_rounds="$(sed -n 's/^DEFAULT_ROUNDS=//p' "$STATE_FILE" | head -n 1)"
+pending_review="$(sed -n 's/^PENDING_REVIEW=//p' "$STATE_FILE" | head -n 1)"
 
 [[ "$current_round" =~ ^[0-9]+$ ]] || current_round=0
-[[ "$configured_max_rounds" =~ ^[1-9][0-9]*$ ]] || configured_max_rounds=3
-max_rounds="${max_rounds_override:-$configured_max_rounds}"
+[[ "$configured_default_rounds" =~ ^[1-9][0-9]*$ ]] || configured_default_rounds=1
+max_rounds="${max_rounds_override:-$((current_round + configured_default_rounds))}"
 
 if [[ -z "$active_task_id" ]]; then
   printf 'ACTIVE_TASK_ID is empty in %s.\n' "$STATE_FILE" >&2
   exit 2
+fi
+if [[ "$pending_review" == "YES" ]]; then
+  printf 'The previous implementation is awaiting review or owner acceptance.\n' >&2
+  printf 'Review it before starting another implementation round.\n' >&2
+  exit 3
 fi
 if [[ "$active_task_status" != "READY" && "$active_task_status" != "NEEDS_CHANGES" ]]; then
   printf 'Active task is not ready for implementation: %s\n' "$active_task_status" >&2
   exit 3
 fi
 if (( current_round >= max_rounds )); then
-  printf 'Maximum review rounds reached (%s). Return control to the project owner.\n' "$max_rounds" >&2
+  printf 'Implementation target %s is already reached. Return control to the owner.\n' \
+    "$max_rounds" >&2
   exit 3
 fi
 
@@ -241,7 +248,8 @@ and effort is $implementer_effort. Do not infer a role from the executor name
 and do not switch roles.
 
 Task: $active_task_id
-Round: $implementation_round of at most $max_rounds
+Implementation round: $implementation_round
+Absolute target for this parent run: $max_rounds
 Base commit: $base_commit
 Role session: ${AGENT_SESSION_ID:-pending} ($AGENT_SESSION_MODE)
 Session generation: $AGENT_SESSION_GENERATION
@@ -318,7 +326,9 @@ else
   run_status="$AGENT_RUN_REASON"
 fi
 agent_finalize_role_session "$implementer_agent" "$events_file" "$run_status"
-agent_record_telemetry "$implementer_agent" "$events_file" "$usage_file"
+agent_record_telemetry \
+  "$implementer_agent" "$events_file" "$usage_file" \
+  "$claude_max_turns" "$claude_max_budget_usd"
 session_rotation="NO"
 if agent_mark_role_session_rotation \
   "$implementer_agent" "$usage_file" "${claude_context_rotate_tokens:-1000000}"; then
@@ -427,11 +437,17 @@ fi
 state_tmp="$AGENT_DIR/state.env.tmp"
 while IFS= read -r state_line; do
   case "$state_line" in
-    LAST_IMPLEMENTER_AGENT=*|LAST_IMPLEMENTER_MODEL=*|LAST_IMPLEMENTER_EFFORT=*) ;;
+    CURRENT_ROUND=*|ACTIVE_TASK_STATUS=*|PENDING_REVIEW=*|PENDING_REVIEW_ROUND=*|PENDING_REVIEW_BASE_COMMIT=*|LAST_IMPLEMENTATION_BASE_COMMIT=*|LAST_IMPLEMENTER_AGENT=*|LAST_IMPLEMENTER_MODEL=*|LAST_IMPLEMENTER_EFFORT=*) ;;
     *) printf '%s\n' "$state_line" ;;
   esac
 done <"$STATE_FILE" >"$state_tmp"
 {
+  printf 'CURRENT_ROUND=%s\n' "$implementation_round"
+  printf 'ACTIVE_TASK_STATUS=AWAITING_OWNER\n'
+  printf 'PENDING_REVIEW=YES\n'
+  printf 'PENDING_REVIEW_ROUND=%s\n' "$implementation_round"
+  printf 'PENDING_REVIEW_BASE_COMMIT=%s\n' "$base_commit"
+  printf 'LAST_IMPLEMENTATION_BASE_COMMIT=%s\n' "$base_commit"
   printf 'LAST_IMPLEMENTER_AGENT=%s\n' "$implementer_agent"
   printf 'LAST_IMPLEMENTER_MODEL=%s\n' "$implementer_model"
   printf 'LAST_IMPLEMENTER_EFFORT=%s\n' "$implementer_effort"

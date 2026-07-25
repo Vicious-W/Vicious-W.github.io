@@ -110,6 +110,26 @@ MONITOR 有两种运行形态：
 
 两者职责相同，但可见性和唤醒机制不同。
 
+### 3.5 固定轮回单位与按需审查
+
+协作单位必须只有一个定义：
+
+```text
+一次轮回 = 一次 IMPLEMENTER
+```
+
+REVIEWER 的目的不是让流程形式对称，而是为下一次 IMPLEMENTER 提供独立证据。因此：
+
+- 请求一次轮回时只运行 IMPLEMENTER，随后由所有者查看；
+- 请求 N 次轮回时，只在相邻两次实现之间运行 REVIEWER；
+- 最后一次实现保存为可补审查的 pending checkpoint，但不立即消耗审查额度；
+- 所有者接受时直接记录 `OWNER_ACCEPTED`；
+- 所有者追加轮回时，先审查 pending checkpoint；PASS 则停止，
+  `CHANGES_REQUIRED` 才进入下一次实现。
+
+这使“轮回数”等于实际实现次数，不再出现一次“大循环”内部又包含多组实现—审查的
+单位混乱。
+
 ---
 
 ## 4. 会话所有权与恢复
@@ -150,7 +170,9 @@ MONITOR 有两种运行形态：
 ### 5.1 默认连续性
 
 同一正式任务、角色、执行器、模型和 effort，默认使用一个任务级逻辑角色会话。
-额度恢复和下一正式轮次启动新进程，但恢复该角色自己的明确 session ID。
+额度恢复和所有者为同一目标追加轮回时启动新进程，但恢复该角色自己的明确
+session ID。任务 ID 是目标边界；角色、执行器、模型或 effort 任一变化都创建
+新的逻辑会话。
 
 IMPLEMENTER、REVIEWER 和 CLI MONITOR 各自隔离，绝不跨角色共享。
 
@@ -287,7 +309,7 @@ AUTONOMY_SLICE_LIMIT
 | 运行 | turns | cache creation | cache read | output | API 等价量 |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 未受控的长 IMPLEMENTER | 100 | 332,340 | 26,864,092 | 76,839 | `$18.68` |
-| 有界 IMPLEMENTER + REVIEWER 完整轮转 | 61 | 355,644 | 3,874,855 | 69,383 | `$7.23` |
+| 一次 IMPLEMENTER + REVIEWER 的历史实测 | 61 | 355,644 | 3,874,855 | 69,383 | `$7.23` |
 
 两者的 cache creation 和 output 接近，但 cache read 相差约 6.9 倍。这说明主要差异
 不是父脚本重复注入几 KB 启动提示，也不是模型少输出了一个数量级，而是长 transcript
@@ -325,11 +347,13 @@ IMPLEMENTER
 → 机械边界检查
 → 统一验证
 → 本地实现检查点
-→ REVIEWER
-→ PASS 或下一正式轮次
+→ 若还有下一轮回：REVIEWER
+  → PASS：停止
+  → CHANGES_REQUIRED：下一次 IMPLEMENTER
+→ 最后一次 IMPLEMENTER 后交由所有者查看
 ```
 
-cycle 只管理有限轮次，不等待数小时。
+cycle 只管理有限次数的轮回，不等待数小时。
 
 ### 7.2 supervisor
 
@@ -468,6 +492,8 @@ USAGE_FILE=...
 - 逐事件输出能在进程结束前给出精简 turns/cache/token；
 - resume 流中的历史 `result` 不会被当成本次调用完成；
 - 实时 assistant 事件数与最终 turns 不一致时，以终态 usage 为审计值；
+- 一次轮回只计一次 IMPLEMENTER，最后一次实现不会机械启动 REVIEWER；
+- 追加轮回时先审查 pending implementation，再决定是否进入下一实现；
 - 结构化 `error_max_turns` / `error_max_budget_usd` 即使 CLI 返回零也不能被当成成功；
 - 认证或模型启动失败不会激活预分配 session ID；
 - 预算错误分类为 `AUTONOMY_SLICE_LIMIT`；

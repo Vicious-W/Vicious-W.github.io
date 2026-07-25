@@ -10,13 +10,13 @@
 - `roles/IMPLEMENTER.md`：专用实现身份；
 - `roles/REVIEWER.md`：专用独立审查身份；
 - `next-task.md`：所有者确认的当前执行切片；
-- `state.env`：任务、轮次、结论和上一轮实际运行配置；
+- `state.env`：任务、轮回、结论和上一轮实际运行配置；
 - `runtime.env`：三种专用角色的默认执行器、模型、effort、超时、Monitor 模式、
   Claude 自主预算和恢复策略；
 - `implementation-report.md`：最近一轮实现交接，由 IMPLEMENTER 更新；
 - `latest-review.md`：最近一次正式审查，由中立审查包装器替换；
 - `review-history/`：只追加的正式审查归档；
-- `artifacts/`：被 Git 忽略的日志、截图、验证、运行清单和循环简报。
+- `artifacts/`：被 Git 忽略的日志、截图、验证、运行清单和轮回简报。
 
 ## 身份规则
 
@@ -31,10 +31,10 @@
 角色 + 执行器 + 模型/effort + 权限配置 + 任务/提交边界
 ```
 
-每次调用的完整配置写入 `.agent/artifacts/runs/*.env`，循环简报会记录各轮实际
+每次调用的完整配置写入 `.agent/artifacts/runs/*.env`，轮回简报会记录各轮实际
 执行器，而不是把提交固定标成 Claude 或 Codex。
 
-## 默认与自定义循环
+## 默认与自定义轮回
 
 默认配置在 `runtime.env`，当前是 Claude Code 实现、Codex 审查：
 
@@ -73,15 +73,16 @@
 shell 无法重新唤醒它。无人值守时使用 `--monitor-mode persistent-cli`，父脚本在
 启动时创建一个任务级 CLI MONITOR，并在后续事件边界恢复同一会话。
 
-Claude `--print` 调用同时受最大 turns 和 API 等价预算约束。任一保险先到会产生
+Claude `--print` 调用同时受 agentic-turn 上限和 API 等价预算约束。任一保险先到会产生
 `AUTONOMY_SLICE_LIMIT`。合法现场保存后进入 Monitor 决策点，而不是直接假定额度
 耗尽：可立即续片、轮换上下文后续片、等待窗口或停止。Claude 的逐事件
-`stream-json` 让心跳能够显示 turns、token 和缓存增长；监督窗口累计账本位于
+`stream-json` 让心跳能够显示 assistant 事件、token 和缓存增长；最终 turns 只采用
+执行器终态结果，两个计数不互相冒充。监督窗口累计账本位于
 `.agent/artifacts/supervisor/usage-ledger.json`。最后一轮缓存上下文超过阈值时，
 下一次不再恢复膨胀的原始 transcript，而以当前 Git 检查点和结构化交接创建同一
 逻辑角色会话的新代次。
 
-完整顺序为：
+一次轮回固定为一次 IMPLEMENTER。请求三次时，完整顺序为：
 
 ```text
 预检
@@ -91,15 +92,31 @@ Claude `--print` 调用同时受最大 turns 和 API 等价预算约束。任一
 → 新进程：REVIEWER（只读、只使用 REVIEWER 专属会话）
 → 校验/归档报告
 → 中立脚本创建本地审查提交
-→ PASS 结束；CHANGES_REQUIRED 串行进入下一轮
+→ 新进程：IMPLEMENTER
+→ REVIEWER
+→ 新进程：IMPLEMENTER
+→ 最后一次实现后停止，交由所有者查看
 ```
 
-父脚本始终等待当前子进程退出后才启动下一步，不需要 Agent 相互启动。默认最大轮数
-由 `state.env` 的 `MAX_ROUNDS` 控制，也可用 `--max-rounds N` 只覆盖当前运行。
+审查只出现在相邻两次实现之间，用于准备下一次实现。最后一次实现不自动审查；
+若所有者追加轮回，父脚本先审查待定实现，`CHANGES_REQUIRED` 时才进入下一次实现。
+父脚本始终等待当前子进程退出后才启动下一步，不需要 Agent 相互启动。默认请求一次
+轮回，可用 `--rounds N` 指定本次追加的实现次数；`--max-rounds` 仅保留为兼容别名。
+若所有者满意，运行 `./scripts/agent-cycle.sh accept`，即可在不启动 REVIEWER 的
+情况下记录接受决定并创建本地状态提交。
+
+同一 `ACTIVE_TASK_ID` 下，IMPLEMENTER 与 REVIEWER 各自持有一个逻辑角色会话。
+追加轮回会恢复各自原会话；只有任务、角色、执行器、模型、effort 改变，或上下文
+阈值触发新 generation，才创建新的原始会话。
 
 每次调用的原始 JSON/JSONL 事件和标准化用量摘要保存在
 `.agent/artifacts/implementation/` 或 `.agent/artifacts/review/`，运行清单记录会话
 ID、`new/resume` 模式、会话代次、预算保险及这些文件的路径。
+
+`state.env` 中 `CURRENT_ROUND` 只计已完成的 IMPLEMENTER 次数，
+`COMPLETED_REVIEWS` 单独计审查次数；`PENDING_REVIEW=YES` 表示最新实现尚未被审查或
+所有者接受，`PENDING_REVIEW_BASE_COMMIT` 保存其精确比较基准。`DEFAULT_ROUNDS`
+是每次命令默认追加的轮回数，不是任务生命周期的总上限。
 
 附着式 Monitor 在 `AWAITING_MONITOR_ACTION` 状态用以下命令提交决策：
 
@@ -148,7 +165,7 @@ cat .agent/artifacts/runtime/last-stop.env
 ```
 
 权限、认证、额度、自主切片保险、MCP、超时、工作区污染、越权或报告无效都会立即
-停止，不会增加审查轮次。普通 `cycle` 会停止；`supervise` 只对明确分类的额度或
+停止，不会增加审查次数。普通 `cycle` 会停止；`supervise` 只对明确分类的额度或
 自主切片事件进行有界恢复，其他错误交给附着式或持久 CLI MONITOR 后停止。不要用
 `git reset --hard`、`git clean -fd`
 或删除活动锁来恢复；先检查保留现场，再由所有者决定。

@@ -85,12 +85,14 @@
 - 当前默认配置仍是 Claude Code 实现、Codex 审查；
 - 实现和审查使用全新进程严格串行，审查阶段只读；同一任务内各角色分别恢复自己
   的专属会话，角色间绝不共享；
-- `agent-cycle.sh` 管理有界实现—审查轮次，`agent-supervisor.sh` 管理跨额度窗口
+- `agent-cycle.sh` 管理有界轮回；一次轮回固定为一次实现，审查只出现在相邻两次
+  实现之间，最后一次实现交由所有者查看；`agent-supervisor.sh` 管理跨额度窗口
   的恢复、定时续跑和异常交接；
 - 长时间等待由 shell 完成，不运行工作 Agent；可见 MONITOR 使用 `attached` 模式
   从头到尾持有前台 supervisor，后台全自动模式则恢复一个任务级持久 CLI MONITOR；
-- Claude 非交互调用使用 `stream-json` 实时记录 turns、token、缓存和最终 API 等价
-  用量；最大 turns/预算保险触发后保存合法现场，由 MONITOR 决定立即续片、轮换
+- Claude 非交互调用使用 `stream-json` 实时记录 assistant 事件、token、缓存和最终
+  agentic turns/API 等价用量；最大 turns/预算保险触发后保存合法现场，由 MONITOR
+  决定立即续片、轮换
   上下文、等待真实额度窗口或停止，不能把自主保险误判为额度耗尽；
 - 每次专用调用在 `.agent/artifacts/runs/` 留下实际运行配置、角色会话模式和用量
   记录路径。
