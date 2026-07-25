@@ -124,8 +124,8 @@ REVIEWER 的目的不是让流程形式对称，而是为下一次 IMPLEMENTER �
 - 请求 N 次轮回时，只在相邻两次实现之间运行 REVIEWER；
 - 最后一次实现保存为可补审查的 pending checkpoint，但不立即消耗审查额度；
 - 所有者接受时直接记录 `OWNER_ACCEPTED`；
-- 所有者追加轮回时，先审查 pending checkpoint；PASS 则停止，
-  `CHANGES_REQUIRED` 才进入下一次实现。
+- 所有者追加轮回时，先审查 pending checkpoint，再进入明确请求的下一次实现；
+  PASS 表示无阻塞项，`CHANGES_REQUIRED` 提供强制修复项，但都不减少请求的实现次数。
 
 这使“轮回数”等于实际实现次数，不再出现一次“大循环”内部又包含多组实现—审查的
 单位混乱。
@@ -348,8 +348,9 @@ IMPLEMENTER
 → 统一验证
 → 本地实现检查点
 → 若还有下一轮回：REVIEWER
-  → PASS：停止
-  → CHANGES_REQUIRED：下一次 IMPLEMENTER
+  → PASS：下一实现没有阻塞项
+  → CHANGES_REQUIRED：下一实现必须修复正式问题
+→ 下一次 IMPLEMENTER
 → 最后一次 IMPLEMENTER 后交由所有者查看
 ```
 

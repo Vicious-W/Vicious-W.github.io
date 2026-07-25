@@ -439,11 +439,12 @@ for section in "${required_sections[@]}"; do
 done
 
 verdict="$(sed -n 's/^VERDICT: //p' "$review_tmp")"
-if [[ "$verdict" == "PASS" ]]; then
-  active_task_status="COMPLETE"
-else
-  active_task_status="NEEDS_CHANGES"
-fi
+active_task_status="$(
+  agent_review_task_status "$verdict" "$current_round" "$max_rounds"
+)" || {
+  printf 'Could not map review verdict to task state.\n' >&2
+  exit 4
+}
 short_commit="$(git -C "$ROOT_DIR" rev-parse --short=12 "$target_commit")"
 archive_name="$(date -u +"%Y-%m-%d")_round-$(printf '%02d' "$next_round")_${short_commit}.md"
 archive_path="$HISTORY_DIR/$archive_name"

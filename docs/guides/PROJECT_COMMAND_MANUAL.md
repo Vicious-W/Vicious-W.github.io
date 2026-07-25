@@ -220,8 +220,9 @@ Cycle configuration
 ```
 
 请求一次时只有最后一项 IMPLEMENTER，不机械启动 REVIEWER。若所有者随后追加轮回，
-父脚本会先审查当前待定实现；PASS 时直接返回，`CHANGES_REQUIRED` 时才启动下一次
-IMPLEMENTER。同一 `ACTIVE_TASK_ID` 下，两个角色分别恢复自己的原会话；任务、角色、
+父脚本会先审查当前待定实现，再启动所有者已经明确请求的下一次 IMPLEMENTER。
+PASS 表示没有阻塞项，`CHANGES_REQUIRED` 则提供必须修复的问题；审查结论不会擅自
+减少 `--rounds N` 指定的实现次数。同一 `ACTIVE_TASK_ID` 下，两个角色分别恢复自己的原会话；任务、角色、
 执行器、模型或 effort 改变时才新建，达到上下文阈值时则以新 generation 压缩续接。
 
 若最终实现已经满意，不需要补审查，直接记录所有者接受：

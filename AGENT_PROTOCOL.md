@@ -122,8 +122,9 @@ REVIEWER 不是轮回的机械收尾，而是为下一次实现准备证据：
   `IMPLEMENTER → REVIEWER → IMPLEMENTER → REVIEWER → IMPLEMENTER → 所有者查看`；
 - 最后一次实现记录为 `PENDING_REVIEW=YES`、`ACTIVE_TASK_STATUS=AWAITING_OWNER`，
   但不立即启动 REVIEWER；
-- 所有者满意时无需审查；所有者追加轮回时，父脚本先审查这份待定实现。若 PASS，
-  直接交还所有者；若 `CHANGES_REQUIRED`，才进入下一次 IMPLEMENTER。
+- 所有者满意时无需审查；所有者追加轮回时，父脚本先审查这份待定实现，再进入
+  所有者已明确请求的下一次 IMPLEMENTER。PASS 表示没有阻塞项，
+  `CHANGES_REQUIRED` 则为下一实现提供强制修复项；两者都不得擅自减少请求的实现次数。
 
 因此每份最终实现仍可追溯、可补审查，但不会为了流程对称浪费一次审查调用。
 

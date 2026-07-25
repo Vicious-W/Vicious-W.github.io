@@ -269,6 +269,30 @@ agent_record_telemetry() {
   fi
 }
 
+agent_review_task_status() {
+  local verdict="$1"
+  local implementation_round="$2"
+  local target_round="$3"
+
+  [[ "$implementation_round" =~ ^[0-9]+$ && \
+     "$target_round" =~ ^[0-9]+$ ]] || return 2
+  case "$verdict" in
+    PASS)
+      if (( implementation_round < target_round )); then
+        printf 'READY\n'
+      else
+        printf 'COMPLETE\n'
+      fi
+      ;;
+    CHANGES_REQUIRED)
+      printf 'NEEDS_CHANGES\n'
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
 agent_runtime_prepare_npm_cache() {
   local cache_base=""
 

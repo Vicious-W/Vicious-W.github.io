@@ -343,10 +343,8 @@ case "$command_name" in
         printf 'Review checkpoint: %s\n' "$(git -C "$ROOT_DIR" rev-parse HEAD)"
         printf 'Verdict: %s\n' "$verdict"
         if [[ "$verdict" == "PASS" ]]; then
-          printf 'The pending implementation passed review; returning control to the owner.\n'
-          exit 0
-        fi
-        if [[ "$verdict" != "CHANGES_REQUIRED" ]]; then
+          printf 'Review found no blocking changes; the owner-requested next implementation still runs.\n'
+        elif [[ "$verdict" != "CHANGES_REQUIRED" ]]; then
           printf 'Unknown review verdict; stopping: %s\n' "$verdict" >&2
           exit 4
         fi

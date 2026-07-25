@@ -133,6 +133,15 @@ else
   failure_count=$((failure_count + 1))
 fi
 
+if [[ "$(agent_review_task_status PASS 1 3)" == "READY" && \
+      "$(agent_review_task_status PASS 3 3)" == "COMPLETE" && \
+      "$(agent_review_task_status CHANGES_REQUIRED 1 3)" == "NEEDS_CHANGES" ]]; then
+  printf 'PASS  review verdict never reduces owner-requested implementation rounds\n'
+else
+  printf 'FAIL  review verdict produced an invalid next-round task state\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
 agent_write_run_manifest \
   "$MANIFEST_TEST" test-run test-task 1 IMPLEMENTER claude sonnet high \
   workspace-write-no-git 600 base-sha PENDING .agent/implementation-report.md
