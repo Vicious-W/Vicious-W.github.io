@@ -1,8 +1,8 @@
 # 项目参与者指令手册
 
-版本：v4.1
+版本：v4.2
 
-更新日期：2026-07-24
+更新日期：2026-07-25
 
 适用目录：`/home/vicious/projects/Vicious-W.github.io`
 
@@ -283,6 +283,20 @@ Monitor 根据当前切片和
 - `ROTATE_AND_CONTINUE`：缓存上下文相对产出过大，创建新会话代次后继续；
 - `WAIT_FOR_QUOTA`：已有真实额度边界证据，等待固定窗口；
 - `STOP_OWNER`：状态不安全或需要所有者决定。
+
+这里的“继续”和“轮换”含义不同：
+
+- `CONTINUE_NOW` 以新进程恢复原 session，保留完整 transcript，不发生压缩；
+- `ROTATE_AND_CONTINUE` 创建新 session generation，只依靠 Git、当前事实和结构化
+  交接恢复，才属于上下文压缩。
+
+不要在每次模型调用前机械压缩。判断额度异常时先比较 `cache creation`、
+`cache read`、`output`、最后一轮上下文、墙上时间和 API 活跃时间。初始项目提示只有
+几 KB 也可能在长会话中演变成数千万 cache read；反之，Playwright、构建或测试等待
+数分钟而 usage 不增长时，不应中断后让模型重新读取项目。
+
+实时 `assistant` 事件数不等于最终 turns。恢复 Claude 会话时事件流可能先回放历史
+`result`；只有当前进程退出后的最后终态 usage 才能用于正式结算。
 
 附着式 Monitor 使用 supervisor 输出的事件 ID 提交：
 
