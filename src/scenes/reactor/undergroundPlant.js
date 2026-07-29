@@ -398,6 +398,15 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
   const sampleScreen = new THREE.Mesh(track(new THREE.BoxGeometry(0.55, 0.4, 0.05)), sampleScreenMat);
   sampleScreen.position.set(15.6, floorY + 1.2, 5.68);
   group.add(sampleScreen);
+  // 取样支路上引：净化回水管 → 楼板套管 → 地面取样柜（labEnvironment 的 LAB-Q02）。
+  // 地面那一侧从同一个 XZ (7.6, 3.0) 的套管接出来，两层的管子真的对得上。
+  pipe([8.6, floorY + 0.87, 3.0], [7.6, floorY + 0.87, 3.0], 0.045, boltMat, false);
+  pipe([7.6, floorY + 0.87, 3.0], [7.6, ceilingY - 0.05, 3.0], 0.045, boltMat, false);
+  hanger(7.6, floorY + 3.2, 3.0, 0.4);
+  const sampleRiserSleeve = new THREE.Mesh(track(new THREE.CylinderGeometry(0.14, 0.14, 0.5, 12)), concrete);
+  sampleRiserSleeve.position.set(7.6, ceilingY, 3.0);
+  group.add(sampleRiserSleeve);
+
   const purifyBeads = flowBeads([
     [9.3, floorY + 1.5, -1.1], [11.8, floorY + 1.5, 0.4], [11.8, floorY + 1.9, 4.3],
     [13.0, floorY + 2.4, 5.9], [13.0, floorY + 0.5, 6.0], [8.7, floorY + 0.5, 5.4], [8.6, floorY + 1.05, 1.6]
@@ -434,6 +443,18 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
   sumpWater.rotation.x = -Math.PI / 2;
   sumpWater.position.set(-6.2, floorY - 0.6, -9.4);
   group.add(sumpWater);
+  // 地面补给撬块的溢流/排空重力管（labEnvironment 的 LAB-D01）：同一个 XZ (-6.2, -7.6)
+  // 的楼板套管落下来 → 沿地下顶板走到集水坑上方 → 下泄进坑（UG-D02）。
+  const drainRiserSleeve = new THREE.Mesh(track(new THREE.CylinderGeometry(0.2, 0.2, 0.5, 12)), concrete);
+  drainRiserSleeve.position.set(-6.2, ceilingY, -7.6);
+  group.add(drainRiserSleeve);
+  pipe([-6.2, ceilingY - 0.05, -7.6], [-6.2, floorY + 1.2, -7.6], 0.09, boltMat, false);
+  hanger(-6.2, floorY + 3.0, -7.6, 0.4);
+  elbow([-6.2, floorY + 1.2, -7.6], 0.09, boltMat);
+  pipe([-6.2, floorY + 1.2, -7.6], [-6.2, floorY + 1.2, -9.4], 0.09, boltMat, false);
+  elbow([-6.2, floorY + 1.2, -9.4], 0.09, boltMat);
+  pipe([-6.2, floorY + 1.2, -9.4], [-6.2, floorY + 0.1, -9.4], 0.09, boltMat, false);
+
   const sumpPump = pump(-6.2, floorY + 0.35, -9.4, 0.65);
   pipe([-6.2, floorY + 0.7, -9.4], [-6.2, floorY + 2.4, -9.4], 0.07, boltMat, false);
   elbow([-6.2, floorY + 2.4, -9.4], 0.07, boltMat);

@@ -553,11 +553,12 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   assert(cam.isHome(), "goHome() 后处于规范初始取景");
 
   // 解除方位/距离/高度限制：能转到池下方、能一路推进到堆芯附近
-  cam.orbit(0, -600);                        // 大幅上拖 → 俯仰到下限
+  // orbit() 用 pitch -= dy*speed：dy>0（向下拖）→ pitch 变负 = 俯视
+  cam.orbit(0, 900);                         // 大幅下拖 → 俯仰到下限（接近正俯视）
   assert(cam.rig.pitch <= -CAM_LIMITS.maxPitch + 1e-6,
     `俯仰可到接近正俯视: ${cam.rig.pitch.toFixed(3)}`);
   cam.goHome();
-  cam.orbit(0, 900);                         // 反向 → 仰到上限，旧 rig 在 22° 就被挡住
+  cam.orbit(0, -600);                        // 反向 → 机位降到 pivot 之下仰视，旧 rig 在 22° 仰角就被挡住
   assert(cam.rig.pitch >= CAM_LIMITS.maxPitch - 1e-6,
     `不再有 22° 最低仰角限位: ${cam.rig.pitch.toFixed(3)}`);
 
@@ -576,8 +577,8 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   assert(camera.position.y < reactor.poolBounds.surfaceY,
     `自由飞行可以下到名义水面之下: y=${camera.position.y.toFixed(2)} < ${reactor.poolBounds.surfaceY}`);
   for (let i = 0; i < 6; i++) cam.fly(1, new Set(["w"]), true);
-  assert(camera.position.y < UNDERGROUND_BOUNDS.ceiling,
-    `自由飞行可以下到地下设备层: y=${camera.position.y.toFixed(2)} < ${UNDERGROUND_BOUNDS.ceiling}`);
+  assert(camera.position.y < UNDERGROUND_BOUNDS.ceilingY,
+    `自由飞行可以下到地下设备层: y=${camera.position.y.toFixed(2)} < ${UNDERGROUND_BOUNDS.ceilingY}`);
   assert(camera.position.y >= CAM_LIMITS.minY - 1e-6, "但仍被世界包围盒兜住，不会飞到无穷远");
 
   // 平移（中键）与飞行都改 pivot，不改 distance
