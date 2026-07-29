@@ -1,22 +1,32 @@
-// 独立轻水体积：高度场波动、光学、切伦科夫辉光与浮力/阻力耦合。
-// 空间关系与验收见 docs/engineering/SOURCE_SCENE.md §6；池内热耦合见
-// docs/engineering/REACTOR_POOL_SYSTEM.md §5。
+// 独立轻水体积：高度场波动、光学（清晰度 / 折射 / 反射 / 焦散 / 水下衰减）与
+// 浮力/阻力耦合。空间关系与验收见 docs/engineering/SOURCE_SCENE.md §6，光学重构
+// 要求见 docs/engineering/SOURCE_LAB_OPTICS.md §7（WTR-001…WTR-003）。
 //
-// 求解层级（REALTIME_PROXY，标注于 REACTOR_POOL_SYSTEM.md §8）：
+// 求解层级（REALTIME_PROXY，标注于 REACTOR_POOL_SYSTEM.md §8 与 WTR-G01）：
 //   - 水面用固定子步长的二维阻尼波动方程（有限差分高度场）近似浅水表现；
-//   - 刚体（玻璃碎片）仍由 cannon-es 三维求解，浮力/阻力通过高度场采样耦合；
-//   - 自然对流羽流是由 fuel/pool 温度差驱动的着色强度代理，不做流体温度场；
-//   - 切伦科夫辉光位于水体几何内部，强度由 powerProxy / pulsePowerProxy 驱动。
+//   - 水面法线由该高度场的中心差分求得，不使用与动力学无关的滚动噪声；
+//   - 水面材质是真实的 transmission 折射玻璃质材（ior 1.333），因此从池口能直接
+//     看到堆芯、控制棒、反射体和池底结构（WTR-001「清澈」）；
+//   - 深度吸收/散射：水上由 transmission 的 attenuation（光程 = 厚度）承担，水下由
+//     场景指数雾承担（physicalScene 依据相机是否在水面之下切换），两者共用同一组
+//     衰减色，跨越水面时连续；
+//   - 焦散是由**同一个高度场**的曲率驱动的投影强度，随水面法线和被照物深度变化；
+//   - 自然对流羽流是 fuel/pool 温差驱动的折射强度代理，不做流体温度场；
+//   - 切伦科夫辉光已迁到 cherenkov.js（附着堆芯活性段），水体本身不自发蓝光。
 
 import * as THREE from "three";
 
-const GLOW_VERT = `
+const ADD_VERT = `
 varying vec2 vUv;
+varying vec3 vWorldPos;
 void main() {
   vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vec4 world = modelMatrix * vec4(position, 1.0);
+  vWorldPos = world.xyz;
+  gl_Position = projectionMatrix * viewMatrix * world;
 }`;
-const GLOW_FRAG = `
+
+const PLUME_FRAG = `
 precision highp float;
 uniform vec3 uColor;
 uniform float uIntensity;
@@ -31,31 +41,39 @@ void main() {
   gl_FragColor = vec4(uColor * (halo + core) * uIntensity, a);
 }`;
 
-const WATER_VERT = `
-varying vec3 vWorldPos;
-varying vec3 vNormalW;
-void main() {
-  vec4 world = modelMatrix * vec4(position, 1.0);
-  vWorldPos = world.xyz;
-  vNormalW = normalize(mat3(modelMatrix) * normal);
-  gl_Position = projectionMatrix * viewMatrix * world;
-}`;
-const WATER_FRAG = `
+// 焦散：直接采样高度场纹理，用中心差分得到水面曲率（拉普拉斯）。会聚的水面
+// （负曲率）在池底形成亮纹，发散处变暗——强度随水面法线变化，也随被照物深度
+// （uDepth：水面到该面的光程）指数衰减。
+const CAUSTIC_FRAG = `
 precision highp float;
-uniform vec3 uDeep;
-uniform vec3 uShallow;
-uniform float uOpacity;
-uniform vec3 uCamPos;
-varying vec3 vWorldPos;
-varying vec3 vNormalW;
+uniform sampler2D uHeight;
+uniform float uIntensity;
+uniform float uDepth;
+uniform float uTexel;
+uniform vec3 uColor;
+varying vec2 vUv;
 void main() {
-  vec3 viewDir = normalize(uCamPos - vWorldPos);
-  float fresnel = pow(1.0 - clamp(dot(viewDir, vNormalW), 0.0, 1.0), 2.2);
-  vec3 col = mix(uDeep, uShallow, fresnel * 0.8 + 0.15);
-  gl_FragColor = vec4(col, uOpacity);
+  vec2 d = (vUv - 0.5) * 2.0;
+  float r = length(d);
+  if (r > 1.0) discard;
+  float h  = texture2D(uHeight, vUv).r;
+  float hx = texture2D(uHeight, vUv + vec2(uTexel, 0.0)).r
+           + texture2D(uHeight, vUv - vec2(uTexel, 0.0)).r;
+  float hz = texture2D(uHeight, vUv + vec2(0.0, uTexel)).r
+           + texture2D(uHeight, vUv - vec2(0.0, uTexel)).r;
+  float lap = (hx + hz - 4.0 * h);
+  // 会聚 → 亮；发散 → 暗（下限 0，焦散只做加法）
+  float focus = clamp(-lap * 900.0, 0.0, 1.0);
+  float edge = 1.0 - smoothstep(0.86, 1.0, r);
+  float depthAtten = exp(-uDepth * 0.16);
+  float g = focus * edge * depthAtten * uIntensity;
+  if (g < 0.003) discard;
+  gl_FragColor = vec4(uColor * g, g);
 }`;
 
-const CHERENKOV = new THREE.Color(0.45, 0.72, 1.0);
+// 水下体积衰减色：与水上 transmission 的 attenuationColor 同源，跨越水面连续
+export const WATER_ATTENUATION = new THREE.Color(0.16, 0.55, 0.72);
+export const UNDERWATER_FOG_COLOR = new THREE.Color(0.020, 0.086, 0.132);
 
 // 切伦科夫辉光强度（0..1）。
 //
@@ -142,23 +160,33 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
     return surfaceY + (hx0 * (1 - fz) + hx1 * fz);
   }
 
-  // —— 可见水面网格（CPU 端按高度场逐帧更新顶点，域为方形，圆外用 shader 裁切）——
+  // 相机是否在名义水面之下且位于池体半径内（CAM-003：水上/水下光学的唯一判据）
+  function isUnderwater(camPos) {
+    if (!camPos) return false;
+    const r = Math.hypot(camPos.x, camPos.z);
+    if (r > poolRadius * 1.02) return false;
+    return camPos.y < heightAt(camPos.x, camPos.z);
+  }
+
+  // —— 可见水面网格（CPU 端按高度场逐帧更新顶点与法线，域为方形，边角收拢成圆）——
   const surfGeo = track(new THREE.PlaneGeometry(half * 2, half * 2, N, N));
   surfGeo.rotateX(-Math.PI / 2);
   const posAttr = surfGeo.attributes.position;
-  const waterMat = track(new THREE.ShaderMaterial({
-    vertexShader: WATER_VERT,
-    fragmentShader: WATER_FRAG,
-    transparent: true,
-    uniforms: {
-      uDeep: { value: new THREE.Color(0.02, 0.08, 0.16) },
-      uShallow: { value: new THREE.Color(0.25, 0.55, 0.85) },
-      uOpacity: { value: 0.72 },
-      uCamPos: { value: new THREE.Vector3() }
-    }
+  const normAttr = surfGeo.attributes.normal;
+
+  // WTR-001：轻水是**透明折射介质**，不是一层高不透明的蓝色薄膜。
+  // transmission = 1 + ior 1.333 让池内几何真实地经水面折射进入视野；
+  // attenuationColor/Distance 给出随光程增长的吸收（近处清晰、深处渐蓝）。
+  const waterMat = track(new THREE.MeshPhysicalMaterial({
+    color: 0xffffff, metalness: 0, roughness: 0.045,
+    transmission: 1, thickness: Math.min(poolDepth * 0.55, 3.6), ior: 1.333,
+    attenuationColor: WATER_ATTENUATION.clone(), attenuationDistance: 7.5,
+    specularIntensity: 1, envMapIntensity: 1.25,
+    transparent: true, side: THREE.DoubleSide, depthWrite: false
   }));
   const surfaceMesh = new THREE.Mesh(surfGeo, waterMat);
   surfaceMesh.position.y = surfaceY;
+  surfaceMesh.renderOrder = 2;
   group.add(surfaceMesh);
 
   // 圆形裁切：把方形网格边角挪到半径之外收拢（近似圆盘轮廓，避免方形水面穿帮）
@@ -175,51 +203,62 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
     }
   }
 
-  // —— 水体体积：透明侧壁 + 池底吸收，表达深度而非一张平面 ——
-  const bodyMat = track(new THREE.MeshPhysicalMaterial({
-    color: 0x0a2233, metalness: 0, roughness: 0.15, transmission: 0.55,
-    thickness: poolRadius, ior: 1.33, attenuationColor: new THREE.Color(0.05, 0.35, 0.55),
-    attenuationDistance: 5.5, transparent: true, opacity: 0.9, side: THREE.DoubleSide
+  // —— 深度吸收代理：贴着池底的一层径向/深度渐变盘 ——
+  // 水体不再用一个 transmission 圆柱去糊住内部（那正是 WTR-001 禁止的做法）。
+  // 从水面往下的吸收由 transmission 的 attenuation 承担；这里只补上"池底最远处
+  // 逐渐吃掉光"的那一段，让深度可读而不遮挡池内结构。REALTIME_PROXY。
+  const depthMat = track(new THREE.MeshBasicMaterial({
+    color: 0x05121c, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide
   }));
-  const bodyMesh = new THREE.Mesh(
-    track(new THREE.CylinderGeometry(poolRadius * 0.995, poolRadius * 0.995, surfaceY - (-poolDepth), 48, 1, true)),
-    bodyMat
-  );
-  bodyMesh.position.y = (surfaceY + (-poolDepth)) / 2;
-  group.add(bodyMesh);
+  const depthPlate = new THREE.Mesh(
+    track(new THREE.CircleGeometry(poolRadius * 0.995, 48)), depthMat);
+  depthPlate.rotation.x = -Math.PI / 2;
+  depthPlate.position.y = -poolDepth + 0.02;
+  depthPlate.renderOrder = 1;
+  group.add(depthPlate);
 
-  // —— 切伦科夫辉光（水体内部）——
-  const glowMat = track(new THREE.ShaderMaterial({
-    vertexShader: GLOW_VERT, fragmentShader: GLOW_FRAG,
-    uniforms: { uColor: { value: CHERENKOV.clone() }, uIntensity: { value: 0.0 }, uCore: { value: 1.4 } },
+  // —— 焦散：高度场纹理 → 池底投影（强度随水面法线/曲率与深度变化）——
+  const causticTex = track(new THREE.DataTexture(
+    new Float32Array(size), N + 1, N + 1, THREE.RedFormat, THREE.FloatType));
+  causticTex.minFilter = THREE.LinearFilter;
+  causticTex.magFilter = THREE.LinearFilter;
+  causticTex.wrapS = causticTex.wrapT = THREE.ClampToEdgeWrapping;
+  causticTex.needsUpdate = true;
+  const causticMat = track(new THREE.ShaderMaterial({
+    vertexShader: ADD_VERT, fragmentShader: CAUSTIC_FRAG,
+    uniforms: {
+      uHeight: { value: causticTex },
+      uIntensity: { value: reduceMotion ? 0.35 : 0.8 },
+      uDepth: { value: surfaceY + poolDepth },
+      uTexel: { value: 1 / (N + 1) },
+      uColor: { value: new THREE.Color(0.55, 0.82, 1.0) }
+    },
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
   }));
-  const glowDisc = new THREE.Mesh(track(new THREE.PlaneGeometry(poolRadius * 1.3, poolRadius * 1.3)), glowMat);
-  glowDisc.rotation.x = -Math.PI / 2;
-  glowDisc.position.y = corePosition.y + 0.2;
-  group.add(glowDisc);
+  const caustics = new THREE.Mesh(track(new THREE.PlaneGeometry(poolRadius * 2, poolRadius * 2)), causticMat);
+  caustics.rotation.x = -Math.PI / 2;
+  caustics.position.y = -poolDepth + 0.05;
+  caustics.renderOrder = 2;
+  group.add(caustics);
 
-  const haloMat = track(new THREE.ShaderMaterial({
-    vertexShader: GLOW_VERT, fragmentShader: GLOW_FRAG,
-    uniforms: { uColor: { value: new THREE.Color(0.2, 0.42, 0.85) }, uIntensity: { value: 0.0 }, uCore: { value: 0.2 } },
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
-  }));
-  const halo = new THREE.Mesh(track(new THREE.PlaneGeometry(poolRadius * 2, poolRadius * 2)), haloMat);
-  halo.rotation.x = -Math.PI / 2;
-  halo.position.y = corePosition.y + 0.05;
-  group.add(halo);
-
-  // —— 自然对流羽流（温差驱动的竖向淡色代理）——
+  // —— 自然对流羽流（温差驱动的竖向淡色折射代理）——
   const plumeMat = track(new THREE.ShaderMaterial({
-    vertexShader: GLOW_VERT, fragmentShader: GLOW_FRAG,
-    uniforms: { uColor: { value: new THREE.Color(0.5, 0.65, 0.7) }, uIntensity: { value: 0 }, uCore: { value: 0.5 } },
+    vertexShader: ADD_VERT, fragmentShader: PLUME_FRAG,
+    uniforms: {
+      uColor: { value: new THREE.Color(0.5, 0.65, 0.7) },
+      uIntensity: { value: 0 }, uCore: { value: 0.5 }
+    },
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
   }));
   const plumeGeo = track(new THREE.PlaneGeometry(1.4, 1.4));
   const plume = new THREE.Mesh(plumeGeo, plumeMat);
   plume.rotation.x = -Math.PI / 2;
-  plume.position.set(0, surfaceY - 0.05, 0);
+  plume.position.set(corePosition.x, surfaceY - 0.05, corePosition.z);
+  plume.renderOrder = 2;
   group.add(plume);
+
+  const causticData = causticTex.image.data;
+  let underwater = false;
 
   const update = (dt, sessionState) => {
     accumulator = Math.min(accumulator + dt, FIXED_STEP * 6);
@@ -228,29 +267,39 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
       accumulator -= FIXED_STEP;
     }
     if (!reduceMotion) {
+      // 顶点高度
+      for (let k = 0; k < size; k++) posAttr.setY(k, h[k]);
       posAttr.needsUpdate = true;
+      // 法线来自实际波场的中心差分（WTR-002：不用无关的滚动噪声）
       for (let j = 0; j <= N; j++) {
         for (let i = 0; i <= N; i++) {
-          const k = idx(i, j);
-          posAttr.setY(k, h[k]);
+          const im = Math.max(0, i - 1), ip = Math.min(N, i + 1);
+          const jm = Math.max(0, j - 1), jp = Math.min(N, j + 1);
+          const dhx = (h[idx(ip, j)] - h[idx(im, j)]) / ((ip - im) * dx);
+          const dhz = (h[idx(i, jp)] - h[idx(i, jm)]) / ((jp - jm) * dx);
+          const inv = 1 / Math.hypot(dhx, 1, dhz);
+          normAttr.setXYZ(idx(i, j), -dhx * inv, inv, -dhz * inv);
         }
       }
+      normAttr.needsUpdate = true;
+      causticData.set(h);
+      causticTex.needsUpdate = true;
     }
-
-    const flash = sessionState
-      ? cherenkovIntensity(sessionState.powerProxy, sessionState.pulsePowerProxy, reduceMotion)
-      : 0;
-    glowMat.uniforms.uIntensity.value = flash * 1.55;
-    haloMat.uniforms.uIntensity.value = flash * 0.53;
 
     if (sessionState) {
-      const diff = THREE.MathUtils.clamp(sessionState.fuelTemperatureProxy - sessionState.poolTemperatureProxy, 0, 1);
+      const diff = THREE.MathUtils.clamp(
+        sessionState.fuelTemperatureProxy - sessionState.poolTemperatureProxy, 0, 1);
       plumeMat.uniforms.uIntensity.value = diff * (reduceMotion ? 0.15 : 0.4);
-      waterMat.uniforms.uShallow.value.lerp(new THREE.Color(0.25 + diff * 0.1, 0.55, 0.85 - diff * 0.1), 0.02);
+      // 热羽流让局部水面粗糙度略升（折射被搅动），仍然是读状态、不回写状态
+      waterMat.roughness = 0.045 + diff * 0.05;
     }
+    // 水下时水面从内侧被看到：降低反射强度、提高吸收，避免"双重表面"
+    waterMat.envMapIntensity = underwater ? 0.5 : 1.25;
+    causticMat.uniforms.uIntensity.value = (reduceMotion ? 0.35 : 0.8) * (underwater ? 1.35 : 1.0);
   };
 
-  const setCamera = camPos => { waterMat.uniforms.uCamPos.value.copy(camPos); };
+  // 相机跨越水面（CAM-003）：只改变光学分支，不新建水体/会话
+  const setCamera = camPos => { underwater = isUnderwater(camPos); };
 
   const dispose = () => {
     disposables.forEach(d => { if (d && d.dispose) d.dispose(); });
@@ -264,7 +313,10 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
     dispose,
     addImpulse,
     heightAt,
+    isUnderwater,
+    get underwater() { return underwater; },
     surfaceY,
-    poolRadius
+    poolRadius,
+    poolDepth
   };
 }

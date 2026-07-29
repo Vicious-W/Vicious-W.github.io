@@ -15,9 +15,12 @@ import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import * as CANNON from "cannon-es";
 import { createReactorModel } from "./reactorModel.js";
-import { createWaterSystem } from "./waterSystem.js";
+import { createWaterSystem, cherenkovIntensity, UNDERWATER_FOG_COLOR } from "./waterSystem.js";
 import { createSessionController } from "./sessionController.js";
 import { createControlConsole } from "./controlConsole.js";
+import { createAutoConsole } from "./autoConsole.js";
+import { createFreeCamera, CAM_LIMITS } from "./freeCamera.js";
+import { createCherenkov } from "./cherenkov.js";
 import { createLabEnvironment, HALL_BOUNDS, HALL_COLLIDERS } from "./labEnvironment.js";
 import { createGlassArchitecture, GLASS_ARCH } from "./glassArchitecture.js";
 import { createUndergroundPlant, UNDERGROUND_BOUNDS } from "./undergroundPlant.js";
@@ -90,7 +93,10 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   if ("transmissionResolutionScale" in renderer) renderer.transmissionResolutionScale = 0.5;
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(FOV, 1, 0.5, 200);
+  // 近裁剪面来自 CAM-002：自由相机要能贴近仪表针和螺栓，又要覆盖到地下设备层
+  const camera = new THREE.PerspectiveCamera(FOV, 1, CAM_LIMITS.near, CAM_LIMITS.far);
+  // 水下体积雾（CAM-003 / WTR-002）：相机在水面之下时启用，跨越水面只切换光学分支
+  const underwaterFog = new THREE.FogExp2(UNDERWATER_FOG_COLOR.getHex(), 0.14);
 
   const pmrem = new THREE.PMREMGenerator(renderer);
   const envSrc = buildEnvTexture();
@@ -138,7 +144,23 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     reduceMotion
   });
   scene.add(console3d.group);
-  const hotspotMeshes = console3d.hotspots.map(h => h.mesh);
+
+  // —— CTL-002 AUTO 控制台（物理独立的立式仪控柜，共享同一个 session controller）——
+  const autoConsole3d = createAutoConsole({
+    commands: {
+      autoStart: () => session.requestAuto(),
+      scram: () => session.scram()
+    },
+    position: [4.9, 0, 6.2],
+    facing: -0.34,
+    reduceMotion
+  });
+  scene.add(autoConsole3d.group);
+
+  // 两台控制台的控件进同一个拾取表：控制权互斥由 sessionController 唯一裁决，
+  // 不存在第二套反应堆状态（CTL-003）。
+  const allHotspots = console3d.hotspots.concat(autoConsole3d.hotspots);
+  const hotspotMeshes = allHotspots.map(h => h.mesh);
 
   // —— 实验大厅环境（房间外壳、厂房设备、人员安全设施）——
   const lab = createLabEnvironment({ reduceMotion });
@@ -221,22 +243,27 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   // 永远下坠（实测：无楼板时松手后速度 1.5→4.0→6.0 持续增长，永不休眠）。
   // 用一圈扇段盒子拼出楼板，内边止于走道外沿——不用无限平面：无限平面会一路伸进
   // 池子里，把落进池中的玻璃架在 -0.06 上，而且正是规范禁止的"隐形碰撞面"。
+  // GLA-002 透明结构承托层的碰撞体：地板玻璃砖就落在这上面，移开砖之后留下的洞
+  // 直接通到地下设备层。它对应 glassArchitecture 里那层**看得见的**连续透明板
+  // （supportInnerR → supportOuterR，顶面 supportTop），不是凭空的隐形平面；
+  // 观察相机不参与碰撞，因此不会被它挡住（CAM-002）。
   const hallFloor = new CANNON.Body({ mass: 0, material: glassPhys });
   {
     const SEG = 32;
-    const rIn = deck.outerRadius;
-    const rOut = HALL_COLLIDERS.wallInner * 1.5;   // 乘 1.5 覆盖到方形大厅的四个角
+    const rIn = GLASS_ARCH.supportInnerR;
+    const rOut = GLASS_ARCH.supportOuterR;
     const rMid = (rIn + rOut) / 2;
     const halfRadial = (rOut - rIn) / 2;
     const halfTangent = rMid * Math.tan(Math.PI / SEG) * 1.05;
-    const segShape = new CANNON.Box(new CANNON.Vec3(halfRadial, 0.06, halfTangent));
+    const halfT = GLASS_ARCH.supportThickness / 2;
+    const segShape = new CANNON.Box(new CANNON.Vec3(halfRadial, halfT, halfTangent));
     const q = new CANNON.Quaternion();
     for (let i = 0; i < SEG; i++) {
       const a = (i / SEG) * Math.PI * 2;
       q.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), -a);
       hallFloor.addShape(
         segShape,
-        new CANNON.Vec3(Math.cos(a) * rMid, HALL_COLLIDERS.floorTop - 0.06, Math.sin(a) * rMid),
+        new CANNON.Vec3(Math.cos(a) * rMid, GLASS_ARCH.supportTop - halfT, Math.sin(a) * rMid),
         q.clone()
       );
     }
@@ -348,11 +375,16 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   const fragments = []; // { mesh, body } 破碎后的碎片
   const meshes = [];    // 仅完整玻璃参与拾取
 
+  const baseMaterialOf = entry =>
+    entry.kind === "floor" ? arch.floorGlassMaterial : materials[entry.matIndex];
+
   function applyCrackVisual(entry) {
-    const { mesh, damage } = entry;
+    const { damage } = entry;
     if (damage.stage === "INTACT") return;
-    if (mesh.material === materials[entry.matIndex]) {
-      mesh.material = materials[entry.matIndex].clone();
+    if (entry.kind === "floor") promoteFloorBrick(entry);
+    const mesh = entry.mesh;
+    if (mesh.material === baseMaterialOf(entry)) {
+      mesh.material = baseMaterialOf(entry).clone();
     }
     if (mesh.material.map) mesh.material.map.dispose();
     const tex = buildCrackTexture(damage.cracks, damage.stage);
@@ -364,25 +396,41 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
 
   function spawnFragments(entry) {
     const { mesh, body } = entry;
-    scene.remove(mesh);
+    if (grab.entry === entry) releaseGrab();   // 对象破碎时必须安全释放约束（GLA-CTRL-003）
+    if (mesh) scene.remove(mesh);
     world.removeBody(body);
     body.removeEventListener("collide", onCollide);
     const idx2 = cubes.indexOf(entry);
     if (idx2 >= 0) cubes.splice(idx2, 1);
-    const midx = meshes.indexOf(mesh);
-    if (midx >= 0) meshes.splice(midx, 1);
-    if (mesh.material !== materials[entry.matIndex]) {
-      // 裂纹贴图是 applyCrackVisual 生成的 canvas 纹理，破碎时一并释放
-      if (mesh.material.map) mesh.material.map.dispose();
-      mesh.material.dispose();
+    const fidx = floorBricks.indexOf(entry);
+    if (fidx >= 0) {
+      floorMesh.setMatrixAt(entry.instanceId, ZERO_MATRIX);
+      floorMesh.instanceMatrix.needsUpdate = true;
+      floorBricks.splice(fidx, 1);
+    }
+    if (mesh) {
+      const midx = meshes.indexOf(mesh);
+      if (midx >= 0) meshes.splice(midx, 1);
+      if (mesh.material !== baseMaterialOf(entry)) {
+        // 裂纹贴图是 applyCrackVisual 生成的 canvas 纹理，破碎时一并释放
+        if (mesh.material.map) mesh.material.map.dispose();
+        mesh.material.dispose();
+      }
     }
 
-    const shards = buildFragmentGeometries(CUBE, cubes.length + fragments.length + 1);
+    const shards = buildFragmentGeometries(entry.size, cubes.length + fragments.length + 1);
+    // 地板砖不是立方体：把碎片沿厚度方向等比压扁，碎片仍来自同一套破碎系统
+    const ky = entry.kind === "floor" ? FLOOR_BRICK[1] / FLOOR_BRICK[0] : 1;
+    if (ky !== 1) shards.forEach(s => {
+      s.geometry.scale(1, ky, 1);
+      s.halfExtents.y *= ky;
+      s.localCenter.y *= ky;
+    });
     const basePos = body.position;
     const baseQuat = body.quaternion;
     const worldCenter = new CANNON.Vec3();
     shards.forEach(shard => {
-      const mat = materials[entry.matIndex].clone();
+      const mat = baseMaterialOf(entry).clone();
       const fMesh = new THREE.Mesh(shard.geometry, mat);
       const localVec = new CANNON.Vec3(shard.localCenter.x, shard.localCenter.y, shard.localCenter.z);
       body.pointToWorldFrame(localVec, worldCenter);
@@ -395,7 +443,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       body.vectorToWorldFrame(dir, dir);
       dir.normalize();
       const fBody = new CANNON.Body({
-        mass: 1.5 / 8, material: glassPhys,
+        mass: Math.max(0.05, body.mass / 8), material: glassPhys,
         shape: new CANNON.Box(new CANNON.Vec3(shard.halfExtents.x, shard.halfExtents.y, shard.halfExtents.z)),
         position: new CANNON.Vec3(worldCenter.x, worldCenter.y, worldCenter.z),
         linearDamping: 0.15, angularDamping: 0.4, sleepSpeedLimit: 0.14, sleepTimeLimit: 0.6
@@ -431,12 +479,80 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     };
     body.addEventListener("collide", onCollide);
     world.addBody(body);
-    const entry = { mesh, body, damage: createDamageState(), matIndex: matIndex % materials.length };
+    const entry = {
+      kind: "cube", mesh, body, damage: createDamageState(),
+      matIndex: matIndex % materials.length, size: CUBE
+    };
     cubes.push(entry);
     meshes.push(mesh);
     mesh.userData.body = body;
     mesh.userData.entry = entry;
+    body.userData.entry = entry;
   };
+
+  // —————————— GLA-002 动态地板玻璃砖 ——————————
+  // 与格栅玻璃共用同一套质量/摩擦/耐久/裂纹/破碎/音频/会话复位系统（下面的
+  // onCollide、registerImpact、spawnFragments、抓取伺服全部复用），差别只有两点，
+  // 都是 GLA-003 明确的性能边界：
+  //   1) 完好的地板砖用一个 InstancedMesh 渲染（数百块 → 1 次绘制调用），逐帧从刚体
+  //      写回矩阵；抓取射线打到 InstancedMesh 时用 instanceId 还原到具体砖块；
+  //   2) 一旦某块砖开始受损（需要独立裂纹贴图），就把它"升格"成独立网格，
+  //      并把它在实例里的矩阵缩到 0 —— 因此裂纹系统一点没被降级掉。
+  const floorBricks = [];
+  const FLOOR_BRICK = GLASS_ARCH.floorBrick;
+  const floorHalf = new CANNON.Vec3(FLOOR_BRICK[0] / 2, FLOOR_BRICK[1] / 2, FLOOR_BRICK[2] / 2);
+  // 质量按玻璃立方体的密度等比放大（1.5 kg / 1 m³ 的同一比例尺）
+  const FLOOR_MASS = 1.5 * FLOOR_BRICK[0] * FLOOR_BRICK[1] * FLOOR_BRICK[2];
+  const floorMesh = new THREE.InstancedMesh(
+    arch.floorBrickGeometry, arch.floorGlassMaterial, Math.max(1, arch.layout.dynamic.length));
+  floorMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  floorMesh.count = arch.layout.dynamic.length;
+  floorMesh.frustumCulled = false;
+  scene.add(floorMesh);
+  const brickDummy = new THREE.Object3D();
+  const ZERO_MATRIX = new THREE.Matrix4().makeScale(0, 0, 0);
+
+  arch.layout.dynamic.forEach((p, i) => {
+    const body = new CANNON.Body({
+      mass: FLOOR_MASS, material: glassPhys,
+      shape: new CANNON.Box(floorHalf),
+      position: new CANNON.Vec3(p.x, p.y, p.z),
+      linearDamping: 0.14, angularDamping: 0.45,
+      sleepSpeedLimit: 0.12, sleepTimeLimit: 0.4
+    });
+    body.userData = {
+      lastSound: 0, lastDamage: -Infinity, baseAngularDamping: 0.45,
+      isFragment: false, spawnedAt: performance.now()
+    };
+    body.addEventListener("collide", onCollide);
+    world.addBody(body);
+    body.sleep(); // 初始布局是静止的：不因场景启动自行运动（GLA-002 刷新即复位）
+    const entry = {
+      kind: "floor", mesh: null, body, damage: createDamageState(),
+      matIndex: 0, size: FLOOR_BRICK[0], instanceId: i, home: { x: p.x, y: p.y, z: p.z }
+    };
+    body.userData.entry = entry;
+    floorBricks.push(entry);
+    brickDummy.position.set(p.x, p.y, p.z);
+    brickDummy.rotation.set(0, 0, 0);
+    brickDummy.scale.setScalar(1);
+    brickDummy.updateMatrix();
+    floorMesh.setMatrixAt(i, brickDummy.matrix);
+  });
+  floorMesh.instanceMatrix.needsUpdate = true;
+
+  // 受损地板砖升格为独立网格（保留完整裂纹贴图系统）
+  function promoteFloorBrick(entry) {
+    if (entry.mesh) return;
+    const mesh = new THREE.Mesh(arch.floorBrickGeometry, arch.floorGlassMaterial.clone());
+    mesh.userData.body = entry.body;
+    mesh.userData.entry = entry;
+    scene.add(mesh);
+    entry.mesh = mesh;
+    meshes.push(mesh);
+    floorMesh.setMatrixAt(entry.instanceId, ZERO_MATRIX);
+    floorMesh.instanceMatrix.needsUpdate = true;
+  }
 
   // —— 碰撞：撞击声 + 损伤 ——
   const DAMAGE_MIN_SPEED = 3.0; // 低于此不计入损伤（过滤静止/轻微接触，见 SOURCE_SCENE.md §7.2）
@@ -460,7 +576,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
         body.userData.lastSound = now;
         const wx = body.position.x + contact.ri.x;
         const pan = Math.max(-1, Math.min(1, wx / PAN_REF));
-        const entry = !isFragment ? cubes.find(c => c.body === body) : null;
+        const entry = !isFragment ? body.userData.entry : null;
         audio.impact({
           strength: THREE.MathUtils.clamp((vImpact - 0.7) / 6.5, 0, 1),
           velocity: THREE.MathUtils.clamp(vImpact / 8, 0, 1),
@@ -475,7 +591,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     const debounced = !isFragment && body.userData &&
       (nowMs - body.userData.lastDamage) < DAMAGE_DEBOUNCE_MS;
     if (!isFragment && !withinSettleGrace && !debounced && vImpact >= DAMAGE_MIN_SPEED) {
-      const entry = cubes.find(c => c.body === body);
+      const entry = body.userData.entry;
       if (entry) {
         body.userData.lastDamage = nowMs;
         const em = effectiveMass(body.mass, other.mass);
@@ -503,36 +619,21 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   // 反应堆按固定世界尺度建模，相机是一个绕池心的轨道机位：方位角/仰角由右键拖拽
   // 控制，距离由滚轮缩放。首帧用一个能同时装下屏蔽体上沿与池口的 fit 距离作为初始
   // 值，并据此设定缩放上下限；之后 resize 只更新宽高比，不覆盖用户的机位。
-  const orbit = {
-    azimuth: 0,                                 // 0 = 从 +Z 正面看，与旧固定机位一致
-    elevation: (CAM_ELEVATION_DEG * Math.PI) / 180,
-    distance: 14,
-    targetY: CAM_TARGET_Y,
-    minDistance: 4,
-    maxDistance: 40,
-    minElevation: (22 * Math.PI) / 180,         // 不低于池沿视角；再低会把镜头压进走道结构里
-    maxElevation: (88 * Math.PI) / 180,         // 不完全正俯视，保留立体感
-    initialized: false
-  };
-  const applyCamera = () => {
-    // 机位受厂房净空约束：抬头角越大、机位越远，相机就越高，不能穿过天花板；同理
-    // 水平半径不能超出墙内侧。这里在算位置前把两者夹回来——所以"越拉远越只能俯视
-    // 得越浅"，和真实房间里退到墙角看池子的感受一致。
-    const headroom = HALL_BOUNDS.ceiling - orbit.targetY;
-    const elCeil = Math.asin(clamp(headroom / Math.max(orbit.distance, 1e-3), -1, 1));
-    orbit.elevation = clamp(orbit.elevation, orbit.minElevation,
-      Math.max(orbit.minElevation, Math.min(orbit.maxElevation, elCeil)));
-    const ce0 = Math.cos(orbit.elevation);
-    if (orbit.distance * ce0 > HALL_BOUNDS.half) orbit.distance = HALL_BOUNDS.half / Math.max(ce0, 1e-3);
+  const cam = createFreeCamera({ camera });
+  let camInitialized = false;
+  let underwaterNow = false;
 
-    const ce = Math.cos(orbit.elevation);
-    camera.position.set(
-      orbit.distance * ce * Math.sin(orbit.azimuth),
-      orbit.targetY + orbit.distance * Math.sin(orbit.elevation),
-      orbit.distance * ce * Math.cos(orbit.azimuth)
-    );
-    camera.lookAt(0, orbit.targetY, 0);
+  const applyCamera = () => {
+    cam.apply();
+    // 水上/水下光学的唯一判据是相机相对名义水面的位置（CAM-003）。跨越水面只切换
+    // 光学分支：不新建水体/反应堆/玻璃会话，不改控制权，不触发音频。
     water.setCamera(camera.position);
+    const uw = water.underwater;
+    if (uw !== underwaterNow) {
+      underwaterNow = uw;
+      scene.fog = uw ? underwaterFog : null;
+      renderer.setClearColor(uw ? 0x061c28 : 0x02070f, 1);
+    }
   };
 
   const layout = () => {
@@ -547,11 +648,13 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     const halfV = (FOV * Math.PI) / 360;
     const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
     const fit = Math.max(FIT_RADIUS_V / Math.sin(halfV), FIT_RADIUS_H / Math.sin(halfH));
-    if (!orbit.initialized) { orbit.distance = fit; orbit.initialized = true; }
-    orbit.minDistance = fit * 0.32;
-    // 缩放上限同时受两件事约束：别退得太远失去主体，以及别退出厂房外墙（HALL/2 = 22）。
-    orbit.maxDistance = Math.min(fit * 2.2, 19);
-    orbit.distance = clamp(orbit.distance, orbit.minDistance, orbit.maxDistance);
+    // 规范初始取景（CAM-002 的"可回到初始取景"就是回到这里）。resize 只更新宽高比
+    // 与 home 距离，不再覆盖用户当前机位。
+    cam.setHome({
+      pivot: new THREE.Vector3(0, CAM_TARGET_Y, 0),
+      yaw: 0, pitch: -(CAM_ELEVATION_DEG * Math.PI) / 180, distance: fit
+    });
+    if (!camInitialized) { cam.goHome(); camInitialized = true; }
     applyCamera();
     return true;
   };
@@ -600,25 +703,96 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -LIFT_Y);
   const hit = new THREE.Vector3();
 
-  const moveHand = () => {
-    raycaster.setFromCamera(ndc, camera);
-    if (raycaster.ray.intersectPlane(dragPlane, hit)) hand.position.set(hit.x, hit.y, hit.z);
+  // ———————— GLA-CTRL 抓取伺服 ————————
+  // 鼠标只改世界水平面上的目标位置（GLA-CTRL-001），W/S 改目标高度，A/D 只绕世界
+  // 竖直轴偏航（GLA-CTRL-002）。跟随用**有界伺服冲量**，不是每帧传送：玻璃在抓取
+  // 期间仍参与碰撞，冲量、速度都有上限。
+  const GRAB = {
+    gain: 9, maxSpeed: 7, maxImpulse: 26,
+    liftRate: 2.4, yawRate: 2.0, minY: -10.6, maxY: 11.0, releaseSpeed: 3.0
+  };
+  const grab = { entry: null, y: LIFT_Y, yaw: 0, tx: 0, tz: 0 };
+  const keys = new Set();
+  let shiftDown = false;
+
+  const yawOf = q => Math.atan2(2 * (q.w * q.y + q.z * q.x), 1 - 2 * (q.y * q.y + q.x * q.x));
+
+  function beginGrab(entry) {
+    grab.entry = entry;
+    const b = entry.body;
+    b.wakeUp();
+    b.allowSleep = false;
+    b.angularDamping = 0.9;
+    b.angularVelocity.set(0, 0, 0);   // 抓取成功时清除已有随机角速度
+    grab.y = clamp(b.position.y, GRAB.minY, GRAB.maxY);
+    grab.yaw = yawOf(b.quaternion);
+    grab.tx = b.position.x; grab.tz = b.position.z;
+    dragPlane.constant = -grab.y;
+    canvas.style.cursor = "grabbing";
+  }
+
+  function releaseGrab() {
+    const entry = grab.entry;
+    grab.entry = null;
+    if (!entry) return;
+    const b = entry.body;
+    b.angularDamping = b.userData.baseAngularDamping;
+    b.allowSleep = true;
+    // 松开不注入随机角速度；线速度也钳到一个不会甩飞的上限，之后完全交回刚体系统
+    b.angularVelocity.set(0, 0, 0);
+    const sp = b.velocity.length();
+    if (sp > GRAB.releaseSpeed) b.velocity.scale(GRAB.releaseSpeed / sp, b.velocity);
+    b.wakeUp();
+    canvas.style.cursor = "";
+  }
+
+  const grabImpulse = new CANNON.Vec3();
+  function grabServo() {
+    if (!grab.entry) return;
+    const b = grab.entry.body;
+    // 位置伺服（有界）
+    const dx = grab.tx - b.position.x, dy = grab.y - b.position.y, dz = grab.tz - b.position.z;
+    let vx = dx * GRAB.gain, vy = dy * GRAB.gain, vz = dz * GRAB.gain;
+    const vlen = Math.hypot(vx, vy, vz);
+    if (vlen > GRAB.maxSpeed) { const s = GRAB.maxSpeed / vlen; vx *= s; vy *= s; vz *= s; }
+    grabImpulse.set((vx - b.velocity.x) * b.mass, (vy - b.velocity.y) * b.mass, (vz - b.velocity.z) * b.mass);
+    const il = grabImpulse.length();
+    if (il > GRAB.maxImpulse) grabImpulse.scale(GRAB.maxImpulse / il, grabImpulse);
+    b.applyImpulse(grabImpulse);                       // 作用于质心 → 不产生随机力矩
+    // 朝向：俯仰/翻滚锁定，只保留 A/D 的世界竖直轴偏航
+    b.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), grab.yaw);
+    b.angularVelocity.set(0, 0, 0);
+  }
+  world.addEventListener("preStep", grabServo);
+
+  // 抓取拾取表：格栅玻璃（独立网格）+ 动态地板砖（实例化）。
+  // 墙/天花玻璃属于固定建筑结构，从不进入这张表，因此不可抓取（GLA-001）。
+  const pickTargets = () => meshes.concat(floorMesh.count > 0 ? [floorMesh] : []);
+  const resolveEntry = h => {
+    if (h.object === floorMesh) return floorBricks.find(e => e.instanceId === h.instanceId) || null;
+    return h.object.userData.entry || null;
   };
 
-  // —— 右键轨道拖拽状态 ——
-  const ORBIT_SPEED = 0.006;   // 弧度/像素
-  const ZOOM_SPEED = 0.0012;   // 每单位 wheel delta 的对数缩放系数
+  const moveHand = () => {
+    raycaster.setFromCamera(ndc, camera);
+    dragPlane.constant = -grab.y;
+    if (raycaster.ray.intersectPlane(dragPlane, hit)) { grab.tx = hit.x; grab.tz = hit.z; }
+  };
+
+  // —— 右键轨道 / 中键平移拖拽状态 ——
   let orbitPointerId = null;
+  let orbitMode = "orbit";
   let orbitLast = { x: 0, y: 0 };
   let activeHotspot = null;       // 当前按住的控制台控件（用于 hold 类松开）
   let activeHotspotPointer = null;
 
   const onPointerDown = event => {
-    // 右键（或中键）→ 轨道相机
+    // 右键 → 轨道旋转；中键 → 平移（CAM-001）
     if (event.button === 2 || event.button === 1) {
       interactOutsideConsole();
       if (orbitPointerId !== null) return;
       orbitPointerId = event.pointerId;
+      orbitMode = event.button === 1 ? "pan" : "orbit";
       orbitLast.x = event.clientX; orbitLast.y = event.clientY;
       try { canvas.setPointerCapture(orbitPointerId); } catch (e) { /* 合成事件可能抛 */ }
       canvas.style.cursor = "move";
@@ -632,7 +806,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     raycaster.setFromCamera(ndc, camera);
     const hs = raycaster.intersectObjects(hotspotMeshes, false);
     if (hs.length) {
-      const spot = console3d.hotspots.find(h => h.mesh === hs[0].object);
+      const spot = allHotspots.find(h => h.mesh === hs[0].object);
       if (spot) {
         // 控制台热点：只解锁音频/时钟，控制权由该控件的指令自己决定
         // （AUTO 方钮 → AUTO；其余人工控件 → MANUAL 原位接管）。

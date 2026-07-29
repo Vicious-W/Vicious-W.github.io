@@ -190,10 +190,11 @@ export function createControlConsole({ commands, position = [0, 0, 6.8], facing 
   const lampRow = [lampShutdown, lampOperate, lampPulse, lampScram, lampPump, lampAuto, lampManual];
   lampRow.forEach((l, i) => { place(l.mesh, -0.55 + i * 0.26, 0.16); });
 
-  // —— AUTO 连续运行程序：方形蓝钮（全台唯一的方钮）——
-  const autoB = buttonMesh(COL.auto, 0.13, 0.06, 4);
-  place(autoB.group, -1.55, 0.20);
-  addHotspot(autoB.cap, "button", "auto", () => { commands.autoStart(); pulseCap(autoB); });
+  // —— AUTO 连续运行程序的**控件**已迁到物理独立的 AUTO 控制台（autoConsole.js）——
+  // SOURCE_LAB_OPTICS §9 CTL-002：「安全停堆后的 AUTO 重入只从 AUTO 面板的明确控件
+  // 发起」。CTL-001 保护的是本台的**人工指令**（启动/SCRAM/模式/泵/三棒/脉冲），
+  // 它们一个都没有减少；本台保留 AUTO/MANUAL 控制权反馈与阶段进度条，
+  // 因此操作员在人工台上仍然看得见自动程序在做什么。
 
   // —— AUTO 阶段八段进度条（无文字：逐段点亮表示程序走到哪一步）——
   const phaseSegs = PHASE_ORDER.map((_, i) => {
@@ -270,12 +271,6 @@ export function createControlConsole({ commands, position = [0, 0, 6.8], facing 
     // —— 控制权反馈：AUTO 蓝灯 / MANUAL 白灯 ——
     setLamp(lampAuto, state.controlOwner === "AUTO", 1.6);
     setLamp(lampManual, state.controlOwner === "MANUAL", 1.2);
-    // AUTO 方钮：可启动=全亮；正在运行=呼吸；不允许重放=压暗（必须先 SCRAM 到安全停堆）
-    if (state.controlOwner === "AUTO") {
-      autoB.mat.emissiveIntensity = reduceMotion ? 0.9 : 0.55 + blink * 0.5;
-    } else {
-      autoB.mat.emissiveIntensity = state.autoAvailable ? 1.1 : 0.06;
-    }
     // 脉冲钮：只有全部脉冲联锁满足才点亮（无文字地表达“现在能不能点火”）
     pulseB.mat.emissiveIntensity = state.pulseReady ? 1.0 : 0.08;
 

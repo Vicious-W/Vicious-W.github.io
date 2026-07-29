@@ -539,6 +539,8 @@ export function createReactorModel({ reduceMotion }) {
     deck: { innerRadius: POOL_RADIUS, outerRadius: WALK_R, y: -0.02, railRadius: WALK_R - 0.08, railHeight: 0.58 },
     bridgeAnchor: { y: BRIDGE_Y },
     corePosition: { x: 0, y: CORE_TOP, z: 0 },
+    // 活性燃料段的包围体（CHR-001：辉光必须附着实际堆芯体积，不附着水面或相机）
+    coreBounds: { topY: CORE_TOP, height: CORE_H, radius: CORE_RING_F, reflectorOuter: REFL_OUT },
     poolBounds: { radius: POOL_RADIUS, depth: POOL_DEPTH, surfaceY: WATER_SURFACE_Y, floorY: -POOL_DEPTH },
     controlRods: {
       SHIM: { x: shimCell.x, z: shimCell.z },
