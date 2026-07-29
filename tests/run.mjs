@@ -21,8 +21,10 @@ import {
 } from "../src/scenes/reactor/glassDamage.js";
 import { createReactorModel } from "../src/scenes/reactor/reactorModel.js";
 import { createWaterSystem, cherenkovIntensity } from "../src/scenes/reactor/waterSystem.js";
-import { HALL_BOUNDS, HALL_COLLIDERS } from "../src/scenes/reactor/labEnvironment.js";
-import { UNDERGROUND_BOUNDS } from "../src/scenes/reactor/undergroundPlant.js";
+import {
+  HALL_BOUNDS, HALL_COLLIDERS, LAB_COMPONENTS, createLabEnvironment
+} from "../src/scenes/reactor/labEnvironment.js";
+import { UNDERGROUND_BOUNDS, PLANT_COMPONENTS } from "../src/scenes/reactor/undergroundPlant.js";
 import { GLASS_ARCH, floorBrickLayout } from "../src/scenes/reactor/glassArchitecture.js";
 import { createFreeCamera, CAM_LIMITS, CAM_INPUT } from "../src/scenes/reactor/freeCamera.js";
 import { createCherenkov, exposureGain } from "../src/scenes/reactor/cherenkov.js";
@@ -689,6 +691,70 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
     "AUTO 台的安全返回走同一个 scram()，因此原位接管为 MANUAL");
   auto.update(c.state, 1 / 60);   // 不抛异常即可（几何更新只读状态）
   auto.dispose();
+}
+
+{
+  // —— LAB-001 / LAB-002 / LAB-004 地面设备：拓扑闭合与状态驱动 ——
+  const ids = new Set(LAB_COMPONENTS.map(c => c.id));
+  const ugIds = new Set(PLANT_COMPONENTS.map(c => c.id));
+  const EXTERNAL = new Set(["site", "pool", "hall", "stack", "bridge", "earth",
+    "rodSHIM", "rodREG", "rodTRANS"]);
+  const dangling = LAB_COMPONENTS.filter(c =>
+    !(ids.has(c.up) || ugIds.has(c.up) || EXTERNAL.has(c.up)) ||
+    !(ids.has(c.down) || ugIds.has(c.down) || EXTERNAL.has(c.down)));
+  assert(dangling.length === 0,
+    `地面设备的上下游都落在实体上（同层、地下层或场外接口），没有停在半空: ${
+      dangling.map(c => c.id).join(",") || "none"}`);
+  assert(LAB_COMPONENTS.every(c => ["SOURCE_VERIFIED", "TRIGA_ANALOGUE", "REALTIME_PROXY",
+    "SOURCE_ART_DIRECTION"].includes(c.tag)), "每台地面设备都带资料标签");
+
+  // 锁定拓扑：三回路两台换热器，两台都在地下；地面不得再出现第三台
+  const hx = PLANT_COMPONENTS.filter(c => /heatExchanger/i.test(c.name));
+  assert(hx.length === 2, `两台换热器全部在地下设备层: ${hx.map(c => c.id).join(",")}`);
+  assert(!LAB_COMPONENTS.some(c => /heatExchanger|换热/i.test(c.name)),
+    "地面设备清单里没有第四回路/第三台换热器一类无来源设备");
+
+  // 跨层对接：地面的排水立管与取样管必须真的接到地下的部件上
+  const drain = LAB_COMPONENTS.find(c => c.id === "LAB-D01");
+  const samp = LAB_COMPONENTS.find(c => c.id === "LAB-Q02");
+  assert(drain && ugIds.has(drain.down), `溢流排空接地下集水坑: ${drain.down}`);
+  assert(samp && ugIds.has(samp.down), `取样管接地下净化支路: ${samp.down}`);
+
+  // 状态驱动（LAB-004）：未解锁时通风不转、补给不动作
+  const lab = createLabEnvironment({});
+  const c = createSessionController({});
+  for (let i = 0; i < 60; i++) lab.update(c.state, 1 / 60);
+  const idle = lab.snapshot();
+  assert(idle.ventSpeed === 0 && idle.ahuSpin === 0,
+    `会话时钟未释放时通风机组真的停住: vent=${idle.ventSpeed}`);
+  assert(idle.rodBars.every(v => v <= 0.002),
+    `停堆时棒行程指示条在底部: ${idle.rodBars.join(",")}`);
+  assert(idle.annunciator[0] > 0.4 && idle.annunciator[1] <= 0.1,
+    `独立安全柱：停堆灯亮、供电灯灭: ${idle.annunciator.slice(0, 2).join(",")}`);
+
+  // 解锁并提棒运行：通风转起来、棒指示条跟随真实棒位、控制权灯点亮
+  c.unlock();
+  c.startup();
+  c.rodStart("SHIM", 1);
+  for (let i = 0; i < 600; i++) { c.update(1 / 60); lab.update(c.state, 1 / 60); }
+  const run = lab.snapshot();
+  assert(run.ventSpeed > 0.3 && run.ahuSpin !== 0,
+    `供电后通风机组按池水温度转起来: vent=${run.ventSpeed}`);
+  assert(Math.abs(run.rodBars[0] - c.state.rod.SHIM.pos) < 0.01,
+    `棒驱动柜指示条高度 = 真实棒位（不是独立动画）: ${run.rodBars[0]} vs ${c.state.rod.SHIM.pos.toFixed(3)}`);
+  assert(run.annunciator[1] > 0.5 && run.annunciator[0] <= 0.1,
+    `独立安全柱：运行时供电灯亮、停堆灯灭: ${run.annunciator.slice(0, 2).join(",")}`);
+  assert(run.annunciator[3] > 0.2, "独立安全柱显示当前控制权归属（MANUAL 已接管）");
+  assert(run.makeupLevel < 0.86 || run.makeupRunning,
+    `补给贮罐液位随蒸发下降 / 或补给泵已启动: ${run.makeupLevel}`);
+
+  // SCRAM 后停堆灯回来，控制权仍是 MANUAL
+  c.scram();
+  for (let i = 0; i < 30; i++) { c.update(1 / 60); lab.update(c.state, 1 / 60); }
+  const after = lab.snapshot();
+  assert(after.annunciator[0] > 0.4, "SCRAM 后独立安全柱的停堆灯立即恢复");
+  assert(after.rodBars.every(v => v <= 0.05), "SCRAM 后三条棒行程指示条都落回底部");
+  lab.dispose();
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
