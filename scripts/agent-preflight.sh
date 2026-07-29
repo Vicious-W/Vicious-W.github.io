@@ -254,6 +254,7 @@ required_files=(
   docs/engineering/SOURCE_SCENE.md
   docs/engineering/REACTOR_POOL_SYSTEM.md
   docs/engineering/REACTOR_MODEL.md
+  docs/engineering/SOURCE_LAB_OPTICS.md
   docs/guides/PROJECT_COMMAND_MANUAL.md
   docs/methodology/AI_Project_Meta_Method_v3.0_2026-07-23.md
   docs/methodology/AI_Project_Meta_Method_v4.0_2026-07-23.md
@@ -272,6 +273,7 @@ required_files=(
   scripts/agent-runners/codex.sh
   scripts/lib/agent-telemetry.mjs
   scripts/lib/agent-usage-ledger.mjs
+  scripts/lib/implementation-round-state.sh
   scripts/generate-cycle-summary.sh
   scripts/run-implementation.sh
   scripts/run-monitor.sh
@@ -370,6 +372,7 @@ fi
 if bash -n \
   "$ROOT_DIR/scripts/agent-preflight.sh" \
   "$ROOT_DIR/scripts/lib/agent-runtime.sh" \
+  "$ROOT_DIR/scripts/lib/implementation-round-state.sh" \
   "$ROOT_DIR/scripts/test-agent-runtime.sh" \
   "$ROOT_DIR/scripts/test-agent-supervisor.sh" \
   "$ROOT_DIR/scripts/run-implementation.sh" \
