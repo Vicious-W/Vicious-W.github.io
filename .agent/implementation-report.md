@@ -66,6 +66,18 @@ clamps to the 0.05 ceiling; `undefined`/`NaN` yield 0 rather than poisoning the 
 never leaves `[0,1)`. Plus an end-to-end check that feeds `createUndergroundPlant().update()` a
 **negative first step** followed by normal steps and asserts it no longer throws.
 
+## Second defect found and fixed: the AUTO console was invisible to acceptance
+
+Driving the real hotspots in the browser showed `__SOURCE_HOTSPOTS__` returning **11** entries, all
+MANUAL desk controls. Ray picking uses `allHotspots = console3d.hotspots.concat(autoConsole3d.hotspots)`
+(line 163), so the AUTO console was genuinely clickable by a human — but the acceptance hook mapped
+only `console3d.hotspots`, so no automated check could locate or click it. Since `next-task.md`
+requires verifying **both** consoles, this hook gap blocked a required check.
+
+`__SOURCE_HOTSPOTS__` now maps `allHotspots` and tags each entry with `console: "MANUAL" | "AUTO"`.
+It reports **13** hotspots (11 MANUAL + `auto`, `autoScram`), all `onScreen`. This is a debug-hook
+correction, not a behaviour change: no picking, ownership or command path was touched.
+
 ## Everything else this round
 
 The rest of the LAB/CAM/WTR/CHR/CTL/GLA work was implemented in the earlier slices of this same
@@ -249,14 +261,38 @@ draws, and blue dominates as required.
 - **Refresh = new session:** after `reload()`, `unlocked false`, `owner "NONE"`, `power 0`,
   `phase "INTERLOCKED_RESET"`, Cherenkov `0`.
 
+### Both consoles driven by real pointer clicks (1440×900, 0 console errors)
+
+- **MANUAL hotspot as the first interaction → MANUAL, executing that real command.** From
+  `unlocked false / owner NONE / scrammed true / SHUTDOWN`, one click on `start` gave
+  `unlocked true`, `owner "MANUAL"`, `scrammed false`, `mode "OPERATE"`, power rising `3.045e-7` —
+  it did **not** quietly start the auto program first.
+- **MANUAL command chain:** `pump` click → `pumpOn true`, flow `0 → 0.075`; press-and-hold on
+  `SHIM_up` → `rod.SHIM.pos 0 → 1.000` with flow `0.6` and power `3.7e-7 → 2.4e-6` (continuous
+  withdrawal under a held pointer); `scram` click → `scrammed true`, SHIM `→ 0`, `mode "SHUTDOWN"`,
+  power decaying `2.57e-6 → 5.13e-7`.
+- **AUTO → MANUAL in-place takeover preserves physics.** AUTO (entered by a wheel event away from
+  the consoles) reached `FULL_POWER_EQUILIBRIUM` at `power 1.005 / poolT 0.370 / flow 0.656 /
+  SHIM 0.789`. One click on the MANUAL `pump` hotspot flipped `owner → "MANUAL"`,
+  `phase "MANUAL_TAKEOVER"`, with **power 1.005, poolT 0.370 and SHIM 0.789 carried over
+  unchanged** — nothing reset — while the clicked command really executed (`pumpOn → false`,
+  flow decaying `0.656 → 0.581`).
+- **MANUAL → AUTO is gated by safe shutdown.** `requestAuto()` at `power 1.005` returned
+  **`false`** and ownership stayed MANUAL. After SCRAM and settling (`scrammed true`, `power 4.8e-7`,
+  `flow 0`, `SHUTDOWN`) the same call returned **`true`** and gave `owner "AUTO"`,
+  `phase "INTERLOCKED_RESET"`.
+- **The independent AUTO console initiates the same program on its own.** Clicking its `auto` button
+  at `(1085, 786)` as the *first* interaction gave `unlocked true`, `owner "AUTO"`, power rising;
+  the program then ran to `FULL_POWER_EQUILIBRIUM` (`power 1.005`, `SHIM 0.789`). Its `autoScram`
+  button at `(1165, 810)` stopped it (`power 1.005 → 0.0112`, `SHIM → 0`). Both consoles therefore
+  drive the one `sessionController` with no duplicated reactor state.
+
 ## Not verified
 
 Honest list — none of these are claimed as passing:
 
-- **MANUAL and AUTO console click-through.** The 11 hotspots were enumerated with correct on-screen
-  projected coordinates, but I did not click them in the browser, so MANUAL first-interaction entry,
-  the MANUAL command chain, AUTO→MANUAL in-place takeover and the SCRAM-gated MANUAL→AUTO return
-  are verified by Node logic tests only, not by pointer input.
+- **`pulseFire` and the `mode` toggle** were not clicked; the historic pulse was verified through
+  the AUTO program, not through a manual pulse from the MANUAL desk.
 - **Real pointer-drag glass grabbing.** The `W/S` lift, `A/D` yaw-only, locked pitch/roll,
   no-random-spin and release-physics behaviour is covered by logic tests and code inspection; I did
   not perform an actual pointer drag in the browser. `__SOURCE_FLOOR__().grabbed` was `null`

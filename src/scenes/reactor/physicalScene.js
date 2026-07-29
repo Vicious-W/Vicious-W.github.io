@@ -1148,15 +1148,17 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     rodStop: (n) => session.rodStop(n),
     pulseFire: () => session.pulseFire()
   };
-  // 控制台控件的屏幕坐标（供自动化验收模拟点击；非文字）
+  // 控制台控件的屏幕坐标（供自动化验收模拟点击；非文字）。
+  // 必须覆盖 allHotspots（MANUAL 台 + 独立 AUTO 台）：射线拾取用的就是 allHotspots，
+  // 只报 console3d 会让 AUTO 控制台在自动化验收里不可见、无法点击。
   window.__SOURCE_HOTSPOTS__ = () => {
     const rect = canvas.getBoundingClientRect();
     const v = new THREE.Vector3();
-    return console3d.hotspots.map(h => {
+    return allHotspots.map(h => {
       h.mesh.getWorldPosition(v);
       v.project(camera);
       return {
-        name: h.name, kind: h.kind,
+        name: h.name, kind: h.kind, console: h.console || (console3d.hotspots.includes(h) ? "MANUAL" : "AUTO"),
         x: rect.left + (v.x * 0.5 + 0.5) * rect.width,
         y: rect.top + (-v.y * 0.5 + 0.5) * rect.height,
         onScreen: v.z < 1 && Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1
