@@ -82,11 +82,13 @@ export function createFreeCamera({ camera }) {
   function apply() {
     rig.pitch = clamp(rig.pitch, -CAM_LIMITS.maxPitch, CAM_LIMITS.maxPitch);
     rig.distance = clamp(rig.distance, CAM_LIMITS.minDistance, CAM_LIMITS.maxDistance);
-    clampToWorld(pivot);
     basis();
     camera.position.copy(pivot).addScaledVector(forward, -rig.distance);
-    // 相机位置也钳回可达空间；仍然 lookAt(pivot)，因此朝向始终有效，不会在边界处翻转。
+    // 世界包围盒钳制作用在**相机**上（不是 pivot）：否则一个 14 米的轨道半径会让
+    // 相机永远停在盒底以上 14 米，进不了水下和地下（CAM-002）。钳完再把 pivot 拉回
+    // 到相机前方 distance 处，rig 三个量与实际机位始终自洽。
     clampToWorld(camera.position);
+    pivot.copy(camera.position).addScaledVector(forward, rig.distance);
     camera.up.copy(WORLD_UP);
     camera.lookAt(pivot);
   }

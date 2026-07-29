@@ -4,130 +4,182 @@ IMPLEMENTATION_STATUS: PARTIAL_STOPPED_BY_BUDGET_GUARD
 
 - Task: `source-lab-optics-free-camera-2026-07-28`
 - Implementation round: 1 of 2
-- Base commit: `35d889967462bfd981a99b2e276890e190b6b3e4`
+- Base commit: `80d162c62956a55f6813b82455401fa847a1f56a`
 - Round review base commit: `3a91731f7f2fd4ec76624ca4536bc3cb599cdaac`
 - Implementer runtime: claude / opus / max
 - Latest verdict handled: `NOT_REVIEWED` (no Blocker/Major existed)
 
 ## Honest status first
 
-The neutral USD budget guard consumed the slice during the read + design phase of a very
-large scope. Feature work stopped early **on purpose** to leave a coherent, building
-filesystem state. Two of the required subsystems are implemented and wired; the rest is
-**not started**. Nothing in this report claims work that was not done.
+The neutral USD budget guard stopped this slice during test stabilisation.
+`npx vite build` **PASSES**. `node tests/run.mjs` is at **163/169** — the 6 failures are
+**stale expectations in the new test block I wrote**, not defects found in the source
+(details and exact fixes in "Known failures" below). No Playwright MCP pass was run,
+so every appearance/behaviour claim below is **code-level only**.
 
-`./scripts/run-validation.sh` → **PASS** (Dependency PASS, Build PASS, Tests PASS
-132/132, Lint NOT CONFIGURED, Type check NOT CONFIGURED).
-Browser verification: **NOT RUN** — no Playwright MCP pass was performed this round.
+## Implemented this round
 
-## What was actually implemented
+### CAM-001/002/003 — `src/scenes/reactor/freeCamera.js` (new, wired)
 
-### LAB-003 / LAB-004 — `src/scenes/reactor/undergroundPlant.js` (new, wired)
+One rig, one state (`pivot` + `yaw` + `pitch` + `distance`); orbit and fly are two input
+paths into it, so they switch continuously. `camera.position = pivot - forward*distance`.
 
-Full three-dimensional underground equipment vault (`UNDERGROUND_BOUNDS`:
-ceiling −0.45, floor −9.2, half 19.5, shield clearance 5.35). 25 components are
-declared in the exported `PLANT_COMPONENTS` table with source tag and explicit
-upstream/downstream, so no pipe ends in mid-air:
+- Right-drag → `cam.orbit`; middle-drag → `cam.pan` (moves pivot along camera right/up,
+  distance unchanged); wheel → `cam.zoom` (continuous; once `distance` reaches
+  `CAM_LIMITS.minDistance = 0.08` further zoom pushes the pivot forward, so you can keep
+  dollying toward the core); `W/S/A/D/Q/E` → `cam.fly`; `Shift` is a pure speed
+  multiplier (`CAM_INPUT.flyBoost`), physics `dt` untouched.
+- **All old limits removed**: `orbit.minElevation 22°`, `maxDistance 19`, the
+  ceiling/`HALL_BOUNDS.half` clamps and `minDistance = fit*0.32` are gone. Replaced by a
+  single world box `CAM_LIMITS` (±40 XZ, y −11.5…15.6) applied **to the camera position**,
+  then pivot is re-derived in front of it — that is what lets a 14 m orbit radius still
+  reach underwater and the −9.2 underground floor.
+- Near/far 0.04/320 (was 0.5/200) for close-up parts plus the underground layer.
+- Home framing: `layout()` calls `cam.setHome({pivot:(0,0.3,0), yaw 0, pitch −40°,
+  distance fit})`; `Home`/`F` key calls `cam.goHome()`. Non-text. Resize no longer
+  overwrites the user's viewpoint.
+- The rig only writes `camera.position/quaternion` — no rigid body, so it cannot push
+  glass, equipment or water (CAM-002).
+- CAM-003: `applyCamera()` runs every frame and calls `water.setCamera()`;
+  `water.isUnderwater(camPos)` (camera below the sampled wave height and inside the pool
+  radius) is the single criterion. On transition it swaps `scene.fog` to a blue
+  `FogExp2` and the clear colour. It creates no new water/reactor/glass session, does not
+  touch `controlOwner`, and does not emit audio.
 
-- `UG-P01/V01/H01/P02` primary pool suction → isolation valve → HX1 → pool return,
-  penetrating the shield at y ≈ −6.0 with sleeves and bolted flanges;
-- `UG-K01/K02/T01/H02` intermediate closed loop: two pumps on concrete plinths,
-  surge tank, HX1 and HX2 with saddles/heads;
-- `UG-V02/X01` tertiary interface: insulated run, valve, wall sleeve + flange,
-  flow and temperature gauges with state-driven needles;
-- `UG-F01…F03/S01/S02` purification: filter, two ion-exchange columns, sample line,
-  sample cabinet with water-quality proxy screen;
-- `UG-D01…D03` drain trench with grating, sump pit, leak-collection funnels,
-  sump pump driven by an explicable level state machine;
-- `UG-A01…A03` TRANS air receiver, regulator/valve manifold, riser through the slab;
-- `UG-E01/E02` cable galleries (rigid conduit vs. flexible cable, different sections),
-  copper grounding bar and straps;
-- `UG-R01/R02` rabbit / hot-cell pneumatic transfer run (LENA `SOURCE_VERIFIED` fact,
-  routing `REALTIME_PROXY`).
+### WTR-001/002/003 — `src/scenes/reactor/waterSystem.js` (rewritten optics)
 
-State links (LAB-004): pump shaft/fan rotation and run lamps from `coolantFlowProxy`
-(flow 0 ⇒ geometry actually stops), valve stems/handwheels from flow and pool ΔT,
-HX shell emissive from loop ΔT, flow beads phase-advance only when flow > 0,
-air-receiver gauge from `rod.TRANS.pos`, sump pump from an integrated level state,
-underground lighting from `state.unlocked`. `snapshot()` exposes a read-only probe.
+- Surface is now `MeshPhysicalMaterial` `transmission 1, ior 1.333`, attenuation
+  `WATER_ATTENUATION` / 7.5 — real refraction, so core, rods, reflector and pool floor are
+  visible from the deck. The old single 0.72-opacity blue `ShaderMaterial` is gone.
+- Surface **normals** are recomputed each frame by central differences of the same height
+  field (`normAttr`), not rolling noise.
+- The opaque `transmission 0.55` volume cylinder that hid the pool interior was **deleted**.
+  Depth cues now come from (a) transmission attenuation above water, (b) `FogExp2`
+  underwater (genuine per-distance absorption for all lit materials), (c) a
+  `REALTIME_PROXY` dark gradient plate at the pool floor.
+- Caustics: new shader plane at the pool bottom sampling the height field as a
+  `DataTexture`; brightness = surface curvature (Laplacian) × depth attenuation
+  `exp(-depth*0.16)`, boosted 1.35× underwater.
+- Thermal plume kept, now moved to `corePosition` and driving surface roughness.
+- WTR-003: `stepWave`, `addImpulse`, `heightAt`, damping/relaxation constants,
+  buoyancy coupling and pulse impulses are **unchanged**; the optics only read state.
+- Cherenkov left this module (water no longer self-glows); `cherenkovIntensity()` stays
+  exported here so water and glow share one power causality.
 
-Source tags: `SOURCE_VERIFIED` (three-loop / two exchangers / underground pneumatic
-transfer), `TRIGA_ANALOGUE` (purification columns, sump, receiver),
-`REALTIME_PROXY` (every coordinate and enclosure shape — LAB-G01 stays open).
+### CHR-001/002/003 — `src/scenes/reactor/cherenkov.js` (new, wired)
 
-### GLA-001 / GLA-002 / GLA-003 — `src/scenes/reactor/glassArchitecture.js` (new, wired)
+Attached to `reactor.group` at the active fuel volume (`reactor.coreBounds`, newly exported
+from `reactorModel.js`: `topY −1.9, height 1.72, radius 1.15`).
 
-`SOURCE_ART_DIRECTION`. Exports `GLASS_ARCH` constants and `floorBrickLayout()`.
+1. Core volume glow (radius ×1.02, hard radial/axial falloff);
+2. three scattering shells (×1.75/×2.9/×4.6, intensity 0.46/0.20/0.085);
+3. `TUNED_PRESENTATION` point-sprite particles — sampled from the **core volume** with a
+   fixed-seed mulberry32 PRNG, emission rate ∝ shown intensity, outward+upward drift,
+   killed at the nominal surface (glow never floats in air), no collision/buoyancy/damage/audio;
+4. bounded exposure: soft-saturating `exposureGain()` (asymptote `knee + headroom` =
+   1.5) with asymmetric attack/release, plus an additive bloom-proxy sprite under the same
+   gain. `NoToneMapping` is unchanged, so nothing else in the scene shifts colour.
 
-- Walls: 4 × 128 instanced `RoundedBoxGeometry` glass bricks (2.75 × 1.5 × 0.32) with
-  real thickness, inner/outer faces, transmission (ior 1.52) and separate instanced
-  joint beams — joints are geometry, not a texture;
-- Ceiling: 256 instanced bricks (2.75 × 2.75 × 0.30) plus a joint grid;
-- Transparent structural support layer: continuous, untextured, ring from r 5.6 to 31.5
-  at y −0.32, with rim — serves floor bricks only;
-- Floor brick layout: canonical grid (cell 2.4, brick 2.26 × 0.26 × 2.26), pool
-  clearance r < 6.2 removed; `dynamicFloorRadius` splits grabbable bricks from
-  instanced fixed bricks as the GLA-003 performance tier (13 m on viewports < 820 px).
+Quality tier: 900 particles desktop, 360 small viewport, ≤240 reduce-motion — density
+degrades first, the volume glow and power causality never do.
 
-`labEnvironment.js` no longer draws the opaque concrete floor, walls or ceiling —
-those are now the glass-brick building.
+### GLA-001/002/003 + GLA-CTRL-001/002/003 — `physicalScene.js`
 
-## What is NOT implemented (all still open for round 2)
+- Dynamic floor bricks now exist as real bodies: `arch.layout.dynamic` → cannon boxes
+  (mass = 1.5 × brick volume), created asleep at the canonical layout, so refresh restores
+  position/orientation/durability. Rendered as **one `InstancedMesh`** (1 draw call),
+  matrices written back from the bodies each frame.
+- Tier: `dynamicFloorRadius` 15 desktop (~100 dynamic bricks) / 10.5 mobile (~45); the rest
+  stay fixed instanced glass — not one immovable plane.
+- Damage parity: a brick that takes damage is **promoted** to its own mesh with the full
+  crack texture and its instance matrix zeroed, so floor and grating glass share mass,
+  friction, durability, cracks, fracture, audio and session reset. Fragments are built by
+  the same `buildFragmentGeometries`, flattened by the brick's thickness ratio.
+- The old `hallFloor` ring collider at −0.06 was replaced by the collider for the
+  **visible** transparent support layer (`GLASS_ARCH.supportInnerR→supportOuterR`, top
+  −0.32) — it serves floor bricks only and does not reach the pool grating (5.6 > 3.4).
+- Grab: `PointToPointConstraint` at a fixed `LIFT_Y` plane is gone. New bounded servo in a
+  `world "preStep"` listener: velocity target `clamp((target−pos)*9, 7 m/s)`, impulse
+  capped at 26 N·s applied at the COM. Mouse sets `tx/tz` on the horizontal plane at the
+  current `grab.y`; `W/S` moves `grab.y` (2.4 m/s, clamped −10.6…11.0); `A/D` integrates
+  `grab.yaw` (2.0 rad/s) and the quaternion is set from the world Y axis only — pitch and
+  roll locked, no random spin. Grab zeroes existing angular velocity; release zeroes
+  angular velocity (no injection) and clamps linear speed to 3 m/s.
+- Input ownership: while grabbing, `W/S/A/D` are consumed by the glass and only `Q/E`
+  reach the camera; release restores fly control. `blur`, `visibilitychange`,
+  `pointercancel` and fracture all call `releaseGrab()`.
+- Wall/ceiling glass is never in `pickTargets()`, so it is not grabbable.
 
-- **CAM-001/002/003** — free camera untouched; the orbit rig still clamps azimuth-free
-  but elevation ≥ 22°, distance ≤ 19, and to hall headroom. No fly, no pan, no
-  underwater/underground traversal, no home-framing reset.
-- **GLA-002 dynamic floor bodies** — the layout exists but **no cannon bodies are
-  created**; floor bricks are not yet rendered or grabbable, and the old `hallFloor`
-  ring collider at y −0.06 is still the floor. The support-layer collider is not added.
-- **GLA-CTRL-001/002/003** — grabbing is still the old point-to-point drag at a fixed
-  lift plane with random rotation allowed; no W/S, A/D, pitch/roll lock or input
-  ownership.
-- **WTR-001/002/003** — `waterSystem.js` unchanged (opaque-ish shader surface, no
-  depth absorption, caustics, underwater fog or plume refraction).
-- **CHR-001/002/003** — no particle proxy, no core-attached volume rework, no exposure
-  control; still the two additive discs.
-- **CTL-002** — no AUTO console; MANUAL console unchanged (CTL-001 preserved).
-- **LAB-001/002 refinement** — hall interior beyond the glass shell is unchanged.
-- No new regression tests were added; `tests/run.mjs` is untouched and still asserts the
-  **old** camera constants (`CAM_MAX_DISTANCE 19`, `CAM_MIN_ELEVATION 22°`,
-  `FLOOR_RING_FACTOR 1.5`). Round 2 must update that block when the free camera lands.
+### CTL-002/CTL-003 — `src/scenes/reactor/autoConsole.js` (new, wired)
 
-## Known consequences of stopping here
+Physically separate vertical instrument bay at `[4.9, 0, 6.2]`: square blue AUTO button,
+guarded red safety-return, 8-segment phase tower, three rod bars, horizontal power meter,
+coolant-flow dial with a real needle, six interlock/ownership lamps. Only two commands
+(`session.requestAuto`, `session.scram`) — no second reactor state. Both consoles' hotspots
+merge into one pick list; ownership is still arbitrated solely by `sessionController`.
+The AUTO square button was **moved** off the MANUAL desk (spec §CTL-002: AUTO re-entry only
+from the AUTO panel); every MANUAL *command* (startup/scram/mode/pump/3 rods/pulse) and the
+MANUAL ownership lamps and phase bar are untouched.
 
-1. The glass ceiling and walls now exist but the camera is still clamped inside the hall,
-   so the default framing looks through wall/ceiling glass — appearance is unverified.
-2. The underground vault is built but, with no floor gap and no free camera, it is
-   effectively unreachable and largely unseen at runtime.
-3. Transparent-object sorting between architectural glass, water and pool structures is
-   completely unverified; over-draw and z-order regressions are plausible.
-4. Frame rate, draw calls, triangles, active bodies and particle counts were **not**
-   measured at any viewport.
+### Debug hooks (non-text, dispose-cleaned)
+
+`__SOURCE_CAM__` (rig + underwater + isHome + near/far), `__SOURCE_NAV__`
+(orbit/pan/zoom/fly/home through the *same* `cam.*` entry points), `__SOURCE_CHR__`,
+`__SOURCE_FLOOR__` (brick count, atHome, asleep, damaged, maxTilt, grab target/yaw),
+`__SOURCE_PERF__` (draw calls, triangles, awake bodies, particles, brick counts, DPR).
+
+## Known failures (must be fixed first in round 2)
+
+`node tests/run.mjs` → 163/169. All six are **my new assertions written against the wrong
+sign/field**, verified by reading the failure output:
+
+1. `俯仰可到接近正俯视` / `不再有 22° 最低仰角限位` — `orbit()` uses `pitch -= dy*speed`, so
+   `dy=-600` gives `+1.536` and `dy=+900` gives `-1.536`. The two assertions are swapped.
+2. `自由飞行可以下到名义水面之下` / `…地下设备层` — written before the world-box clamp moved
+   to the camera; also `UNDERGROUND_BOUNDS.ceiling` does not exist, the field is
+   `ceilingY`. Re-run needed after the fix landed in `freeCamera.apply()`.
+3. `Shift 是纯速度倍率` — the test flies along a downward pitch and hits the world box, so
+   the ratio reads 3.175 instead of 3.4; fly horizontally (`"d"`) instead.
+4. `压缩是单调的` — this one **was** a real defect and is fixed: `exposureGain` now soft-
+   saturates instead of `1/(1+over*k)`, which used to make stronger pulses dimmer.
+
+## Not verified at all
+
+- **No Playwright MCP pass** — 390×844 / 768×1024 / 1440×900, session reset, first
+  interaction, pool operation and pulse, water response, glass interactions, audio,
+  responsive layout and browser console are **UNVERIFIED**.
+- Frame rate, draw calls, triangles, awake bodies and particle counts were **not measured**
+  (`__SOURCE_PERF__` exists but was never read in a browser).
+- Transparent sort order between wall/ceiling glass, floor bricks, water surface, caustics
+  and Cherenkov additive layers is **unverified** and is the highest visual risk.
+- The underwater `FogExp2` does not affect `ShaderMaterial` layers (caustics, plume,
+  Cherenkov) — accepted, but its appearance is unchecked.
+- LAB-001/LAB-002 ground-floor refinement was **not started** this round.
 
 ## Verification
 
 | Check | Result |
 | --- | --- |
-| `npm run build` | PASS |
-| `npm test` | PASS — 132/132 logic checks |
+| `npx vite build` | PASS |
+| `node tests/run.mjs` | 163/169 — 6 stale new assertions (above) |
 | Lint / Type check | NOT CONFIGURED |
-| Playwright MCP 390×844 / 768×1024 / 1440×900 | NOT RUN |
-| Browser console | UNVERIFIED |
-| Audio, camera, water, glass, dual console flows | UNVERIFIED |
+| `./scripts/run-validation.sh` | NOT RUN this slice (budget guard) |
+| Playwright MCP, 3 viewports | NOT RUN |
 
 ## Open gaps
 
-`LAB-G01` (no Pavia as-built drawings — layout kept `REALTIME_PROXY`, topology real),
-`LAB-G02` (glass building is `SOURCE_ART_DIRECTION`) are handled as designed.
-`WTR-G01`, `CHR-G01`, `CAM-G01`, `GLA-G01` are **untouched** because their subsystems
-were not started.
+`LAB-G01`, `LAB-G02` unchanged. `WTR-G01` now concrete: no volumetric light transport —
+above-water absorption is transmission thickness, underwater is `FogExp2`, caustics are a
+curvature proxy. `CHR-G01` handled by the `TUNED_PRESENTATION` particle system.
+`CAM-G01` partially handled (instancing + tiers) but **unmeasured**. `GLA-G01` handled by
+sleep + radius tiering + promotion-on-damage, also unmeasured.
 
 ## Handoff focus for the next REVIEWER
 
-1. Confirm the two new modules are structurally sound and that
-   `PLANT_COMPONENTS` upstream/downstream really matches the built geometry.
-2. Confirm `labEnvironment.js` losing its floor/walls/ceiling did not orphan colliders
-   or leave the hall visually broken — this is the highest-risk change of the round.
-3. Do **not** treat any `CAM-*`, `WTR-*`, `CHR-*`, `CTL-002`, `GLA-CTRL-*` item as
-   attempted; report them as not implemented rather than as defects.
-4. The round-2 implementer must be given the full remaining list above as mandatory work.
+1. Treat the 6 test failures as **known and diagnosed**; check my diagnoses rather than
+   re-deriving them, and confirm `exposureGain` monotonicity is now correct.
+2. Highest risk is transparent render order and over-draw (glass walls + ceiling + floor
+   bricks + water transmission + additive Cherenkov) — this has never been rendered.
+3. Second risk: ~100 dynamic floor-brick bodies plus the grab servo running in `preStep`;
+   confirm bricks stay asleep at rest and that the servo cannot tunnel or fling.
+4. LAB-001/LAB-002 refinement is **not attempted**; report as not implemented, not defective.

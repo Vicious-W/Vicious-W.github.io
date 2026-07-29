@@ -22,6 +22,12 @@ import {
 import { createReactorModel } from "../src/scenes/reactor/reactorModel.js";
 import { createWaterSystem, cherenkovIntensity } from "../src/scenes/reactor/waterSystem.js";
 import { HALL_BOUNDS, HALL_COLLIDERS } from "../src/scenes/reactor/labEnvironment.js";
+import { UNDERGROUND_BOUNDS } from "../src/scenes/reactor/undergroundPlant.js";
+import { GLASS_ARCH, floorBrickLayout } from "../src/scenes/reactor/glassArchitecture.js";
+import { createFreeCamera, CAM_LIMITS, CAM_INPUT } from "../src/scenes/reactor/freeCamera.js";
+import { createCherenkov, exposureGain } from "../src/scenes/reactor/cherenkov.js";
+import { createAutoConsole, AUTO_PHASE_ORDER } from "../src/scenes/reactor/autoConsole.js";
+import * as THREE from "three";
 
 let failures = 0;
 let checks = 0;
@@ -423,16 +429,10 @@ const reactor = createReactorModel({ reduceMotion: false });
     (water.heightAt(0, 0) - rest).toExponential(2));
 }
 {
-  // 相机不穿墙 / 玻璃不无限下坠所依赖的常量（改厂房尺寸时在这里失败）
-  const CAM_MAX_DISTANCE = 19;                    // physicalScene layout() 缩放上限
-  const CAM_MIN_ELEVATION = (22 * Math.PI) / 180; // physicalScene orbit.minElevation
-  const FLOOR_RING_FACTOR = 1.5;                  // physicalScene hallFloor 外半径系数
+  // 厂房尺度仍是设备与碰撞体的单一事实来源（相机自 CAM-002 起不再受这些限位约束）
   assert(HALL_BOUNDS.half > 0 && HALL_BOUNDS.ceiling > 0, "厂房净空为正");
-  assert(CAM_MAX_DISTANCE * Math.cos(CAM_MIN_ELEVATION) < HALL_BOUNDS.half,
-    `最远机位在最低仰角下仍在墙内: ${(CAM_MAX_DISTANCE * Math.cos(CAM_MIN_ELEVATION)).toFixed(2)} < ${HALL_BOUNDS.half}`);
-  assert(HALL_BOUNDS.half < HALL_COLLIDERS.wallInner, "相机水平限位比墙碰撞面更靠内");
-  assert(HALL_BOUNDS.ceiling > reactor.poolBounds.surfaceY, "相机天花限位高于水面");
-  assert(FLOOR_RING_FACTOR >= Math.SQRT2, "楼板扇环覆盖方形大厅四角");
+  assert(HALL_BOUNDS.half < HALL_COLLIDERS.wallInner, "厂房净空比墙碰撞面更靠内");
+  assert(HALL_BOUNDS.ceiling > reactor.poolBounds.surfaceY, "厂房净空高于水面");
   assert(HALL_COLLIDERS.floorTop < reactor.deck.y, "厂房楼板低于池边走道");
 }
 
@@ -539,6 +539,155 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   run(c, 5, 1 / 60);
   assert(c.state.rod.TRANS.pos < 0.02 && c.state.powerProxy < peak * 0.2,
     "三棒全提状态下 SCRAM 仍把功率和棒位压下来");
+}
+
+// ————————— 10. SOURCE 第二阶段：自由相机 / 玻璃砖地板 / 切伦科夫 —————————
+{
+  // —— CAM-001 / CAM-002 自由观察相机 ——
+  const camera = new THREE.PerspectiveCamera(50, 1.6, CAM_LIMITS.near, CAM_LIMITS.far);
+  const cam = createFreeCamera({ camera });
+  cam.setHome({ pivot: new THREE.Vector3(0, 0.3, 0), yaw: 0, pitch: -0.6981, distance: 14 });
+  cam.goHome();
+  assert(camera.position.z > 0 && camera.position.y > 0.3,
+    `初始机位在 +Z 上方（与旧固定机位一致）: ${camera.position.toArray().map(n => n.toFixed(2))}`);
+  assert(cam.isHome(), "goHome() 后处于规范初始取景");
+
+  // 解除方位/距离/高度限制：能转到池下方、能一路推进到堆芯附近
+  cam.orbit(0, -600);                        // 大幅上拖 → 俯仰到下限
+  assert(cam.rig.pitch <= -CAM_LIMITS.maxPitch + 1e-6,
+    `俯仰可到接近正俯视: ${cam.rig.pitch.toFixed(3)}`);
+  cam.goHome();
+  cam.orbit(0, 900);                         // 反向 → 仰到上限，旧 rig 在 22° 就被挡住
+  assert(cam.rig.pitch >= CAM_LIMITS.maxPitch - 1e-6,
+    `不再有 22° 最低仰角限位: ${cam.rig.pitch.toFixed(3)}`);
+
+  cam.goHome();
+  for (let i = 0; i < 40; i++) cam.zoom(-400);
+  assert(cam.rig.distance <= CAM_LIMITS.minDistance + 1e-9,
+    "连续缩放可以顶到最近距离（不再有 fit*0.32 的下限）");
+  assert(Math.hypot(camera.position.x, camera.position.z) < 6.5,
+    `顶到最近后机位已进到池口以内: r=${Math.hypot(camera.position.x, camera.position.z).toFixed(2)}`);
+
+  // 进入水下与地下：飞行必须能穿过名义水面和地板标高
+  cam.goHome();
+  cam.rig.pitch = -Math.PI / 2 + 0.02; cam.apply();   // 朝下
+  cam.fly(1, new Set(["w"]), true);
+  cam.fly(1, new Set(["w"]), true);
+  assert(camera.position.y < reactor.poolBounds.surfaceY,
+    `自由飞行可以下到名义水面之下: y=${camera.position.y.toFixed(2)} < ${reactor.poolBounds.surfaceY}`);
+  for (let i = 0; i < 6; i++) cam.fly(1, new Set(["w"]), true);
+  assert(camera.position.y < UNDERGROUND_BOUNDS.ceiling,
+    `自由飞行可以下到地下设备层: y=${camera.position.y.toFixed(2)} < ${UNDERGROUND_BOUNDS.ceiling}`);
+  assert(camera.position.y >= CAM_LIMITS.minY - 1e-6, "但仍被世界包围盒兜住，不会飞到无穷远");
+
+  // 平移（中键）与飞行都改 pivot，不改 distance
+  cam.goHome();
+  const d0 = cam.rig.distance;
+  cam.pan(120, 60, 900);
+  assert(Math.abs(cam.rig.distance - d0) < 1e-9 && cam.pivot.lengthSq() > 0,
+    "中键平移只移动 pivot，不改变轨道距离");
+  cam.goHome();
+  assert(cam.isHome(), "任意漫游后都能回到规范初始取景");
+
+  // Shift 只是速度倍率
+  cam.goHome();
+  const p1 = cam.pivot.clone();
+  cam.fly(1, new Set(["w"]), false);
+  const slow = cam.pivot.distanceTo(p1);
+  cam.goHome();
+  cam.fly(1, new Set(["w"]), true);
+  const fast = cam.pivot.distanceTo(p1);
+  assert(Math.abs(fast / slow - CAM_INPUT.flyBoost) < 1e-6,
+    `Shift 是纯速度倍率: ${(fast / slow).toFixed(3)} == ${CAM_INPUT.flyBoost}`);
+}
+
+{
+  // —— GLA-001 / GLA-002 / GLA-003 玻璃砖建筑与动态地板 ——
+  const full = floorBrickLayout(Infinity);
+  const tiered = floorBrickLayout(15);
+  const mobile = floorBrickLayout(10.5);
+  assert(full.fixed.length === 0 && full.dynamic.length > 200,
+    `无性能档时整块地板都是动态砖: ${full.dynamic.length}`);
+  assert(tiered.dynamic.length > 40 && tiered.fixed.length > 0,
+    `桌面档既有动态砖也有固定砖: ${tiered.dynamic.length} / ${tiered.fixed.length}`);
+  assert(mobile.dynamic.length < tiered.dynamic.length && mobile.dynamic.length > 20,
+    `移动档减少动态砖但不退化成不可移动平面: ${mobile.dynamic.length}`);
+  assert(tiered.dynamic.length + tiered.fixed.length === full.dynamic.length,
+    "分档不丢砖：动态 + 固定 = 全部格位");
+  assert(full.dynamic.every(p => Math.hypot(p.x, p.z) >= GLASS_ARCH.poolClearR),
+    "地板砖不侵入池口/屏蔽体让位半径");
+  assert(Math.abs(full.restY - (GLASS_ARCH.floorTop - GLASS_ARCH.floorBrick[1] / 2)) < 1e-9,
+    "规范初始布局的静止高度 = 地板顶面减半个砖厚（刷新即复位）");
+  assert(GLASS_ARCH.supportTop <= full.restY - GLASS_ARCH.floorBrick[1] / 2 + 1e-9,
+    `透明承托层顶面不高于砖底: ${GLASS_ARCH.supportTop} <= ${full.restY - GLASS_ARCH.floorBrick[1] / 2}`);
+  assert(GLASS_ARCH.supportInnerR < GLASS_ARCH.poolClearR,
+    "承托层内边在池口让位半径以内，不会在砖下留空");
+  assert(GLASS_ARCH.supportOuterR >= GLASS_ARCH.hallHalf * Math.SQRT2,
+    "承托层覆盖方形大厅四角");
+  // 承托层只服务地板砖，不冒充池口安全格栅：两者高度与半径都不重叠
+  assert(GLASS_ARCH.supportInnerR > reactor.grating.radius,
+    `承托层不覆盖池口格栅: ${GLASS_ARCH.supportInnerR} > ${reactor.grating.radius}`);
+}
+
+{
+  // —— CHR-001 / CHR-003 功率因果与有界曝光 ——
+  assert(cherenkovIntensity(0.2, 0) === 0, "低功率（<100 kW 档）不常亮");
+  assert(cherenkovIntensity(1.0, 0) > 0.99, "250 kW 稳态时稳态通道满亮");
+  assert(cherenkovIntensity(0.1, 0.8) > cherenkovIntensity(0.1, 0),
+    "低功率下的历史脉冲仍然照亮池水（独立毫秒功率通道）");
+  assert(exposureGain(0.5) === 1, "膝点以下不压缩曝光");
+  const g = exposureGain(3.0);
+  assert(g < 1 && 3.0 * g < 1.6,
+    `强脉冲经软压缩后峰值有界: 3.0 → ${(3.0 * g).toFixed(3)}`);
+  assert(exposureGain(6.0) * 6.0 > exposureGain(3.0) * 3.0,
+    "压缩是单调的：更强的输入仍然更亮，只是增益递减");
+
+  const chr = createCherenkov({
+    coreBounds: reactor.coreBounds, surfaceY: reactor.poolBounds.surfaceY,
+    particleBudget: 200, intensityOf: s => cherenkovIntensity(s.powerProxy, s.pulsePowerProxy)
+  });
+  const shut = { powerProxy: 0, pulsePowerProxy: 0 };
+  for (let i = 0; i < 120; i++) chr.update(1 / 60, shut);
+  assert(chr.snapshot().particles === 0, "停堆时不发射粒子（池水里没有蓝点）");
+  const full = { powerProxy: 1, pulsePowerProxy: 0 };
+  for (let i = 0; i < 180; i++) chr.update(1 / 60, full);
+  const snap = chr.snapshot();
+  assert(snap.particles > 20, `250 kW 时粒子系统在工作: ${snap.particles}`);
+  assert(snap.shown > 0.5, `250 kW 时辉光明显: ${snap.shown}`);
+  const coreCenter = reactor.coreBounds.topY - reactor.coreBounds.height / 2;
+  assert(Math.abs(snap.coreCenterY - coreCenter) < 1e-3,
+    "辉光体积附着活性燃料段中心，不附着水面或相机");
+  assert(coreCenter + reactor.coreBounds.height / 2 < reactor.poolBounds.surfaceY,
+    "活性段整体浸没在水面之下");
+  chr.dispose();
+}
+
+{
+  // —— CTL-002 / CTL-003 双控制台共享同一个 session controller ——
+  const c = createSessionController({});
+  const calls = [];
+  const auto = createAutoConsole({
+    commands: { autoStart: () => { calls.push("auto"); return c.requestAuto(); },
+      scram: () => { calls.push("scram"); return c.scram(); } }
+  });
+  const names = auto.hotspots.map(h => h.name);
+  assert(names.includes("auto"), "AUTO 台有完整自动程序的入口控件");
+  assert(names.includes("autoScram"), "AUTO 台有安全返回控件");
+  assert(auto.hotspots.length === 2,
+    `AUTO 台只有 AUTO 与安全返回两个控件，不建立第二套人工指令: ${names.join(",")}`);
+  assert(AUTO_PHASE_ORDER.length === AUTO_PHASES.length &&
+    AUTO_PHASE_ORDER.every((p, i) => p === AUTO_PHASES[i]),
+    "AUTO 台的阶段塔与 autoProgram 的阶段序列一致");
+
+  // 控制权互斥仍由 sessionController 唯一裁决
+  c.unlock();
+  auto.hotspots.find(h => h.name === "auto").press();
+  assert(c.state.controlOwner === "AUTO", "AUTO 台的方钮把控制权交给自动程序");
+  auto.hotspots.find(h => h.name === "autoScram").press();
+  assert(c.state.controlOwner === "MANUAL" && c.state.scrammed,
+    "AUTO 台的安全返回走同一个 scram()，因此原位接管为 MANUAL");
+  auto.update(c.state, 1 / 60);   // 不抛异常即可（几何更新只读状态）
+  auto.dispose();
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

@@ -22,12 +22,16 @@ const clamp = THREE.MathUtils.clamp;
 export const CHERENKOV_COLOR = new THREE.Color(0.42, 0.68, 1.0);
 
 // 曝光：raw 超过 knee 后进入软压缩，峰值有界（CHR-003「不过曝整屏」）
-export const EXPOSURE = { knee: 0.85, compress: 1.9, attack: 0.09, release: 0.75 };
+export const EXPOSURE = { knee: 0.85, headroom: 0.65, attack: 0.09, release: 0.75 };
 
-// 有界曝光增益：raw 是四层共同的原始强度，返回 <= 1 的增益
-export function exposureGain(raw, knee = EXPOSURE.knee, compress = EXPOSURE.compress) {
-  const over = Math.max(0, raw - knee);
-  return 1 / (1 + over * compress);
+// 有界曝光增益：raw 是四层共同的原始强度，返回 <= 1 的增益。
+// 膝点以上做**软饱和**而不是简单反比——反比会让更强的脉冲反而更暗（非单调），
+// 这里让显示值渐近到 knee + headroom：峰值有界，但"更强仍然更亮"。
+export function exposureGain(raw, knee = EXPOSURE.knee, headroom = EXPOSURE.headroom) {
+  if (raw <= knee) return 1;
+  const over = raw - knee;
+  const shown = knee + (over * headroom) / (over + headroom);
+  return shown / raw;
 }
 
 // 固定种子 PRNG（mulberry32）：粒子分布可复现，不是每帧的不受控随机

@@ -170,12 +170,26 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   // 移动视口只对近池半径内的地板砖保持动态刚体，其余为固定实例化玻璃地板
   // （GLA-003 性能档：不把整块地板退化成不可移动平面）。
   const smallViewport = Math.min(window.innerWidth || 1440, window.innerHeight || 900) < 820;
+  // 动态半径（GLA-003）：近池的地板砖是独立刚体（可抓、可破），更外圈改用固定
+  // 实例化玻璃地板。桌面 15 ≈ 100 块动态砖，移动端 10.5 ≈ 45 块——不是把整块地板
+  // 退化成一个不可移动平面，而是按距离分档。
   const arch = createGlassArchitecture({
-    reduceMotion, dynamicFloorRadius: smallViewport ? 13 : Infinity
+    reduceMotion, dynamicFloorRadius: smallViewport ? 10.5 : 15
   });
   scene.add(arch.group);
   const underground = createUndergroundPlant({ reduceMotion });
   scene.add(underground.group);
+
+  // —— CHR-001…CHR-003 切伦科夫：附着堆芯活性段，由同一条功率因果驱动 ——
+  // 粒子质量档（§11 性能与降级）：先减粒子密度，体积辉光与功率因果不被降级掉。
+  const cherenkov = createCherenkov({
+    coreBounds: reactor.coreBounds,
+    surfaceY: reactor.poolBounds.surfaceY,
+    reduceMotion,
+    particleBudget: smallViewport ? 360 : 900,
+    intensityOf: s => cherenkovIntensity(s.powerProxy, s.pulsePowerProxy, reduceMotion)
+  });
+  reactor.group.add(cherenkov.group);
 
   // —— 物理世界 ——
   const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -20, 0) });
@@ -331,11 +345,6 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       gratingBody.quaternion.x, gratingBody.quaternion.y, gratingBody.quaternion.z, gratingBody.quaternion.w
     );
   }
-
-  const hand = new CANNON.Body({
-    mass: 0, shape: new CANNON.Sphere(0.05), collisionFilterGroup: 0, collisionFilterMask: 0
-  });
-  world.addBody(hand);
 
   // —— 声音 ——
   const audio = createGlassAudio();
@@ -690,8 +699,6 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   // —— 拖拽 ——
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
-  let joint = null;
-  let dragging = null;
   let pointerId = null;
 
   const setNdc = event => {
@@ -821,25 +828,18 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     }
     // 控制台以外的左键（拖玻璃或点空处）→ 进入 AUTO
     interactOutsideConsole();
-    // 否则 → 抓取玻璃
-    const hits = raycaster.intersectObjects(meshes, false);
+    // 否则 → 抓取玻璃（只有格栅玻璃和动态地板玻璃在拾取表里）
+    const hits = raycaster.intersectObjects(pickTargets(), false);
     if (!hits.length) return;
+    const entry = resolveEntry(hits[0]);
+    if (!entry) return;
 
-    const body = hits[0].object.userData.body;
     pointerId = event.pointerId;
     try { canvas.setPointerCapture(pointerId); } catch (e) { /* 合成事件可能抛，无碍 */ }
-    dragging = body;
-    body.wakeUp();
-    body.angularDamping = 0.8;
-
-    const p = hits[0].point;
-    const local = new CANNON.Vec3(p.x, p.y, p.z);
-    body.pointToLocalFrame(local, local);
-
-    hand.position.set(p.x, p.y, p.z);
-    joint = new CANNON.PointToPointConstraint(body, local, hand, new CANNON.Vec3(0, 0, 0), 55);
-    world.addConstraint(joint);
-    canvas.style.cursor = "grabbing";
+    beginGrab(entry);
+    // 抓取起点就用命中点所在的水平面，避免玻璃在按下瞬间跳到别处
+    grab.tx = hits[0].point.x;
+    grab.tz = hits[0].point.z;
     moveHand();
   };
 
@@ -848,8 +848,8 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       const dx = event.clientX - orbitLast.x;
       const dy = event.clientY - orbitLast.y;
       orbitLast.x = event.clientX; orbitLast.y = event.clientY;
-      orbit.azimuth -= dx * ORBIT_SPEED;
-      orbit.elevation = clamp(orbit.elevation + dy * ORBIT_SPEED, orbit.minElevation, orbit.maxElevation);
+      if (orbitMode === "pan") cam.pan(dx, dy, canvas.clientHeight || 900);
+      else cam.orbit(dx, dy);
       applyCamera();
       return;
     }
@@ -857,7 +857,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       setNdc(event);
       raycaster.setFromCamera(ndc, camera);
       if (raycaster.intersectObjects(hotspotMeshes, false).length) canvas.style.cursor = "pointer";
-      else canvas.style.cursor = raycaster.intersectObjects(meshes, false).length ? "grab" : "";
+      else canvas.style.cursor = raycaster.intersectObjects(pickTargets(), false).length ? "grab" : "";
       return;
     }
     if (event.pointerId !== pointerId) return;
@@ -880,12 +880,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       return;
     }
     if (pointerId === null || (event && event.pointerId !== pointerId)) return;
-    if (joint) { world.removeConstraint(joint); joint = null; }
-    if (dragging) {
-      dragging.angularDamping = dragging.userData.baseAngularDamping;
-      dragging.wakeUp();
-    }
-    dragging = null;
+    releaseGrab();
     try { canvas.releasePointerCapture(pointerId); } catch (e) { /* 指针已没了 */ }
     pointerId = null;
     canvas.style.cursor = "";
@@ -894,13 +889,30 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   const onWheel = event => {
     interactOutsideConsole();
     event.preventDefault();
-    orbit.distance = clamp(orbit.distance * Math.exp(event.deltaY * ZOOM_SPEED),
-      orbit.minDistance, orbit.maxDistance);
+    cam.zoom(event.deltaY);
     applyCamera();
   };
 
   const onContextMenu = event => event.preventDefault();
-  const onKeyDown = () => interactOutsideConsole();
+
+  // —— 键盘：自由飞行 / 抓取输入所有权（GLA-CTRL-003）——
+  // 抓取期间 W/S/A/D 专用于玻璃；松开后立即恢复自由飞行。Q/E 始终属于相机，
+  // Shift 只是速度倍率（不改物理时间）。Home/F = 非文字的"回到规范初始取景"。
+  const CAM_KEYS = new Set(["w", "a", "s", "d", "q", "e"]);
+  const onKeyDown = event => {
+    interactOutsideConsole();
+    const k = (event.key || "").toLowerCase();
+    if (k === "shift") { shiftDown = true; return; }
+    if (k === "home" || k === "f") { cam.goHome(); applyCamera(); return; }
+    if (CAM_KEYS.has(k)) { keys.add(k); event.preventDefault(); }
+  };
+  const onKeyUp = event => {
+    const k = (event.key || "").toLowerCase();
+    if (k === "shift") { shiftDown = false; return; }
+    keys.delete(k);
+  };
+  // 键盘丢焦 / 窗口失焦：安全释放约束并清空按键，避免"键卡住"或玻璃被无人拖着
+  const onBlur = () => { keys.clear(); shiftDown = false; releaseGrab(); pointerId = null; };
 
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
@@ -909,6 +921,8 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   canvas.addEventListener("wheel", onWheel, { passive: false });
   canvas.addEventListener("contextmenu", onContextMenu);
   window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("keyup", onKeyUp);
+  window.addEventListener("blur", onBlur);
 
   // —— 滑动声：扫描当前接触，取最大切向相对速度 ——
   const relVel = new CANNON.Vec3();
@@ -1015,9 +1029,11 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     reactor.update(dt, session.state);
     water.update(dt, session.state);
     console3d.update(session.state, dt);
+    autoConsole3d.update(session.state, dt);
     lab.update(session.state, dt);
     underground.update(session.state, dt);
     arch.update(session.state, dt);
+    cherenkov.update(dt, session.state);
     if (reactorAudio) reactorAudio.update(dt, session.state);
 
     world.step(1 / 60, dt, 4);
@@ -1032,6 +1048,23 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     const dt = Math.min((now - last) / 1000, 0.05);
     last = now;
 
+    // —— 输入所有权（GLA-CTRL-003）：抓着玻璃时 W/S/A/D 属于玻璃，否则属于相机 ——
+    if (grab.entry) {
+      const lift = (keys.has("w") ? 1 : 0) - (keys.has("s") ? 1 : 0);
+      const yaw = (keys.has("a") ? 1 : 0) - (keys.has("d") ? 1 : 0);
+      if (lift) grab.y = clamp(grab.y + lift * GRAB.liftRate * dt, GRAB.minY, GRAB.maxY);
+      if (yaw) grab.yaw += yaw * GRAB.yawRate * dt;
+      // Q/E 仍归相机：抓取只独占 W/S/A/D
+      const camOnly = new Set();
+      if (keys.has("q")) camOnly.add("q");
+      if (keys.has("e")) camOnly.add("e");
+      if (camOnly.size) cam.fly(dt, camOnly, shiftDown);
+    } else {
+      cam.fly(dt, keys, shiftDown);
+    }
+    // 每帧重算机位与水上/水下分支：水面本身在动，光学分支不能只在鼠标事件里更新
+    applyCamera();
+
     simulate(dt);
 
     for (let i = 0; i < cubes.length; i++) {
@@ -1043,6 +1076,26 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       const { mesh, body } = fragments[i];
       mesh.position.set(body.position.x, body.position.y, body.position.z);
       mesh.quaternion.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
+    }
+
+    // 完好的动态地板砖：一次绘制调用写回全部实例矩阵（受损的已升格为独立网格）
+    if (floorMesh.count > 0) {
+      for (let i = 0; i < floorBricks.length; i++) {
+        const e = floorBricks[i];
+        if (e.mesh) {
+          e.mesh.position.set(e.body.position.x, e.body.position.y, e.body.position.z);
+          e.mesh.quaternion.set(
+            e.body.quaternion.x, e.body.quaternion.y, e.body.quaternion.z, e.body.quaternion.w);
+          continue;
+        }
+        brickDummy.position.set(e.body.position.x, e.body.position.y, e.body.position.z);
+        brickDummy.quaternion.set(
+          e.body.quaternion.x, e.body.quaternion.y, e.body.quaternion.z, e.body.quaternion.w);
+        brickDummy.scale.setScalar(1);
+        brickDummy.updateMatrix();
+        floorMesh.setMatrixAt(e.instanceId, brickDummy.matrix);
+      }
+      floorMesh.instanceMatrix.needsUpdate = true;
     }
 
     renderer.render(scene, camera);
@@ -1135,9 +1188,59 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       samples
     };
   };
-  window.__SOURCE_CAM__ = () => ({
-    az: +orbit.azimuth.toFixed(4), el: +orbit.elevation.toFixed(4), dist: +orbit.distance.toFixed(3),
-    pos: [+camera.position.x.toFixed(2), +camera.position.y.toFixed(2), +camera.position.z.toFixed(2)]
+  window.__SOURCE_CAM__ = () => Object.assign(cam.snapshot(), {
+    underwater: water.underwater,
+    home: cam.isHome(),
+    near: camera.near, far: camera.far
+  });
+  // 自由相机的自动化驱动钩子（非文字，供验收模拟右键/中键/滚轮/飞行；
+  // 走的是与鼠标键盘完全相同的 cam.* 入口，不是另一套简化运动）。
+  window.__SOURCE_NAV__ = {
+    orbit: (dx, dy) => { cam.orbit(dx, dy); applyCamera(); return cam.snapshot(); },
+    pan: (dx, dy) => { cam.pan(dx, dy, canvas.clientHeight || 900); applyCamera(); return cam.snapshot(); },
+    zoom: (d) => { cam.zoom(d); applyCamera(); return cam.snapshot(); },
+    fly: (dirs, seconds = 1, boost = false) => {
+      const set = new Set(String(dirs).toLowerCase().split(""));
+      const step = 1 / 60;
+      for (let i = 0; i < Math.round(seconds / step); i++) cam.fly(step, set, boost);
+      applyCamera();
+      return cam.snapshot();
+    },
+    home: () => { cam.goHome(); applyCamera(); return cam.snapshot(); }
+  };
+  // 切伦科夫的只读快照（功率因果、有界曝光、活粒子数）
+  window.__SOURCE_CHR__ = () => cherenkov.snapshot();
+  // 渲染代价快照（绘制调用/三角形/活动刚体/粒子），供三视口性能记录
+  window.__SOURCE_PERF__ = () => ({
+    calls: renderer.info.render.calls,
+    triangles: renderer.info.render.triangles,
+    programs: renderer.info.programs ? renderer.info.programs.length : -1,
+    bodies: world.bodies.length,
+    awake: world.bodies.filter(b => b.mass > 0 && b.sleepState !== CANNON.Body.SLEEPING).length,
+    particles: cherenkov.snapshot().particles,
+    floorDynamic: floorBricks.length,
+    floorFixed: arch.counts.floorFixed,
+    wallBricks: arch.counts.wall,
+    ceilingBricks: arch.counts.ceiling,
+    dpr: renderer.getPixelRatio()
+  });
+  // 动态地板玻璃的只读统计（GLA-002 / GLA-CTRL：复位、休眠、抓取约束验收）
+  window.__SOURCE_FLOOR__ = () => ({
+    bricks: floorBricks.length,
+    fixed: arch.counts.floorFixed,
+    restY: +arch.layout.restY.toFixed(3),
+    atHome: floorBricks.filter(e =>
+      Math.hypot(e.body.position.x - e.home.x, e.body.position.y - e.home.y,
+        e.body.position.z - e.home.z) < 0.02).length,
+    asleep: floorBricks.filter(e => e.body.sleepState === CANNON.Body.SLEEPING).length,
+    damaged: floorBricks.filter(e => e.damage.stage !== "INTACT").length,
+    maxTilt: floorBricks.reduce((m, e) => {
+      const q = e.body.quaternion;
+      return Math.max(m, Math.abs(2 * (q.w * q.x + q.y * q.z)) + Math.abs(2 * (q.w * q.z - q.x * q.y)));
+    }, 0),
+    grabbed: grab.entry ? grab.entry.kind : null,
+    grabTarget: grab.entry ? [+grab.tx.toFixed(3), +grab.y.toFixed(3), +grab.tz.toFixed(3)] : null,
+    grabYaw: grab.entry ? +grab.yaw.toFixed(4) : null
   });
   window.__SOURCE_GLASS__ = () => ({
     cubes: cubes.length,
@@ -1171,7 +1274,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   }
 
   const onVisibility = () => {
-    if (document.hidden) stop();
+    if (document.hidden) { onBlur(); stop(); }
     else if (section.getBoundingClientRect().bottom > 0) start();
   };
   document.addEventListener("visibilitychange", onVisibility);
@@ -1216,21 +1319,33 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       canvas.removeEventListener("webglcontextlost", onContextLost);
       canvas.removeEventListener("webglcontextrestored", onContextRestored);
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+      world.removeEventListener("preStep", grabServo);
       cubes.forEach(({ body }) => body.removeEventListener("collide", onCollide));
+      floorBricks.forEach(({ body }) => body.removeEventListener("collide", onCollide));
       fragments.forEach(({ body }) => body.removeEventListener("collide", onCollide));
       if (audio) audio.dispose();
       if (reactorAudio) reactorAudio.dispose();
       reactor.dispose();
       water.dispose();
       console3d.dispose();
+      autoConsole3d.dispose();
       lab.dispose();
+      arch.dispose();
+      underground.dispose();
+      cherenkov.dispose();
       geo.dispose();
       materials.forEach(m => m.dispose());
       envRT.dispose();
       renderer.dispose();
       if (window.__SOURCE_STATE__ === session.state) delete window.__SOURCE_STATE__;
       delete window.__SOURCE_GLASS__;
+      delete window.__SOURCE_FLOOR__;
       delete window.__SOURCE_CAM__;
+      delete window.__SOURCE_NAV__;
+      delete window.__SOURCE_CHR__;
+      delete window.__SOURCE_PERF__;
       delete window.__SOURCE_CMD__;
       delete window.__SOURCE_HOTSPOTS__;
       delete window.__SOURCE_ADVANCE__;
