@@ -1,34 +1,78 @@
 # Agent Implementation Report
 
-IMPLEMENTATION_STATUS: PARTIAL_BROWSER_EVIDENCE_BLOCKED
+IMPLEMENTATION_STATUS: COMPLETE_WITH_BROWSER_EVIDENCE
 
 - Task: `source-lab-optics-free-camera-2026-07-28`
 - Implementation round: 1 of 2
-- Base commit: `a8cfcae65cd0ace0a412300ca818e537838bf9b0`
+- Base commit: `50b7d76074ecb1503e54c562c71806d7b9e87b2e`
 - Round review base commit: `3a91731f7f2fd4ec76624ca4536bc3cb599cdaac`
 - Implementer runtime: claude / opus / max
-- Latest verdict handled: `NOT_REVIEWED` (no Blocker/Major existed)
+- Latest verdict handled: `NOT_REVIEWED` (no Blocker/Major existed to address)
 
-## Honest status first
+## Headline: the browser pass ran, and it found a Blocker-class bug
 
-All configured checks pass: `npx vite build` **PASS**, `node tests/run.mjs` **185/185**,
-`./scripts/run-validation.sh` **PASS**. The six stale assertions reported by the previous
-slice are fixed and the code is stable.
+The previous slice left the Playwright MCP evidence pass **blocked** and every visual/behavioural
+claim unverified. That pass has now run at all three viewports, and it immediately caught a real
+defect that no logic test could have caught — the scene was **dead on arrival in a real browser**.
 
-**The Playwright MCP evidence pass did not run.** It is not a code problem: the page needs an
-HTTP origin the browser can reach, and in this environment no server process survives past the
-Bash call that started it (`ps aux | grep vite` → 0 after `run_in_background`), the `file:`
-protocol is blocked by the MCP client, and the one sandbox-network override I attempted was
-denied by the permission gate. Consequently **every appearance and in-browser behaviour claim
-below is code-level only** — see "Not verified at all". Nothing in this report should be read
-as "looks right in a browser".
+### The bug
 
-## Implemented this round
+`physicalScene.js` `start()` recorded `last = performance.now()` and *then* called
+`requestAnimationFrame(frame)`. The rAF callback receives the timestamp of the **beginning of the
+frame**, which can predate the `performance.now()` call made moments earlier. The first frame
+therefore computed
 
-### LAB-001 / LAB-002 / LAB-004 — ground floor (`labEnvironment.js`, +495 lines)
+```js
+const dt = Math.min((now - last) / 1000, 0.05);   // Math.min has no lower bound
+```
 
-This was the item the previous slice left untouched. New geometry, all real 3D, no textures
-faking structure, every item state-linked or explicitly static:
+as a **negative** number. Consequences, in order:
+
+1. a negative timestep entered `session.update`, `reactor.update`, `water.update`,
+   `world.step`, the consoles, the audio and the lab/underground updates — the integrators ran
+   backwards for one frame;
+2. `undergroundPlant.updateBeads` advanced the flow-bead phase by that negative amount, and JS `%`
+   preserves the sign, so `phase` became e.g. `-0.0001`;
+3. `CatmullRomCurve3.getPointAt(-0.0001)` resolved `intPoint = Math.floor(6 * -0.0001) = -1` and
+   indexed `points[-1]` → `undefined` → `p0.distanceToSquared(undefined)` threw
+   **`TypeError: Cannot read properties of undefined (reading 'x')`**;
+4. that throw escaped the rAF callback, and because `raf = requestAnimationFrame(frame)` was the
+   **last** statement of `frame`, the loop was never re-armed. **The render loop stopped
+   permanently on load** — exactly one error in console, then a frozen first frame.
+
+This is why the browser evidence mattered: `npm test` was 185/185 green the whole time, because the
+tests drive `simulate(dt)` with fixed positive steps and never exercise the rAF entry path.
+
+### The fix (3 changes + a new module)
+
+- **`src/scenes/reactor/timeStep.js`** *(new, 31 lines)* — two pure, unit-testable invariants:
+  `frameDelta(now, last, max)` returns a finite step in `[0, max]` (negative → `0`, non-finite →
+  `0`); `wrap01(x)` folds any real into `[0, 1)` (`-0.2 → 0.8`), which plain `x % 1` does not do.
+- **`physicalScene.js`** — `frame()` now uses `frameDelta(now, last)`, and re-arms
+  `requestAnimationFrame` **at the top** of the callback instead of the bottom, so a transient
+  exception can no longer freeze the scene forever. The exception itself is *not* swallowed; it
+  still surfaces in the console.
+- **`undergroundPlant.js`** — `updateBeads` clamps a non-finite/out-of-range `flow` to `[0,1]` and
+  routes both the phase advance and the per-bead curve parameter through `wrap01`, so the curve
+  parameter cannot go out of range even if an upstream proxy goes bad.
+
+Root cause is fixed at the source (`frameDelta`); the curve guard is defence in depth.
+
+### Regression coverage added (+10 checks, 185 → **195/195**)
+
+`frameDelta`: negative timestamps clamp to 0; a normal 16 ms frame yields 0.016; an 8 s suspension
+clamps to the 0.05 ceiling; `undefined`/`NaN` yield 0 rather than poisoning the integrator.
+`wrap01`: `-0.0001 → 0.9999`; `-2.25 → 0.75`; positives still wrap; non-finite → 0; a −50…+50 sweep
+never leaves `[0,1)`. Plus an end-to-end check that feeds `createUndergroundPlant().update()` a
+**negative first step** followed by normal steps and asserts it no longer throws.
+
+## Everything else this round
+
+The rest of the LAB/CAM/WTR/CHR/CTL/GLA work was implemented in the earlier slices of this same
+round and is unchanged by this slice; it is summarised here because the REVIEWER reviews the whole
+range from `3a91731`. Diff vs the round review base: **12 files, +2909 / −247**.
+
+### LAB-001 / LAB-002 / LAB-004 — ground floor (`labEnvironment.js`, +495)
 
 | ID | Tag | Object | Upstream → downstream |
 | --- | --- | --- | --- |
@@ -41,110 +85,95 @@ faking structure, every item state-linked or explicitly static:
 | `LAB-Q02` | `TRIGA_ANALOGUE` | sampling cabinet + sample riser | `LAB-Q01` → `UG-F03` |
 | `LAB-C01/C02/C03` | `TRIGA_ANALOGUE` | SHIM/REG/TRANS rod-drive power & signal cabinets | `UG-E01` → rod drives |
 | `LAB-C04` | `TRIGA_ANALOGUE` | independent safety/scram annunciator post (4 lamps + point light) | `UG-E01` → hall |
-| `LAB-V01/V02/V03` | `TRIGA_ANALOGUE` / `REALTIME_PROXY` | supply + exhaust air units, wheels, duct risers into the existing ceiling duct | site → `LAB-V03` → stack |
-| `LAB-A01` | `TRIGA_ANALOGUE` | TRANS air riser continuation, regulator panel, gauge, line to the bridge | `UG-A03` → bridge |
+| `LAB-V01/V02/V03` | `TRIGA_ANALOGUE` / `REALTIME_PROXY` | supply + exhaust air units, wheels, duct risers | site → `LAB-V03` → stack |
+| `LAB-A01` | `TRIGA_ANALOGUE` | TRANS air riser, regulator panel, gauge, line to bridge | `UG-A03` → bridge |
 | `LAB-T01` | `REALTIME_PROXY` | poolside long-handled tool rack (5 instanced tools) | hall → pool |
-| `LAB-P01` | `SOURCE_ART_DIRECTION` | maintenance platform, straight stair, instanced railing posts/rails | hall → `LAB-M01` |
+| `LAB-P01` | `SOURCE_ART_DIRECTION` | maintenance platform, stair, instanced railing | hall → `LAB-M01` |
 
-**Topology defect found and fixed.** The ground floor carried a horizontal *heat exchanger* at
-`(-9.4, ·, -1.5)`. `REACTOR_POOL_SYSTEM.md` locks "three loops, two heat exchangers", and both
-of those now live underground as `UG-H01`/`UG-H02` — the ground unit was a third, sourceless
-one. It is replaced by the makeup-water skid above. A regression test asserts exactly two heat
-exchangers exist and that they are both underground.
+**Topology defect corrected:** the ground floor previously carried a *third* horizontal heat
+exchanger at `(-9.4, ·, -1.5)`. `REACTOR_POOL_SYSTEM.md` locks "three loops, **two** heat
+exchangers", and both now live underground as `UG-H01`/`UG-H02`. The sourceless third unit was
+replaced by the makeup-water skid. A test asserts exactly two heat exchangers exist and both are
+underground. **This is a topology correction, not a feature swap** — please judge it against the
+locked two-exchanger rule before reading it as scope drift.
 
-**Second defect fixed.** The old ground loop pipe `runX` terminated in mid-air at `x ≈ -5.6`,
-violating "no pipe ends in mid-air". Every new run is drawn point-to-point by a `pipeRun()`
-helper and lands on a flange, vessel, sleeve or wall penetration.
+**Second correction:** the old ground loop pipe `runX` ended in mid-air at `x ≈ -5.6`. Every run is
+now drawn point-to-point by a `pipeRun()` helper and lands on a flange, vessel, sleeve or wall
+penetration. Cross-layer mating is real: the sample riser at `(7.6, ·, 3.0)` taps the purification
+return at its true interpolated height `floorY+0.87`, and the gravity drain at `(-6.2, ·, -7.6)`
+routes along the pit ceiling into sump `UG-D02`; both get concrete floor sleeves on each side.
 
-**Cross-layer mating is real, not implied.** Two new stubs were added in `undergroundPlant.js`
-so the two layers meet at the same XZ: the sample riser at `(7.6, ·, 3.0)` (tapped off the
-purification return at its true interpolated height `floorY+0.87`) and the gravity drain at
-`(-6.2, ·, -7.6)` routed along the pit ceiling into the sump `UG-D02`. Both get concrete floor
-sleeves on each side.
+**State links (LAB-004)** — all read the single `sessionController` state: rod-drive cabinet lamps =
+`rodDriveEnabled[name]` and the indicator bar's **geometry** (`scale.y` + re-based `position.y`) =
+`rod[name].pos`, not an animation; annunciator = `scrammed` / `unlocked` / `pulseReady` /
+`autoAvailable` / `controlOwner`; poolside sensors = powered / `poolTemperatureProxy` /
+`coolantFlowProxy` / `powerProxy` + `pulsePowerProxy`; ventilation wheels are **stopped** until
+`unlocked`, then spin at `0.35 + poolT*0.9` through a first-order lag (`reduceMotion` caps the
+rate); the makeup skid runs an explicit state machine (level falls with `poolTemperatureProxy`;
+pump A below 0.35, stops above 0.92; pump B only above `poolT > 0.45`). Nothing loops without a
+cause. `labEnvironment` exports `LAB_COMPONENTS` and a `snapshot()` for machine checking.
 
-**State links (LAB-004), all read from the single `sessionController` state:**
+### UG-* — underground plant (`undergroundPlant.js`, +668)
 
-- rod-drive cabinets: lamp colour/intensity = `rodDriveEnabled[name]`; the indicator bar's
-  **geometry** (`scale.y` + re-based `position.y`) = `rod[name].pos`, not an animation;
-- annunciator: `scrammed` (red, slow blink), `unlocked` (white), `pulseReady`/`autoAvailable`
-  (amber), `controlOwner` (blue for AUTO, dim amber for MANUAL); the point light follows;
-- poolside sensors: level = powered, temperature = `poolTemperatureProxy`, conductivity =
-  `coolantFlowProxy`, radiation = `powerProxy` + `pulsePowerProxy`;
-- sampling cabinet screen: colour lerps on flow, reddens on pulse;
-- ventilation: wheels are **stopped** until `unlocked`, then spin at `0.35 + poolT*0.9`
-  through a first-order lag; `reduceMotion` cuts the rate to 1.2 rad/s·unit;
-- makeup skid: an explicit state machine — tank level falls with `poolTemperatureProxy`
-  (evaporation), pump A starts below 0.35 and stops above 0.92, pump B only joins above
-  `poolT > 0.45`; the level gauge is scaled geometry. Nothing loops without a cause.
+Primary loop `UG-P01/V01/H01/P02`, intermediate `UG-K01/T01/H02/V02/X01`, purification
+`UG-F01/F02/F03`, sampling `UG-S01/S02`, drainage `UG-D01..D03`, TRANS pneumatics `UG-A03`,
+electrical `UG-E01`. Flow direction is shown by `flowBeads` — instanced spheres advancing along the
+real pipe centreline, emissive intensity = flow, **stationary at zero flow** (this is the subsystem
+the dt bug crashed). Pit bounds `UNDERGROUND_BOUNDS` = ceiling −0.45, floor −9.2.
 
-`labEnvironment` now exports `LAB_COMPONENTS` and returns `snapshot()` for machine checking.
+### CAM-001/002/003 — `freeCamera.js`
 
-### CAM-001/002/003 — `freeCamera.js` (unchanged this slice, tests corrected)
+One rig, one state (`pivot` + `yaw` + `pitch` + `distance`); orbit/pan/zoom/fly are input paths into
+it. World box `CAM_LIMITS` (±40 XZ, y −11.5…15.6) is clamped on the camera **position**, then the
+pivot is re-derived in front of it — that is what lets a 14 m orbit radius still reach underwater
+and the −9.2 pit floor. Near/far 0.04/320. `Home`/`F` → `goHome()`. The rig writes only
+`camera.position/quaternion`, so it cannot push glass, equipment or water. CAM-003 crossing uses
+`water.isUnderwater(camPos)` and swaps `scene.fog` to a blue `FogExp2` plus the clear colour;
+it creates no session, does not touch `controlOwner`, and emits no audio.
 
-One rig, one state (`pivot` + `yaw` + `pitch` + `distance`); orbit/pan/zoom/fly are input paths
-into it. World box `CAM_LIMITS` (±40 XZ, y −11.5…15.6) is clamped **on the camera position**,
-then the pivot is re-derived in front of it — that is what lets a 14 m orbit radius still reach
-underwater and the −9.2 underground floor. Near/far 0.04/320. `Home`/`F` → `goHome()`. The rig
-writes only `camera.position/quaternion`, so it cannot push glass, equipment or water (CAM-002).
-CAM-003 underwater detection is `water.isUnderwater(camPos)`; crossing swaps `scene.fog` to a
-blue `FogExp2` and the clear colour, creates no session, does not touch `controlOwner`, emits no
-audio.
+### WTR-001/002/003 — `waterSystem.js`
 
-Test corrections (these were the previous slice's stale assertions, not source defects):
-`orbit()` is `pitch -= dy*speed`, so the drag directions in the two pitch-limit assertions were
-swapped; and `UNDERGROUND_BOUNDS.ceiling` does not exist — the field is `ceilingY`.
+`MeshPhysicalMaterial` `transmission 1, ior 1.333` with `WATER_ATTENUATION`/7.5 — real refraction,
+so core, rods, reflector and pool floor are visible from the deck. Surface normals are central
+differences of the same height field. The opaque volume cylinder that used to hide the pool
+interior is deleted; depth cues are transmission attenuation above water, `FogExp2` below, and a
+`REALTIME_PROXY` gradient plate at the pool floor. Caustics are a shader plane sampling the height
+field as a `DataTexture`, brightness = surface Laplacian × `exp(-depth*0.16)`, 1.35× underwater.
+Thermal plume drives surface roughness. `stepWave`, `addImpulse`, `heightAt`, damping, buoyancy and
+pulse impulses are **unchanged** — the optics only read state.
 
-### WTR-001/002/003 — `waterSystem.js` (unchanged this slice)
-
-`MeshPhysicalMaterial` `transmission 1, ior 1.333` with `WATER_ATTENUATION`/7.5 — real
-refraction, so core, rods, reflector and pool floor are visible from the deck. Surface normals
-are central differences of the same height field. The opaque volume cylinder that hid the pool
-interior is deleted; depth cues are transmission attenuation above water, `FogExp2` underwater,
-and a `REALTIME_PROXY` gradient plate at the pool floor. Caustics are a shader plane sampling
-the height field as a `DataTexture`, brightness = surface Laplacian × `exp(-depth*0.16)`,
-1.35× underwater. Thermal plume drives surface roughness. `stepWave`, `addImpulse`, `heightAt`,
-damping, buoyancy coupling and pulse impulses are **unchanged** — the optics only read state.
-
-### CHR-001/002/003 — `cherenkov.js` (unchanged this slice)
+### CHR-001/002/003 — `cherenkov.js`
 
 Attached to `reactor.group` at the active fuel volume (`coreBounds`: `topY −1.9, height 1.72,
-radius 1.15`): core volume glow, three scattering shells (×1.75/×2.9/×4.6), `TUNED_PRESENTATION`
-point-sprite particles seeded by a fixed-seed mulberry32 PRNG and killed at the nominal surface,
-and a soft-saturating `exposureGain()` (asymptote 1.5) with asymmetric attack/release plus an
-additive bloom-proxy sprite. `NoToneMapping` unchanged. Tests confirm: dark at shutdown, full at
-250 kW, historic pulse lights the water through the independent millisecond channel, compression
-is monotonic, and the glow volume sits inside the fuel section below the surface.
+radius 1.15`, snapshot reports `coreCenterY −2.76`, i.e. below the −0.35 surface): core volume glow,
+three scattering shells (×1.75/×2.9/×4.6), `TUNED_PRESENTATION` point-sprite particles from a
+fixed-seed mulberry32 PRNG killed at the nominal surface, and a soft-saturating `exposureGain()`
+(asymptote 1.5, asymmetric attack/release) plus an additive bloom-proxy sprite. `NoToneMapping`
+unchanged. Particle budget 900.
 
-### CTL-002/CTL-003 — `autoConsole.js` (unchanged this slice)
+### CTL-002/CTL-003 — `autoConsole.js`
 
 Physically separate vertical bay at `[4.9, 0, 6.2]` with exactly two hotspots
 (`session.requestAuto`, `session.scram`) — no second reactor state. Both consoles' hotspots merge
 into one pick list; ownership is arbitrated solely by `sessionController`. The AUTO square button
-was moved off the MANUAL desk per spec §CTL-002; all MANUAL commands, ownership lamps and phase
-bar are untouched.
+was moved off the MANUAL desk per spec §CTL-002; all MANUAL commands, ownership lamps and phase bar
+are untouched. The browser reports **11 hotspots, all `onScreen: true`**
+(`start`, `scram`, `pump`, `mode`, `pulseFire`, `SHIM_up`, …).
 
-### GLA-001/002/003 + GLA-CTRL-001/002/003 — `physicalScene.js` (unchanged this slice)
+### GLA-001/002/003 + GLA-CTRL-001/002/003 — `physicalScene.js`, `glassArchitecture.js`
 
 Dynamic floor bricks are real cannon boxes (mass = 1.5 × volume) created asleep at the canonical
-layout, rendered as one `InstancedMesh`; damaged bricks are promoted to their own mesh with the
-full crack texture so floor and grating glass share mass, friction, durability, cracks, fracture,
-audio and session reset. Tier: 15 m dynamic radius desktop (~96 dynamic / 204 fixed), 10.5 m
-mobile (~36) — never one immovable plane. The old `hallFloor` ring collider was replaced by the
-collider of the **visible** transparent support layer (`supportInnerR 5.6 → supportOuterR 31.5`,
-top −0.32), which serves floor bricks only and does not reach the pool grating (5.6 > 3.4).
-Grab is a bounded servo in `world "preStep"` (velocity target `clamp((target−pos)*9, 7 m/s)`,
-impulse ≤ 26 N·s at the COM): mouse sets horizontal `tx/tz`, `W/S` moves height at 2.4 m/s
-clamped −10.6…11.0, `A/D` integrates yaw at 2.0 rad/s with the quaternion set from world Y only —
-pitch and roll locked, no random spin, no angular velocity injected on release. While grabbing,
-`W/S/A/D` are consumed by the glass and only `Q/E` reach the camera. `blur`, `visibilitychange`,
-`pointercancel` and fracture all call `releaseGrab()`. Wall/ceiling glass is never in
-`pickTargets()`, so it cannot be grabbed.
-
-### Debug hooks (non-text, dispose-cleaned)
-
-`__SOURCE_STATE__`, `__SOURCE_CMD__`, `__SOURCE_HOTSPOTS__`, `__SOURCE_ADVANCE__`,
-`__SOURCE_WATER__`, `__SOURCE_CAM__`, `__SOURCE_NAV__`, `__SOURCE_CHR__`, `__SOURCE_FLOOR__`,
-`__SOURCE_GLASS__`, `__SOURCE_PERF__`. These are what the next browser pass should read.
+layout and rendered as one `InstancedMesh`; a damaged brick is promoted to its own mesh with the
+full crack texture, so floor and grating glass share mass, friction, durability, cracks, fracture,
+audio and session reset. The old `hallFloor` ring collider was replaced by the collider of the
+**visible** transparent support layer (`supportInnerR 5.6 → supportOuterR 31.5`, top −0.32), which
+serves floor bricks only and does not reach the pool grating (5.6 > 3.4). Grab is a bounded servo in
+`world "preStep"` (velocity target `clamp((target−pos)*9, 7 m/s)`, impulse ≤ 26 N·s at the COM):
+mouse sets horizontal `tx/tz`, `W/S` moves height at 2.4 m/s clamped −10.6…11.0, `A/D` integrates
+yaw at 2.0 rad/s with the quaternion set from world Y only — pitch and roll locked, no random spin,
+no angular velocity injected on release. While grabbing, `W/S/A/D` are consumed by the glass and
+only `Q/E` reach the camera. `blur`, `visibilitychange`, `pointercancel` and fracture all call
+`releaseGrab()`. Wall/ceiling glass is never in `pickTargets()`, so it cannot be grabbed.
 
 ## Verification
 
@@ -152,94 +181,147 @@ pitch and roll locked, no random spin, no angular velocity injected on release. 
 | --- | --- |
 | `./scripts/run-validation.sh` | **PASS** (configured-check status) |
 | Dependency check | PASS |
-| `npx vite build` | PASS — `physicalScene` chunk 751.87 kB / 201.61 kB gzip (>500 kB warning) |
-| `node tests/run.mjs` | **185/185** (was 169/169 before this slice's +16 LAB checks) |
+| Build | PASS — `physicalScene` chunk 752.04 kB / 201.69 kB gzip (>500 kB warning) |
+| Tests `node tests/run.mjs` | **195/195** (was 185/185; +10 this slice) |
 | Lint | **NOT CONFIGURED** |
 | Type check | **NOT CONFIGURED** |
-| Playwright MCP, 390×844 / 768×1024 / 1440×900 | **BLOCKED — NOT RUN** (see below) |
+| Browser / visual | script reports **MANUAL REQUIRED**; performed via Playwright MCP, below |
 
-New logic checks added this slice (all passing):
+### How the browser origin was obtained
 
-- every `LAB_COMPONENTS` entry resolves upstream **and** downstream to a same-layer part, an
-  underground `UG-*` part, or a declared external interface — nothing ends in mid-air;
-- every ground component carries one of the four allowed source tags;
-- exactly two heat exchangers exist and both are underground; the ground list contains none;
-- `LAB-D01 → UG-D02` and `LAB-Q02 → UG-F03` really resolve to underground IDs;
-- before unlock: ventilation speed and wheel rotation are exactly 0, rod bars at the bottom,
-  scram lamp lit and power lamp dark;
-- after unlock + startup + SHIM withdrawal: ventilation spins up, **rod bar height equals the
-  real `rod.SHIM.pos` to 0.01**, power lamp lit, scram lamp dark, ownership lamp lit, makeup
-  tank level has fallen or the makeup pump has started;
-- after SCRAM: scram lamp returns immediately and all three rod bars fall back to the bottom.
+Bash child processes and the Playwright MCP browser do not share a network namespace: a server
+started from Bash never binds (`pgrep http.server` → none, `ss -ltn` → no listener; the sandbox
+exposes only proxy ports 3128/1080), and running one outside the sandbox was denied by the
+permission gate. Per the run instructions the evidence pass instead builds `dist/` and serves it
+through `page.route('**/*', …)` at the synthetic origin `http://source.local/index.html`: the route
+resolves only inside `dist/`, maps the entry URL and any directory to `index.html`, sets explicit
+MIME types per extension, and **aborts** on `..` traversal or a missing file. Renderer is
+Chromium/SwiftShader (software WebGL).
 
-### Why the browser pass is blocked
+### Three viewports — all clean
 
-1. `npx vite preview` / `npm run preview` started with `run_in_background` do not survive the
-   Bash call — a later call finds `ps aux | grep vite` = 0 and `curl` returns 000, so there is
-   no origin for the browser. (Within a single call the same server answers 200, so the build
-   itself serves fine.)
-2. `file:///…/dist/index.html` is refused by the MCP client: *"Access to 'file:' protocol is
-   blocked"*.
-3. Running the server outside the sandbox (`dangerouslyDisableSandbox`) was **denied** by the
-   permission gate in don't-ask mode, twice. I did not attempt to work around it.
+| | 390×844 | 768×1024 | 1440×900 |
+| --- | --- | --- | --- |
+| canvas (css / backing) | 390×844 / 390×844 | 768×1024 / 768×1024 | 1440×900 / 1440×900 |
+| overflow X / Y | 0 / 0 | 0 / 0 | 0 / 0 |
+| visible text length | 0 | 0 | 0 |
+| console + page errors | **0** | **0** | **0** |
+| draw calls | 926 | 898 | 1165 |
+| triangles | 430,974 | 430,262 | 451,778 |
+| programs | 23 | 23 | 23 |
+| rigid bodies / awake | 63 / 22 | 63 / 22 | 123 / 22 |
+| floor bricks dyn / fixed | 36 / 264 | 36 / 264 | **96 / 204** |
+| wall / ceiling bricks | 512 / 256 | 512 / 256 | 512 / 256 |
+| DPR | 1 | 1 | 1 |
 
-## Not verified at all
+The mobile tier (36 dynamic bricks) and desktop tier (96) engage as designed. Pixel sample of the
+rendered canvas at 1440×900: mean RGB **(73.3, 98.7, 117.4)**, 100 % non-black — the scene really
+draws, and blue dominates as required.
 
-- **All three viewports** (390×844, 768×1024, 1440×900), responsive layout and the browser
-  console — never opened.
-- Session reset on refresh, first-interaction activation, audio activation and audio audibility.
-- Reactor-pool operation, pulse, water response and the water/Cherenkov appearance at shutdown,
-  low power, 250 kW and historic pulse — verified only as numbers in Node, never rendered.
-- Camera navigation in a real browser: underwater crossing, near-core approach, below-floor and
-  behind-equipment viewing.
-- Glass interaction feel: grating vs floor grab, mouse/`W/S`/`A/D` ownership, release physics,
-  damage, fracture, refresh reset.
-- **Frame rate, draw calls, triangles, awake bodies, particle counts, DPR** — `__SOURCE_PERF__`
-  exists but has never been read in a browser.
-- **Transparent sort order** between wall/ceiling glass, floor bricks, water transmission,
-  caustics and additive Cherenkov — the highest visual risk, still unrendered.
-- Underwater `FogExp2` does not affect `ShaderMaterial` layers (caustics, plume, Cherenkov);
-  accepted as a deliberate abstraction, appearance unchecked.
-- The new ground equipment has **no colliders** (consistent with the pre-existing crane, ducts
-  and cabinets). Grabbed glass passes through it.
+### Behaviour verified in the browser
+
+- **Session lock & first-interaction split:** before any input `unlocked: false`, `owner: "NONE"`.
+  A wheel event away from the console hotspots → `unlocked: true`, `owner: "AUTO"`,
+  `phase: "INTERLOCKED_RESET"`. The render loop is confirmed alive by counting real rAF ticks.
+- **Continuous operation:** with the clock released and no further input, `powerProxy` advanced
+  `3.5943e-7 → 3.7649e-7` — the simulation runs, it is not a frozen frame.
+- **Full AUTO program:** `INTERLOCKED_RESET → LOW_POWER_APPROACH → … → PULSE → …
+  → FULL_POWER_EQUILIBRIUM`, settling at `power 0.9987–1.002`, `poolT 0.370`, `flow 0.656`.
+- **Historic pulse (fine-grained, 1/60 s sampling):** peak `pulsePowerProxy` **0.988** (≈ the 250 MW
+  historic peak), only **7 frames above 1 %** — short and bounded, not a nuclear-explosion ramp;
+  water `centerDeviation` reached **−0.562** during the pulse and returned to **0** afterwards, so
+  the input decays as specified.
+- **Cherenkov causality:** shutdown `shown 0`, particles **0**; `LOW_POWER_APPROACH` `shown 0`,
+  particles **0** (low power is *not* always-on); 250 kW equilibrium `shown 0.9719`, particles
+  **897–900 / 900**; during the pulse `shown 0.972` from the independent millisecond channel.
+- **Free camera:** flew from `(0, 9.74, 11.25)` above water to `(0, −2.99, 0.22)` with
+  `underwater: true`, then down to `(0, −8.51, 0.41)` inside the pit — via the same `cam.*` entry
+  points the mouse and keyboard use. Throughout: `controlOwner` unchanged, `unlocked` still true,
+  and the glass snapshot **byte-identical** before/after, i.e. the camera pushed nothing. `home()`
+  restored the canonical framing and cleared the underwater branch.
+- **Glass at rest:** 21 grating cubes, all `INTACT`, `minDurability 1.0`, **21/21 asleep**,
+  `maxSpeed 0`, `offDeck 0`, `below 0` — no jitter, drift, tunnelling or spontaneous fracture.
+  Floor: **96 dynamic + 204 fixed**, `atHome 96`, `asleep 96`, `damaged 0`, `maxTilt 0`.
+- **Pulse → structure → glass chain:** recorded peaks `pulsePower 0.9882`,
+  `gratingDeviation 0.013`, `gratingSpeed 0.163`, `cubeSpeed 0.914` — the TRANS reaction reaches the
+  glass through bridge and grating as bounded vibration, and the canonical layout survived it
+  (0 damaged), exactly as the spec requires.
+- **Refresh = new session:** after `reload()`, `unlocked false`, `owner "NONE"`, `power 0`,
+  `phase "INTERLOCKED_RESET"`, Cherenkov `0`.
+
+## Not verified
+
+Honest list — none of these are claimed as passing:
+
+- **MANUAL and AUTO console click-through.** The 11 hotspots were enumerated with correct on-screen
+  projected coordinates, but I did not click them in the browser, so MANUAL first-interaction entry,
+  the MANUAL command chain, AUTO→MANUAL in-place takeover and the SCRAM-gated MANUAL→AUTO return
+  are verified by Node logic tests only, not by pointer input.
+- **Real pointer-drag glass grabbing.** The `W/S` lift, `A/D` yaw-only, locked pitch/roll,
+  no-random-spin and release-physics behaviour is covered by logic tests and code inspection; I did
+  not perform an actual pointer drag in the browser. `__SOURCE_FLOOR__().grabbed` was `null`
+  throughout.
+- **Wall/ceiling glass being non-grabbable** — argued from `pickTargets()` membership, not
+  exercised by a click.
+- **Audio.** No audio device in this environment. Gesture-gated unlock, per-material timbres,
+  rate/concurrency/peak limiting and audibility are all unverified; `reduceMotion` behaviour is
+  likewise unexercised in-browser.
+- **Frame rate.** Measured ~2–3 rAF ticks/s, but that is SwiftShader **software** WebGL and says
+  nothing about real GPU performance. Draw calls, triangles, body and particle counts above are
+  meaningful; FPS is not. `CAM-G01`/`GLA-G01` stay open.
+- **Transparent sort order / over-draw by eye.** Aggregate pixel statistics prove the frame is
+  drawn and blue-dominant; they do not prove that wall + ceiling + floor glass, water transmission,
+  caustics and additive Cherenkov composite *correctly*. This remains the top visual risk.
+- Underwater `FogExp2` does not affect `ShaderMaterial` layers (caustics, plume, Cherenkov) — a
+  deliberate abstraction whose on-screen appearance is unchecked.
+- Ground-floor equipment has **no colliders** (consistent with the pre-existing crane, ducts and
+  cabinets); grabbed glass passes through it.
 
 ## Deliberate abstractions
 
-- Ground equipment stands on plinths through the glass floor: the floor bricks read as removable
-  access panels, so a brick can be taken out from under a cabinet without the cabinet moving.
-- The makeup tank/pump state machine is a plausible-but-invented operating rule
-  (`TRIGA_ANALOGUE`); no Pavia source fixes those setpoints.
+- Ground equipment stands on plinths through the glass floor, so bricks read as removable access
+  panels and one can be taken out from under a cabinet without the cabinet moving.
+- The makeup tank/pump setpoints are a plausible invented operating rule (`TRIGA_ANALOGUE`); no
+  Pavia source fixes them.
 - Cherenkov particles are a `TUNED_PRESENTATION` light-transport proxy, not per-particle physics.
-- The transparent floor support layer, the glass-brick building and the free traversing camera
-  are `SOURCE_ART_DIRECTION`, not Pavia building facts.
+- The transparent floor support layer, the glass-brick building and the free traversing camera are
+  `SOURCE_ART_DIRECTION`, not Pavia building facts.
+- Per-unit underground coordinates are `REALTIME_PROXY`; no Pavia as-built drawings are public.
 
 ## Open gaps
 
-- `LAB-G01` — per-unit underground coordinates remain `REALTIME_PROXY`; no Pavia as-built
-  drawings exist. Unchanged.
+- `LAB-G01` — underground per-unit coordinates remain `REALTIME_PROXY`. Unchanged.
 - `LAB-G02` — ground-floor equipment carries no collision geometry.
-- `LAB-G03` *(new)* — makeup/ventilation setpoints are invented operating rules, not sourced.
-- `WTR-G01` — no volumetric light transport; absorption is transmission thickness above water
-  and `FogExp2` below, caustics are a curvature proxy.
-- `CHR-G01` — handled by the `TUNED_PRESENTATION` particle system.
-- `CAM-G01`, `GLA-G01` — instancing, tiering and sleep are in place but **unmeasured**.
-- `PERF-G01` *(new)* — the `physicalScene` chunk is 751.87 kB (201.61 kB gzip); no code
-  splitting attempted.
+- `LAB-G03` — makeup/ventilation setpoints are invented operating rules, not sourced.
+- `WTR-G01` — no volumetric light transport; absorption is transmission thickness above water and
+  `FogExp2` below, caustics are a curvature proxy.
+- `CHR-G01` — covered by the `TUNED_PRESENTATION` particle system.
+- `CAM-G01`, `GLA-G01` — instancing, tiering and sleep are in place and now *counted*, but frame
+  cost is still **unmeasured on real hardware** (software renderer only).
+- `PERF-G01` — the `physicalScene` chunk is 752.04 kB (201.69 kB gzip); no code splitting attempted.
+- `OBS-G01` *(new, observation)* — `__SOURCE_PERF__().awake` reports **22** awake bodies at rest on
+  every viewport, while `__SOURCE_GLASS__()` reports all 21 cubes asleep and `__SOURCE_FLOOR__()`
+  all 96 bricks asleep. The 22 are therefore non-glass bodies. Nothing visibly misbehaves
+  (`maxSpeed 0`, `maxTilt 0`), but I did not identify them; worth a look.
 
 ## Handoff focus for the next REVIEWER
 
-1. **The browser pass is the entire remaining risk.** Please establish an origin the MCP browser
-   can reach (a preview server started outside the agent's sandbox, or an MCP config that allows
-   `file:`), then drive `__SOURCE_NAV__`, `__SOURCE_CMD__`, `__SOURCE_ADVANCE__`,
-   `__SOURCE_PERF__`, `__SOURCE_FLOOR__` and `__SOURCE_GLASS__` in one pass across the three
-   viewports. Everything visual in this report is unconfirmed until then.
-2. Highest visual risk: transparent render order and over-draw — glass walls + ceiling + floor
-   bricks + water transmission + additive Cherenkov have never been composited on screen.
-3. Second risk: ~96 dynamic floor-brick bodies plus the grab servo in `preStep`; confirm bricks
-   stay asleep at rest and the servo cannot tunnel or fling.
-4. The ground-floor heat exchanger → makeup-skid substitution is a **topology correction**, not a
-   feature swap; check it against `REACTOR_POOL_SYSTEM.md`'s locked two-heat-exchanger rule
-   before judging it as scope drift.
-5. Housekeeping: a stray zero-byte file `.agent/&1` (an errant shell redirect from an earlier
-   round) is committed. `.agent/` is protected for me, so I left it — it needs an owner-side
-   `git rm`.
+1. **Re-run the browser pass with the `page.route` recipe above** (it is cheap and now proven) and
+   spend it on what I could not cover: **click the 11 console hotspots**. Specifically — MANUAL
+   first-interaction entry via a hotspot click, the MANUAL start/pump/rod/mode/pulse/SCRAM chain,
+   AUTO→MANUAL in-place takeover preserving rod position, power, temperature, flow, water and glass,
+   and that MANUAL→AUTO is refused unless SCRAM/safe-shutdown.
+2. **Perform a real pointer drag** on one grating cube and one floor brick; confirm mouse =
+   horizontal only, `W/S` = vertical, `A/D` = yaw only, pitch/roll locked, no random spin at grab or
+   release, and that the camera does not move while `W/S/A/D` are owned by the glass.
+3. **Judge transparent composition by eye** (screenshots at the three viewports) — the one risk that
+   aggregate pixel statistics cannot settle.
+4. Verify the ground-floor **heat-exchanger → makeup-skid substitution** against the locked
+   two-heat-exchanger rule in `REACTOR_POOL_SYSTEM.md` before reading it as scope drift.
+5. Check `OBS-G01` (22 awake non-glass bodies at rest).
+6. Note for the record: the `frameDelta` fix means a **negative or non-finite frame step can no
+   longer reach any integrator**, and `requestAnimationFrame` is re-armed before the frame body, so
+   a future exception degrades one frame instead of freezing the page. Both invariants are pinned by
+   tests in `tests/run.mjs`.
+7. Housekeeping, unchanged: a stray zero-byte file `.agent/&1` (errant shell redirect from an
+   earlier round) is committed. `.agent/` is protected for me, so it needs an owner-side `git rm`.
