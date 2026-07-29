@@ -46,6 +46,8 @@ docs/methodology/        项目构建方法论
 - `docs/engineering/SOURCE_SCENE.md`：SOURCE 连续运行、轻水、玻璃和跨系统物理；
 - `docs/engineering/REACTOR_POOL_SYSTEM.md`：完整反应堆池、环境设备和连续运行；
 - `docs/engineering/REACTOR_MODEL.md`：反应堆资料、部件、状态和真实性边界。
+- `docs/engineering/SOURCE_LAB_OPTICS.md`：当前实验室、地下设备、自由相机、
+  水体光学、辉光粒子、玻璃建筑和双控制台目标。
 
 Agent 协作：
 
@@ -72,6 +74,6 @@ npm test
 执行器或显式指定各自模型与 effort。直接进入项目而未指定专用角色的 Agent 默认
 为 `GENERAL`。预计会跨额度窗口时使用 `supervise`：外层 shell 会保存安全恢复
 检查点并零 Token 等待，MONITOR 只处理未知异常。同一任务内实现与审查分别恢复
-自己的专属会话；`--max-rounds N` 可只限制本次运行。
+自己的专属会话；`--rounds N` 指定本次追加的实现次数。
 
 详细说明见 `docs/guides/PROJECT_COMMAND_MANUAL.md`。

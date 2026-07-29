@@ -128,6 +128,18 @@ REVIEWER 不是轮回的机械收尾，而是为下一次实现准备证据：
 
 因此每份最终实现仍可追溯、可补审查，但不会为了流程对称浪费一次审查调用。
 
+每次 IMPLEMENTER 轮回开始前，中立包装器必须创建一个只含状态字段的本地起点锚点：
+
+- `ACTIVE_IMPLEMENTATION_ROUND` 记录正在推进的轮回；
+- `ACTIVE_IMPLEMENTATION_REVIEW_BASE_COMMIT` 记录该轮第一个工作 Agent 启动前的
+  精确提交；
+- 自主切片、额度恢复、进程超时和上下文 generation 轮换只能创建恢复检查点，不能
+  改写这个锚点；
+- 正式实现完成后，`PENDING_REVIEW_BASE_COMMIT` 必须继承该锚点，而不是继承最后
+  一次恢复进程启动时的 HEAD；
+- REVIEWER 比较从轮回原始起点到最终实现提交的完整范围，因此恢复检查点中的业务
+  改动不会漏审。
+
 `scripts/agent-cycle.sh` 是流程控制器，不属于任何 Agent 角色。它负责：
 
 - 读取或接收实现者和审查者的执行器、模型与强度；

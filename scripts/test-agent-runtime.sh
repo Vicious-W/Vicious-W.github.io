@@ -20,9 +20,12 @@ QUOTA_SESSION_TEST_TASK="runtime-quota-session-test-$(date +%s%N)-$$"
 MONITOR_SESSION_TEST_TASK="runtime-monitor-session-test-$(date +%s%N)-$$"
 LEDGER_TEST="$TEST_DIR/usage-ledger.json"
 LEDGER_RUN_DIR="$TEST_DIR/ledger-runs"
+ROUND_BASE_TEST_DIR=""
 
 # shellcheck source=scripts/lib/agent-runtime.sh
 source "$ROOT_DIR/scripts/lib/agent-runtime.sh"
+# shellcheck source=scripts/lib/implementation-round-state.sh
+source "$ROOT_DIR/scripts/lib/implementation-round-state.sh"
 agent_runtime_init "$ROOT_DIR"
 mkdir -p "$TEST_DIR"
 mkdir -p "$FAKE_BIN"
@@ -50,6 +53,9 @@ cleanup() {
     rm -f -- "$LOCK_TEST_DIR/pid" "$LOCK_TEST_DIR/start_ticks" \
       "$LOCK_TEST_DIR/command" "$LOCK_TEST_DIR/started_at_utc"
     rmdir "$LOCK_TEST_DIR" 2>/dev/null || true
+  fi
+  if [[ -n "$ROUND_BASE_TEST_DIR" && -d "$ROUND_BASE_TEST_DIR" ]]; then
+    rm -rf -- "$ROUND_BASE_TEST_DIR"
   fi
   agent_stop_active_process
 }
@@ -132,6 +138,60 @@ if agent_validate_model gpt-5.6-sol && agent_validate_model opus-4.1 && \
   printf 'PASS  model and effort values are validated as inert configuration\n'
 else
   printf 'FAIL  model or effort validation produced an unexpected result\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+ROUND_BASE_TEST_DIR="$(mktemp -d "$TEST_DIR/round-base-XXXXXX")"
+round_state="$ROUND_BASE_TEST_DIR/.agent/state.env"
+mkdir -p "$ROUND_BASE_TEST_DIR/.agent"
+git -C "$ROUND_BASE_TEST_DIR" init -q
+git -C "$ROUND_BASE_TEST_DIR" config user.name 'Agent Runtime Test'
+git -C "$ROUND_BASE_TEST_DIR" config user.email 'agent-runtime@example.invalid'
+printf 'baseline\n' >"$ROUND_BASE_TEST_DIR/source.txt"
+cat >"$round_state" <<'EOF'
+CURRENT_ROUND=0
+ACTIVE_TASK_STATUS=READY
+PENDING_REVIEW=NO
+ACTIVE_IMPLEMENTATION_ROUND=
+ACTIVE_IMPLEMENTATION_REVIEW_BASE_COMMIT=
+EOF
+git -C "$ROUND_BASE_TEST_DIR" add -- source.txt .agent/state.env
+git -C "$ROUND_BASE_TEST_DIR" commit -q -m baseline
+expected_round_base="$(git -C "$ROUND_BASE_TEST_DIR" rev-parse HEAD)"
+
+agent_prepare_implementation_round_anchor \
+  "$ROUND_BASE_TEST_DIR" "$round_state" 1
+first_anchor_exit=$?
+first_anchor_commit="$(git -C "$ROUND_BASE_TEST_DIR" rev-parse HEAD)"
+first_anchored_base="$AGENT_IMPLEMENTATION_REVIEW_BASE"
+
+printf 'recovery work\n' >>"$ROUND_BASE_TEST_DIR/source.txt"
+git -C "$ROUND_BASE_TEST_DIR" add -- source.txt
+git -C "$ROUND_BASE_TEST_DIR" commit -q -m 'recovery checkpoint'
+recovery_commit="$(git -C "$ROUND_BASE_TEST_DIR" rev-parse HEAD)"
+
+agent_prepare_implementation_round_anchor \
+  "$ROUND_BASE_TEST_DIR" "$round_state" 1
+resumed_anchor_exit=$?
+resumed_anchored_base="$AGENT_IMPLEMENTATION_REVIEW_BASE"
+resumed_anchor_created="$AGENT_IMPLEMENTATION_ANCHOR_CREATED"
+agent_finish_implementation_round_state \
+  "$round_state" 1 "$resumed_anchored_base" claude opus max
+finish_anchor_exit=$?
+
+if (( first_anchor_exit == 0 && resumed_anchor_exit == 0 && \
+      finish_anchor_exit == 0 )) && \
+   [[ "$first_anchored_base" == "$expected_round_base" && \
+      "$resumed_anchored_base" == "$expected_round_base" && \
+      "$first_anchor_commit" != "$expected_round_base" && \
+      "$recovery_commit" != "$first_anchor_commit" && \
+      "$resumed_anchor_created" == "NO" ]] && \
+   grep -Fqx "PENDING_REVIEW_BASE_COMMIT=$expected_round_base" "$round_state" && \
+   grep -Fqx 'ACTIVE_IMPLEMENTATION_ROUND=' "$round_state" && \
+   grep -Fqx 'ACTIVE_IMPLEMENTATION_REVIEW_BASE_COMMIT=' "$round_state"; then
+  printf 'PASS  recovery checkpoints preserve the original implementation review base\n'
+else
+  printf 'FAIL  recovery checkpoint shortened or corrupted the implementation review base\n' >&2
   failure_count=$((failure_count + 1))
 fi
 

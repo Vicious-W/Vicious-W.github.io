@@ -116,8 +116,11 @@ ID、`new/resume` 模式、会话代次、预算保险及这些文件的路径�
 
 `state.env` 中 `CURRENT_ROUND` 只计已完成的 IMPLEMENTER 次数，
 `COMPLETED_REVIEWS` 单独计审查次数；`PENDING_REVIEW=YES` 表示最新实现尚未被审查或
-所有者接受，`PENDING_REVIEW_BASE_COMMIT` 保存其精确比较基准。`DEFAULT_ROUNDS`
-是每次命令默认追加的轮回数，不是任务生命周期的总上限。
+所有者接受，`PENDING_REVIEW_BASE_COMMIT` 保存其精确比较基准。实现进行期间，
+`ACTIVE_IMPLEMENTATION_ROUND` 与
+`ACTIVE_IMPLEMENTATION_REVIEW_BASE_COMMIT` 保存整轮不可变起点；恢复检查点不得
+把它缩短为某次续跑进程的起点。`DEFAULT_ROUNDS` 是每次命令默认追加的轮回数，
+不是任务生命周期的总上限。
 
 附着式 Monitor 在 `AWAITING_MONITOR_ACTION` 状态用以下命令提交决策：
 

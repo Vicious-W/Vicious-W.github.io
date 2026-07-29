@@ -11,9 +11,12 @@ TASK_FILE="$AGENT_DIR/next-task.md"
 REPORT_FILE="$AGENT_DIR/implementation-report.md"
 LOCK_DIR="$AGENT_DIR/.cycle.lock"
 RUNTIME_LIB="$ROOT_DIR/scripts/lib/agent-runtime.sh"
+ROUND_STATE_LIB="$ROOT_DIR/scripts/lib/implementation-round-state.sh"
 
 # shellcheck source=scripts/lib/agent-runtime.sh
 source "$RUNTIME_LIB"
+# shellcheck source=scripts/lib/implementation-round-state.sh
+source "$ROUND_STATE_LIB"
 agent_runtime_init "$ROOT_DIR"
 
 usage() {
@@ -192,6 +195,15 @@ if (( current_round >= max_rounds )); then
 fi
 
 implementation_round=$((current_round + 1))
+agent_prepare_implementation_round_anchor \
+  "$ROOT_DIR" "$STATE_FILE" "$implementation_round"
+anchor_exit=$?
+if (( anchor_exit != 0 )); then
+  agent_record_stop \
+    WRAPPER IMPLEMENTATION_ROUND_ANCHOR_FAILED "$anchor_exit" "$STATE_FILE"
+  exit "$anchor_exit"
+fi
+review_base_commit="$AGENT_IMPLEMENTATION_REVIEW_BASE"
 base_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 base_git_config="$(git -C "$ROOT_DIR" config --local --list --show-origin 2>/dev/null)"
 base_git_refs="$(git -C "$ROOT_DIR" show-ref 2>/dev/null || true)"
@@ -216,6 +228,7 @@ agent_append_run_session \
 agent_append_run_limits \
   "$manifest_file" "$claude_max_turns" "$claude_max_budget_usd" \
   "$claude_context_rotate_tokens"
+printf 'ROUND_REVIEW_BASE_COMMIT=%s\n' "$review_base_commit" >>"$manifest_file"
 
 if [[ -n "$AGENT_SESSION_ROTATED_FROM" ]]; then
   context_instructions="This is a deliberately compacted continuation of the same
@@ -236,7 +249,8 @@ else
   context_instructions="Read, in order: PROJECT.md, AGENT_PROTOCOL.md,
 .agent/roles/IMPLEMENTER.md, PROJECT_SPEC.md,
 docs/engineering/SOURCE_SCENE.md, docs/engineering/REACTOR_POOL_SYSTEM.md,
-docs/engineering/REACTOR_MODEL.md, REVIEW_CONTRACT.md, .agent/next-task.md,
+docs/engineering/REACTOR_MODEL.md,
+docs/engineering/SOURCE_LAB_OPTICS.md, REVIEW_CONTRACT.md, .agent/next-task.md,
 .agent/latest-review.md, .agent/implementation-report.md, README.md, the current
 Git status, and all directly relevant code."
 fi
@@ -251,6 +265,7 @@ Task: $active_task_id
 Implementation round: $implementation_round
 Absolute target for this parent run: $max_rounds
 Base commit: $base_commit
+Round review base commit: $review_base_commit
 Role session: ${AGENT_SESSION_ID:-pending} ($AGENT_SESSION_MODE)
 Session generation: $AGENT_SESSION_GENERATION
 Run manifest: ${manifest_file#"$ROOT_DIR/"}
@@ -260,11 +275,14 @@ $context_instructions
 Implement the active task comprehensively. If the latest verdict is
 CHANGES_REQUIRED, address every valid Blocker and Major first. Make reasonable
 technical decisions inside the owner's approved scope; do not invent unrelated
-features. Follow the protected SOURCE and reactor-pool baselines. Record
-continuous operation, session reset, water coupling, grating support, glass
-damage/fracture, audio activation, changed RP-* and reactor component IDs,
-sources, geometry, state links, proxy labels, deliberate abstractions,
-verification, and open gap IDs in .agent/implementation-report.md.
+features. Follow the protected SOURCE, reactor-pool, laboratory and optics
+baselines. Record continuous operation, session reset, laboratory/underground
+equipment, camera navigation, water optics, Cherenkov volume/particles,
+MANUAL/AUTO consoles, wall/ceiling/floor glass, constrained glass grabbing,
+grating support, glass damage/fracture, audio activation, changed RP-* and
+LAB/CAM/WTR/CHR/GLA/CTL component IDs, sources, geometry, state links, proxy
+labels, deliberate abstractions, performance, verification, and open gap IDs
+in .agent/implementation-report.md.
 
 Keep the autonomous slice efficient: batch related reads and edits, avoid
 re-reading unchanged files or printing large generated output, stabilize the
@@ -373,7 +391,7 @@ is_protected_implementation_path() {
     .claude/*|.codex/*) return 0 ;;
     .agent/implementation-report.md|.agent/artifacts/*) return 1 ;;
     .agent/*) return 0 ;;
-    scripts/agent-*.sh|scripts/agent-runners/*|scripts/generate-cycle-summary.sh|scripts/run-implementation.sh|scripts/run-review.sh|scripts/run-validation.sh|scripts/test-agent-runtime.sh|scripts/lib/agent-runtime.sh) return 0 ;;
+    scripts/agent-*.sh|scripts/agent-runners/*|scripts/generate-cycle-summary.sh|scripts/run-implementation.sh|scripts/run-review.sh|scripts/run-validation.sh|scripts/test-agent-runtime.sh|scripts/lib/*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -426,7 +444,8 @@ fi
 
 {
   printf '\n## Automation wrapper result\n\n'
-  printf -- '- Base commit: `%s`\n' "$base_commit"
+  printf -- '- Process base commit: `%s`\n' "$base_commit"
+  printf -- '- Round review base commit: `%s`\n' "$review_base_commit"
   printf -- '- Implementer runtime: `%s / %s / %s`\n' \
     "$implementer_agent" "$implementer_model" "$implementer_effort"
   printf -- '- Agent process: PASS (exit 0)\n'
@@ -434,25 +453,13 @@ fi
   printf -- '- Checkpoint: created by `scripts/run-implementation.sh` after this report\n'
 } >>"$REPORT_FILE"
 
-state_tmp="$AGENT_DIR/state.env.tmp"
-while IFS= read -r state_line; do
-  case "$state_line" in
-    CURRENT_ROUND=*|ACTIVE_TASK_STATUS=*|PENDING_REVIEW=*|PENDING_REVIEW_ROUND=*|PENDING_REVIEW_BASE_COMMIT=*|LAST_IMPLEMENTATION_BASE_COMMIT=*|LAST_IMPLEMENTER_AGENT=*|LAST_IMPLEMENTER_MODEL=*|LAST_IMPLEMENTER_EFFORT=*) ;;
-    *) printf '%s\n' "$state_line" ;;
-  esac
-done <"$STATE_FILE" >"$state_tmp"
-{
-  printf 'CURRENT_ROUND=%s\n' "$implementation_round"
-  printf 'ACTIVE_TASK_STATUS=AWAITING_OWNER\n'
-  printf 'PENDING_REVIEW=YES\n'
-  printf 'PENDING_REVIEW_ROUND=%s\n' "$implementation_round"
-  printf 'PENDING_REVIEW_BASE_COMMIT=%s\n' "$base_commit"
-  printf 'LAST_IMPLEMENTATION_BASE_COMMIT=%s\n' "$base_commit"
-  printf 'LAST_IMPLEMENTER_AGENT=%s\n' "$implementer_agent"
-  printf 'LAST_IMPLEMENTER_MODEL=%s\n' "$implementer_model"
-  printf 'LAST_IMPLEMENTER_EFFORT=%s\n' "$implementer_effort"
-} >>"$state_tmp"
-mv "$state_tmp" "$STATE_FILE"
+if ! agent_finish_implementation_round_state \
+  "$STATE_FILE" "$implementation_round" "$review_base_commit" \
+  "$implementer_agent" "$implementer_model" "$implementer_effort"; then
+  agent_record_stop \
+    WRAPPER IMPLEMENTATION_ROUND_STATE_FAILED 4 "$STATE_FILE"
+  exit 4
+fi
 
 if ! git -C "$ROOT_DIR" add --all; then
   agent_record_stop WRAPPER CHECKPOINT_PERMISSION 4 "$ARTIFACT_DIR/git-commit-round-${implementation_round}.log"

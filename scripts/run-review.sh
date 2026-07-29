@@ -295,7 +295,8 @@ else
   context_instructions="Read PROJECT.md, AGENT_PROTOCOL.md,
 .agent/roles/REVIEWER.md, PROJECT_SPEC.md,
 docs/engineering/SOURCE_SCENE.md, docs/engineering/REACTOR_POOL_SYSTEM.md,
-docs/engineering/REACTOR_MODEL.md, REVIEW_CONTRACT.md, README.md,
+docs/engineering/REACTOR_MODEL.md,
+docs/engineering/SOURCE_LAB_OPTICS.md, REVIEW_CONTRACT.md, README.md,
 .agent/implementation-report.md, the specified Git diff, related code/tests,
 and validation evidence."
 fi

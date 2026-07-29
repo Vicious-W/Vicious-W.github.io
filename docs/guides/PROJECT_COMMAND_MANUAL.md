@@ -225,6 +225,11 @@ PASS 表示没有阻塞项，`CHANGES_REQUIRED` 则提供必须修复的问题�
 减少 `--rounds N` 指定的实现次数。同一 `ACTIVE_TASK_ID` 下，两个角色分别恢复自己的原会话；任务、角色、
 执行器、模型或 effort 改变时才新建，达到上下文阈值时则以新 generation 压缩续接。
 
+每次实现轮回正式开始前，包装器会先创建 `agent: begin implementation round N`
+状态检查点，保存该轮不可变的 REVIEWER 比较起点。后续即使经历多次额度恢复、自主
+切片或上下文轮换，恢复提交也不会成为新的审查起点；下一位 REVIEWER 会检查整轮
+源码范围。
+
 若最终实现已经满意，不需要补审查，直接记录所有者接受：
 
 ```bash
