@@ -370,9 +370,37 @@ completed_replay_usage="$(
 if [[ "$completed_replay_usage" == *'"final":true'* && \
       "$completed_replay_usage" == *'"turns":5'* && \
       "$completed_replay_usage" == *'"assistantEvents":1'* ]]; then
-  printf 'PASS  resumed Claude stream accepts only its last result as terminal\n'
+  printf 'PASS  resumed Claude stream accepts only its current result as terminal\n'
 else
   printf 'FAIL  current Claude terminal result was not isolated from replay history\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+printf '%s\n' \
+  '{"type":"system","subtype":"init","session_id":"88888888-8888-4888-a888-888888888888"}' \
+  '{"type":"assistant","session_id":"88888888-8888-4888-a888-888888888888","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":800,"output_tokens":6}}}' \
+  '{"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"88888888-8888-4888-a888-888888888888","num_turns":7,"total_cost_usd":3.5}' \
+  '{"type":"system","subtype":"background_tasks_changed","session_id":"88888888-8888-4888-a888-888888888888"}' \
+  '{"type":"system","subtype":"task_updated","session_id":"88888888-8888-4888-a888-888888888888"}' \
+  '{"type":"system","subtype":"task_notification","session_id":"88888888-8888-4888-a888-888888888888"}' \
+  >"$TEST_DIR/result-with-cleanup.events.jsonl"
+cleanup_usage="$(
+  node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" \
+    live claude "$TEST_DIR/result-with-cleanup.events.jsonl"
+)"
+if node "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" \
+     outcome claude "$TEST_DIR/result-with-cleanup.events.jsonl" >/dev/null 2>&1; then
+  cleanup_outcome_exit=0
+else
+  cleanup_outcome_exit=$?
+fi
+if [[ "$cleanup_usage" == *'"final":true'* && \
+      "$cleanup_usage" == *'"turns":7'* && \
+      "$cleanup_usage" == *'"assistantEvents":1'* && \
+      "$cleanup_outcome_exit" == "75" ]]; then
+  printf 'PASS  Claude cleanup events cannot hide the current terminal result\n'
+else
+  printf 'FAIL  Claude cleanup events displaced the current terminal result\n' >&2
   failure_count=$((failure_count + 1))
 fi
 
@@ -501,6 +529,36 @@ if (( fake_guard_exit == 75 )); then
 else
   printf 'FAIL  Claude adapter returned %s for a structured budget guard\n' \
     "$fake_guard_exit" >&2
+  failure_count=$((failure_count + 1))
+fi
+
+cat >"$FAKE_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' \
+  '{"type":"system","subtype":"init","session_id":"99999999-9999-4999-a999-999999999999"}' \
+  '{"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"99999999-9999-4999-a999-999999999999","num_turns":4,"total_cost_usd":6}' \
+  '{"type":"system","subtype":"background_tasks_changed","session_id":"99999999-9999-4999-a999-999999999999"}' \
+  '{"type":"system","subtype":"task_notification","session_id":"99999999-9999-4999-a999-999999999999"}'
+exit 1
+EOF
+chmod +x "$FAKE_BIN/claude"
+if AGENT_SESSION_ID="99999999-9999-4999-a999-999999999999" \
+   AGENT_SESSION_MODE=new \
+   AGENT_EVENT_FILE="$TEST_DIR/fake-cleanup-events.jsonl" \
+   AGENT_CLAUDE_MAX_TURNS=36 \
+   AGENT_CLAUDE_MAX_BUDGET_USD=6.00 \
+   PATH="$FAKE_BIN:$PATH" \
+     "$ROOT_DIR/scripts/agent-runners/claude.sh" \
+       IMPLEMENTER opus high "$PROMPT_TEST" - >/dev/null 2>&1; then
+  fake_cleanup_exit=0
+else
+  fake_cleanup_exit=$?
+fi
+if (( fake_cleanup_exit == 75 )); then
+  printf 'PASS  structured terminal result outranks trailing cleanup and CLI exit one\n'
+else
+  printf 'FAIL  Claude adapter returned %s after a terminal result plus cleanup\n' \
+    "$fake_cleanup_exit" >&2
   failure_count=$((failure_count + 1))
 fi
 

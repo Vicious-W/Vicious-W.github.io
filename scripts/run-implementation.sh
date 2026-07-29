@@ -306,7 +306,14 @@ temporary source probes in ignored artifact paths. For page appearance or behavi
 Playwright MCP—not a Bash Playwright script—to exercise the required viewports,
 session reset, first-interaction activation, reactor-pool operation and pulse,
 water response, glass interactions, audio activation, responsive layout, and
-browser console. Preserve useful evidence only in ignored artifact paths.
+browser console. Bash child processes and Playwright MCP may not share a network
+namespace, so do not start a background Vite, preview, or HTTP server for this
+evidence pass. Build first, then use Playwright MCP browser_run_code_unsafe with
+page.route('**/*', ...) to fulfill requests from files under dist/ at a synthetic
+HTTP origin such as http://source.local/index.html. Keep the route strictly
+inside dist/, return index.html for the entry URL, preserve asset MIME types,
+and abort path traversal or missing files. Preserve useful evidence only in
+ignored artifact paths.
 
 Replace .agent/implementation-report.md with a complete report. Include
 "- Implementer runtime: $implementer_agent / $implementer_model / $implementer_effort"

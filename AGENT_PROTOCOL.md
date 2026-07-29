@@ -178,8 +178,9 @@ Claude 使用逐事件 `stream-json`；监督心跳只打印精简累计数值�
 等价用量，避免只看单次切片。
 
 流式 assistant 事件数只用于趋势观察，不等于执行器最终 turns。恢复会话可能回放旧
-`result`；只有事件流末尾属于当前进程的终态 `result` 才能标记完成，历史回放的
-`result` 不能令实时状态出现 `final=true`。`--max-turns` 是交给 Claude 的
+`result`；最后一个 `system/init` 是本次调用的边界，只有边界后的最新终态
+`result` 才能标记完成。历史回放的 `result` 不能令实时状态出现 `final=true`，
+而终态后的后台任务清理事件也不能覆盖已经到达的终态。`--max-turns` 是交给 Claude 的
 agentic-turn 保险；流式 `assistantEvents` 是另一种进度计数，二者不得互相替代。
 执行器最终 `num_turns` 是结果报告值，不能用 assistant 事件数自行强制截断进程；
 是否命中保险以终态 `subtype=error_max_turns` 为准，并与独立 budget/timeout 保险

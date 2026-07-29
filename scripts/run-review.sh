@@ -330,6 +330,13 @@ changes, verify RP-* structures and connections, pulse preconditions and timing,
 mechanical/water/thermal load paths, equilibrium, source/proxy labels,
 approximations, and gap closure. Use Playwright MCP at required viewports for
 page changes when safely available; otherwise record exactly what is unverified.
+Bash child processes and Playwright MCP may not share a network namespace, so
+do not start a background Vite, preview, or HTTP server. If browser evidence is
+needed, use the existing validated dist/ output and Playwright MCP
+browser_run_code_unsafe with page.route('**/*', ...) to fulfill files strictly
+from dist/ at a synthetic HTTP origin such as
+http://source.local/index.html. Preserve asset MIME types and abort path
+traversal or missing files.
 
 Do not introduce requirements outside PROJECT_SPEC.md. Every finding must have
 evidence, impact, reproduction, expected/actual behavior, and objective acceptance

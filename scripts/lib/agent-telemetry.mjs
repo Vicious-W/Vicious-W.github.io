@@ -54,20 +54,47 @@ function firstNumber(...values) {
 
 function claudeData(events) {
   // A resumed Claude stream may replay the previous invocation's terminal
-  // result before emitting events for the new invocation. Only a result at the
-  // end of the current stream is terminal for the process we are observing.
-  const terminalResult =
-    events.at(-1)?.type === 'result' ? events.at(-1) : null;
-  const result = terminalResult ?? {};
-  const terminalIndex = terminalResult ? events.length - 1 : events.length;
-  let previousResultIndex = -1;
-  for (let index = terminalIndex - 1; index >= 0; index -= 1) {
-    if (events[index]?.type === 'result') {
-      previousResultIndex = index;
+  // result before emitting the current system/init. Conversely, Claude may
+  // append background-task cleanup events after the current terminal result.
+  // The last init therefore defines the invocation boundary; the newest result
+  // after that boundary is authoritative even when it is not the last record.
+  let currentInitIndex = -1;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (
+      events[index]?.type === 'system' &&
+      events[index]?.subtype === 'init'
+    ) {
+      currentInitIndex = index;
       break;
     }
   }
-  const invocationEvents = events.slice(previousResultIndex + 1);
+  let terminalIndex = -1;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (
+      events[index]?.type === 'result' &&
+      (currentInitIndex < 0 || index > currentInitIndex)
+    ) {
+      terminalIndex = index;
+      break;
+    }
+  }
+  const terminalResult =
+    terminalIndex >= 0 ? events[terminalIndex] : null;
+  const result = terminalResult ?? {};
+  let invocationStartIndex = currentInitIndex;
+  if (invocationStartIndex < 0) {
+    const previousResultBoundary =
+      terminalIndex >= 0 ? terminalIndex : events.length;
+    let previousResultIndex = -1;
+    for (let index = previousResultBoundary - 1; index >= 0; index -= 1) {
+      if (events[index]?.type === 'result') {
+        previousResultIndex = index;
+        break;
+      }
+    }
+    invocationStartIndex = previousResultIndex + 1;
+  }
+  const invocationEvents = events.slice(invocationStartIndex);
   const rateLimitEvents = invocationEvents.filter(
     (event) => event?.type === 'rate_limit_event' && event?.rate_limit_info,
   );
