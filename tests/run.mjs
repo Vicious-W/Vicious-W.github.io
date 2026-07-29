@@ -24,7 +24,10 @@ import { createWaterSystem, cherenkovIntensity } from "../src/scenes/reactor/wat
 import {
   HALL_BOUNDS, HALL_COLLIDERS, LAB_COMPONENTS, createLabEnvironment
 } from "../src/scenes/reactor/labEnvironment.js";
-import { UNDERGROUND_BOUNDS, PLANT_COMPONENTS } from "../src/scenes/reactor/undergroundPlant.js";
+import {
+  UNDERGROUND_BOUNDS, PLANT_COMPONENTS, createUndergroundPlant
+} from "../src/scenes/reactor/undergroundPlant.js";
+import { frameDelta, wrap01 } from "../src/scenes/reactor/timeStep.js";
 import { GLASS_ARCH, floorBrickLayout } from "../src/scenes/reactor/glassArchitecture.js";
 import { createFreeCamera, CAM_LIMITS, CAM_INPUT } from "../src/scenes/reactor/freeCamera.js";
 import { createCherenkov, exposureGain } from "../src/scenes/reactor/cherenkov.js";
@@ -755,6 +758,40 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   assert(after.annunciator[0] > 0.4, "SCRAM 后独立安全柱的停堆灯立即恢复");
   assert(after.rodBars.every(v => v <= 0.05), "SCRAM 后三条棒行程指示条都落回底部");
   lab.dispose();
+}
+
+// ——————————————————————————— 帧步长与流向光珠相位（回归） ———————————————————————————
+// 浏览器实测缺陷：rAF 回调的时间戳是本帧开始时刻，可能早于 start() 里刚记下的
+// performance.now()，于是首帧 dt 为负；负相位让 CatmullRomCurve3.getPointAt 索引到
+// points[-1] 并抛出 TypeError，异常逃出 rAF 回调后整个渲染循环永久停住。
+{
+  assert(frameDelta(1000, 1016) === 0, "rAF 时间戳早于 last 时步长夹为 0，不倒着积分");
+  assert(frameDelta(1016, 1000) > 0.0159 && frameDelta(1016, 1000) < 0.0161,
+    `正常帧步长按秒换算: ${frameDelta(1016, 1000)}`);
+  assert(frameDelta(9000, 1000) === 0.05, "长时间挂起后步长夹到上限 0.05");
+  assert(frameDelta(undefined, 1000) === 0 && frameDelta(NaN, 0) === 0,
+    "非有限时间戳退化为 0 步长，不把 NaN 传进积分器");
+
+  assert(wrap01(-0.0001) > 0.999 && wrap01(-0.0001) < 1, `负相位折回 [0,1): ${wrap01(-0.0001)}`);
+  assert(wrap01(-2.25) === 0.75, `多圈负相位折回 [0,1): ${wrap01(-2.25)}`);
+  assert(wrap01(1) === 0 && wrap01(3.5) === 0.5, "正相位仍按周期折回");
+  assert(wrap01(NaN) === 0 && wrap01(Infinity) === 0, "非有限相位退化为 0");
+  for (let i = -50; i <= 50; i++) {
+    const v = wrap01(i * 0.137);
+    if (!(v >= 0 && v < 1)) { assert(false, `wrap01 越界: ${i * 0.137} -> ${v}`); break; }
+  }
+  assert(true, "wrap01 在正负扫描下始终落在 [0,1)，曲线参数不会越界");
+
+  // 端到端：负步长 + 满流量喂给地下厂房，不得抛异常（等价于首帧的真实时序）
+  const plant = createUndergroundPlant({ reduceMotion: false });
+  const negState = { coolantFlowProxy: 1, poolTemperatureProxy: 0.5, unlocked: true, powerProxy: 1 };
+  let threw = null;
+  try {
+    plant.update(negState, frameDelta(1000, 1016));
+    for (let i = 0; i < 5; i++) plant.update(negState, 1 / 60);
+  } catch (e) { threw = e; }
+  assert(threw === null, `首帧负步长不再让地下厂房抛异常: ${threw && threw.message}`);
+  plant.dispose?.();
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

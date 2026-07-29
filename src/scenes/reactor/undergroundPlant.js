@@ -14,6 +14,7 @@
 // 集水泵和净化支路全部读取 sessionController 的连续状态；流量为零时几何真的停住。
 
 import * as THREE from "three";
+import { wrap01 } from "./timeStep.js";
 
 const clamp = THREE.MathUtils.clamp;
 
@@ -278,10 +279,12 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
     return { im, curve, count, beadMat, phase: 0 };
   }
   function updateBeads(b, flow, dt) {
-    b.beadMat.emissiveIntensity = flow * 1.8;
-    if (flow > 1e-3) b.phase = (b.phase + dt * flow * 0.22) % 1;
+    const f = Number.isFinite(flow) ? clamp(flow, 0, 1) : 0;
+    b.beadMat.emissiveIntensity = f * 1.8;
+    // 相位必须留在 [0,1)：`%` 会保留负号，负参数会让 getPointAt 索引到 points[-1]。
+    if (f > 1e-3) b.phase = wrap01(b.phase + dt * f * 0.22);
     for (let i = 0; i < b.count; i++) {
-      const t = (i / b.count + b.phase) % 1;
+      const t = wrap01(i / b.count + b.phase);
       b.curve.getPointAt(t, dummy.position);
       dummy.rotation.set(0, 0, 0);
       dummy.scale.setScalar(0.6 + flow * 0.6);

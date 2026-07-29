@@ -24,6 +24,7 @@ import { createCherenkov } from "./cherenkov.js";
 import { createLabEnvironment, HALL_BOUNDS, HALL_COLLIDERS } from "./labEnvironment.js";
 import { createGlassArchitecture, GLASS_ARCH } from "./glassArchitecture.js";
 import { createUndergroundPlant, UNDERGROUND_BOUNDS } from "./undergroundPlant.js";
+import { frameDelta } from "./timeStep.js";
 import { createGlassAudio } from "./glassAudio.js";
 import { createReactorAudio } from "./reactorAudio.js";
 import {
@@ -1045,7 +1046,12 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
 
   const frame = now => {
     if (!running || disposed) return;
-    const dt = Math.min((now - last) / 1000, 0.05);
+    // 先续订下一帧：任何一次瞬时异常都不应该让整个场景永久停住（异常本身仍会照常
+    // 冒泡到 console，不被吞掉）。
+    raf = requestAnimationFrame(frame);
+    // rAF 时间戳可能早于 start() 里记录的 performance.now()，负步长必须夹掉，
+    // 否则会倒着积分动力学并让曲线参数越界（见 timeStep.js）。
+    const dt = frameDelta(now, last);
     last = now;
 
     // —— 输入所有权（GLA-CTRL-003）：抓着玻璃时 W/S/A/D 属于玻璃，否则属于相机 ——
@@ -1099,7 +1105,6 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     }
 
     renderer.render(scene, camera);
-    raf = requestAnimationFrame(frame);
   };
 
   const start = () => {
