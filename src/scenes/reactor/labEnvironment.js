@@ -52,25 +52,9 @@ export function createLabEnvironment({ reduceMotion } = {}) {
   // —— 房间外壳 ——
   const concrete = mat(0x2c333b, { roughness: 0.95, metalness: 0.05 });
   const concreteWall = mat(0x333b44, { roughness: 0.92, metalness: 0.05 });
-  const floor = new THREE.Mesh(track(new THREE.BoxGeometry(HALL, 0.12, HALL)), concrete);
-  floor.position.set(0, FLOOR_Y - 0.06, 0);
-  group.add(floor);
-  const ceiling = new THREE.Mesh(track(new THREE.BoxGeometry(HALL, 0.2, HALL)), mat(0x20262c, { roughness: 0.95 }));
-  ceiling.position.set(0, CEIL_Y, 0);
-  group.add(ceiling);
-  // 四面墙（盒子，厚度朝外）
-  const wallH = CEIL_Y - FLOOR_Y;
-  const wallDefs = [
-    [0, FLOOR_Y + wallH / 2, -HALF, HALL, wallH, 0.3],
-    [0, FLOOR_Y + wallH / 2, HALF, HALL, wallH, 0.3],
-    [-HALF, FLOOR_Y + wallH / 2, 0, 0.3, wallH, HALL],
-    [HALF, FLOOR_Y + wallH / 2, 0, 0.3, wallH, HALL]
-  ];
-  wallDefs.forEach(([x, y, z, w, h, d]) => {
-    const wall = new THREE.Mesh(track(new THREE.BoxGeometry(w, h, d)), concreteWall);
-    wall.position.set(x, y, z);
-    group.add(wall);
-  });
+  // 地板、四面墙和天花板不再是混凝土盒子：它们由 glassArchitecture.js 的独立玻璃砖
+  // 单元构成（GLA-001/GLA-002）。这里只保留混凝土材质，供设备基础和地下结构复用。
+  void concrete; void concreteWall;
 
   // —— 天花工业灯具（自发光板 + 少量真实点光提供厂房照明）——
   const fixtureMat = track(new THREE.MeshStandardMaterial({

@@ -19,6 +19,8 @@ import { createWaterSystem } from "./waterSystem.js";
 import { createSessionController } from "./sessionController.js";
 import { createControlConsole } from "./controlConsole.js";
 import { createLabEnvironment, HALL_BOUNDS, HALL_COLLIDERS } from "./labEnvironment.js";
+import { createGlassArchitecture, GLASS_ARCH } from "./glassArchitecture.js";
+import { createUndergroundPlant, UNDERGROUND_BOUNDS } from "./undergroundPlant.js";
 import { createGlassAudio } from "./glassAudio.js";
 import { createReactorAudio } from "./reactorAudio.js";
 import {
@@ -141,6 +143,17 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   // —— 实验大厅环境（房间外壳、厂房设备、人员安全设施）——
   const lab = createLabEnvironment({ reduceMotion });
   scene.add(lab.group);
+
+  // —— 玻璃砖建筑（GLA-001/GLA-002）与地下设备层（LAB-003/LAB-004）——
+  // 移动视口只对近池半径内的地板砖保持动态刚体，其余为固定实例化玻璃地板
+  // （GLA-003 性能档：不把整块地板退化成不可移动平面）。
+  const smallViewport = Math.min(window.innerWidth || 1440, window.innerHeight || 900) < 820;
+  const arch = createGlassArchitecture({
+    reduceMotion, dynamicFloorRadius: smallViewport ? 13 : Infinity
+  });
+  scene.add(arch.group);
+  const underground = createUndergroundPlant({ reduceMotion });
+  scene.add(underground.group);
 
   // —— 物理世界 ——
   const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -20, 0) });
@@ -829,6 +842,8 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     water.update(dt, session.state);
     console3d.update(session.state, dt);
     lab.update(session.state, dt);
+    underground.update(session.state, dt);
+    arch.update(session.state, dt);
     if (reactorAudio) reactorAudio.update(dt, session.state);
 
     world.step(1 / 60, dt, 4);
