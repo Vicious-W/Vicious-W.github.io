@@ -35,28 +35,26 @@ export const GLASS_ARCH = {
 GLASS_ARCH.supportTop = GLASS_ARCH.floorTop - GLASS_ARCH.floorBrick[1];
 
 // 规范初始布局：刷新后地板砖必须回到这里（GLA-002）。
-// dynamicRadius 之外的格位改用固定实例化玻璃地板（GLA-003 性能档），
-// 不把整块地板退化成一个不可移动平面。
-export function floorBrickLayout(dynamicRadius = Infinity) {
+// **全部**格位都是动态砖：地板上没有"固定装饰砖"这一档。性能不靠取消功能来买，
+// 而是靠休眠 + 只同步醒着的实例（见 physicalScene 的 floorMesh 同步与 GLA-003 记录）。
+export function floorBrickLayout() {
   const { hallHalf, floorCell, floorTop, floorBrick, poolClearR } = GLASS_ARCH;
   const n = Math.floor((hallHalf * 2) / floorCell);
   const origin = -((n - 1) * floorCell) / 2;
   const dynamic = [];
-  const fixed = [];
   const restY = floorTop - floorBrick[1] / 2;
   for (let j = 0; j < n; j++) {
     for (let i = 0; i < n; i++) {
       const x = origin + i * floorCell;
       const z = origin + j * floorCell;
-      const r = Math.hypot(x, z);
-      if (r < poolClearR) continue;
-      (r <= dynamicRadius ? dynamic : fixed).push({ x, y: restY, z });
+      if (Math.hypot(x, z) < poolClearR) continue;
+      dynamic.push({ x, y: restY, z });
     }
   }
-  return { dynamic, fixed, restY };
+  return { dynamic, restY };
 }
 
-export function createGlassArchitecture({ reduceMotion, dynamicFloorRadius = Infinity } = {}) {
+export function createGlassArchitecture({ reduceMotion } = {}) {
   const group = new THREE.Group();
   const disposables = [];
   const track = obj => { disposables.push(obj); return obj; };
@@ -203,13 +201,11 @@ export function createGlassArchitecture({ reduceMotion, dynamicFloorRadius = Inf
   group.add(supportRim);
 
   // ——————————— GLA-002/GLA-003 地板砖 ———————————
-  const layout = floorBrickLayout(dynamicFloorRadius);
+  // 只产出几何与规范布局：每一块的刚体、抓取、耐久、破碎都由 physicalScene 建立，
+  // 这里不再区分"动态/固定"两档（固定砖会让远处地板不可抓、不可损伤）。
+  const layout = floorBrickLayout();
   const floorBrickGeo = track(new RoundedBoxGeometry(
     floorBrick[0], floorBrick[1], floorBrick[2], 2, 0.03));
-  // 性能档之外的固定地板砖（同一几何/材质，静态实例化，不可抓取）
-  if (layout.fixed.length) {
-    instanced(floorBrickGeo, floorGlass, layout.fixed.map(p => [p.x, p.y, p.z]), 0, "GLA-FLOOR-FIXED");
-  }
 
   function update() { /* 建筑玻璃是固定结构：没有状态驱动的运动 */ }
 
@@ -227,7 +223,7 @@ export function createGlassArchitecture({ reduceMotion, dynamicFloorRadius = Inf
       wall: wallCounts.reduce((a, b) => a + b, 0),
       ceiling: ceilList.length,
       floorDynamic: layout.dynamic.length,
-      floorFixed: layout.fixed.length
+      floorFixed: 0   // GLA-002：地板上没有固定砖，恒为 0（验收直接读这个数）
     },
     reduceMotion: !!reduceMotion
   };

@@ -21,7 +21,7 @@ import { createControlConsole } from "./controlConsole.js";
 import { createAutoConsole } from "./autoConsole.js";
 import { createFreeCamera, CAM_LIMITS, homeFitDistance } from "./freeCamera.js";
 import { createCherenkov } from "./cherenkov.js";
-import { createLabEnvironment, HALL_BOUNDS, HALL_COLLIDERS } from "./labEnvironment.js";
+import { createLabEnvironment } from "./labEnvironment.js";
 import { createGlassArchitecture, GLASS_ARCH } from "./glassArchitecture.js";
 import { createUndergroundPlant, UNDERGROUND_BOUNDS } from "./undergroundPlant.js";
 import { frameDelta } from "./timeStep.js";
@@ -173,15 +173,11 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   scene.add(lab.group);
 
   // —— 玻璃砖建筑（GLA-001/GLA-002）与地下设备层（LAB-003/LAB-004）——
-  // 移动视口只对近池半径内的地板砖保持动态刚体，其余为固定实例化玻璃地板
-  // （GLA-003 性能档：不把整块地板退化成不可移动平面）。
+  // 全部 300 个地板格位在所有视口都是**独立动态玻璃砖**：各自有刚体、耐久、裂纹和
+  // 破碎状态，任意一块都能抓走。性能靠休眠 + 只同步醒着的实例来买（见下面的
+  // floorMesh 同步与 syncedThisFrame），不靠把远处砖降级成不可移动地面。
   const smallViewport = Math.min(window.innerWidth || 1440, window.innerHeight || 900) < 820;
-  // 动态半径（GLA-003）：近池的地板砖是独立刚体（可抓、可破），更外圈改用固定
-  // 实例化玻璃地板。桌面 15 ≈ 100 块动态砖，移动端 10.5 ≈ 45 块——不是把整块地板
-  // 退化成一个不可移动平面，而是按距离分档。
-  const arch = createGlassArchitecture({
-    reduceMotion, dynamicFloorRadius: smallViewport ? 10.5 : 15
-  });
+  const arch = createGlassArchitecture({ reduceMotion });
   scene.add(arch.group);
   const underground = createUndergroundPlant({ reduceMotion });
   scene.add(underground.group);
@@ -327,19 +323,38 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   });
   world.addBody(pitFloor);
 
+  // GLA-001 玻璃墙与玻璃天花的静态碰撞：边界直接由 GLASS_ARCH 的砖层常量生成，
+  // 因此**碰撞面与看得见的砖面重合**（墙砖中心在 hallHalf - wallThickness/2，
+  // 内表面在 hallHalf - wallThickness；天花砖中心在 ceilingY - ceilThickness/2）。
+  // 早先只有一圈高 6 的墙碰撞、天花完全没有碰撞，被提到 y≈11 的玻璃会直接穿过
+  // 可见砖面飞出去；现在墙从地板顶面一直封到天花，天花本身也是一块合并静态盒。
+  const HALL_WALL = {
+    inner: GLASS_ARCH.hallHalf - GLASS_ARCH.wallThickness,
+    top: GLASS_ARCH.ceilingY - GLASS_ARCH.ceilThickness,
+    bottom: GLASS_ARCH.floorTop
+  };
   const hallWalls = new CANNON.Body({ mass: 0, material: glassPhys });
   {
-    const w = HALL_COLLIDERS.wallInner;
-    const h = 6;
-    const slab = new CANNON.Box(new CANNON.Vec3(0.25, h / 2, w));
+    const half = GLASS_ARCH.wallThickness / 2;
+    const center = GLASS_ARCH.hallHalf - half;       // = 可见墙砖的中心面
+    const h = GLASS_ARCH.ceilingY - GLASS_ARCH.floorTop;
+    const yMid = GLASS_ARCH.floorTop + h / 2;
+    // 沿墙长度取 hallHalf（而不是内表面半宽），四角因此被两侧墙板互相盖住，不漏缝
+    const slab = new CANNON.Box(new CANNON.Vec3(half, h / 2, GLASS_ARCH.hallHalf));
     const q = new CANNON.Quaternion();
     const qz = new CANNON.Quaternion();
     qz.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), Math.PI / 2);
-    const yMid = HALL_COLLIDERS.floorTop + h / 2;
-    hallWalls.addShape(slab, new CANNON.Vec3(-w - 0.25, yMid, 0), q.clone());
-    hallWalls.addShape(slab, new CANNON.Vec3(w + 0.25, yMid, 0), q.clone());
-    hallWalls.addShape(slab, new CANNON.Vec3(0, yMid, -w - 0.25), qz.clone());
-    hallWalls.addShape(slab, new CANNON.Vec3(0, yMid, w + 0.25), qz.clone());
+    hallWalls.addShape(slab, new CANNON.Vec3(-center, yMid, 0), q.clone());
+    hallWalls.addShape(slab, new CANNON.Vec3(center, yMid, 0), q.clone());
+    hallWalls.addShape(slab, new CANNON.Vec3(0, yMid, -center), qz.clone());
+    hallWalls.addShape(slab, new CANNON.Vec3(0, yMid, center), qz.clone());
+    // 玻璃天花：与 GLA-CEILING 实例砖同厚同高的一块合并静态盒
+    hallWalls.addShape(
+      new CANNON.Box(new CANNON.Vec3(
+        GLASS_ARCH.hallHalf, GLASS_ARCH.ceilThickness / 2, GLASS_ARCH.hallHalf)),
+      new CANNON.Vec3(0, GLASS_ARCH.ceilingY - GLASS_ARCH.ceilThickness / 2, 0),
+      q.clone()
+    );
   }
   world.addBody(hallWalls);
 
@@ -764,7 +779,13 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     gain: 9, maxSpeed: 7, maxImpulse: 26,
     liftRate: 2.4, yawRate: 2.0, minY: -10.6, maxY: 11.0, releaseSpeed: 3.0
   };
-  const grab = { entry: null, y: LIFT_Y, yaw: 0, tx: 0, tz: 0 };
+  // baseQuat = 抓取瞬间的**完整**朝向（含碰撞留下的俯仰/翻滚）；yaw0 = 那一刻的偏航。
+  // 约束姿态 = 绕世界 Y 转 (yaw - yaw0) 再乘 baseQuat：世界 Y 旋转不改变本地 +Y 与
+  // 世界 +Y 的夹角，因此俯仰/翻滚在整个抓取过程中逐位保持不变（GLA-CTRL-002）。
+  const grab = {
+    entry: null, y: LIFT_Y, yaw: 0, yaw0: 0, tx: 0, tz: 0,
+    baseQuat: new CANNON.Quaternion()
+  };
   const keys = new Set();
   let shiftDown = false;
 
@@ -778,7 +799,9 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     b.angularDamping = 0.9;
     b.angularVelocity.set(0, 0, 0);   // 抓取成功时清除已有随机角速度
     grab.y = clamp(b.position.y, GRAB.minY, GRAB.maxY);
-    grab.yaw = yawOf(b.quaternion);
+    grab.baseQuat.copy(b.quaternion);
+    grab.yaw0 = yawOf(b.quaternion);
+    grab.yaw = grab.yaw0;
     grab.tx = b.position.x; grab.tz = b.position.z;
     dragPlane.constant = -grab.y;
     canvas.style.cursor = "grabbing";
@@ -800,6 +823,8 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   }
 
   const grabImpulse = new CANNON.Vec3();
+  const grabYawQ = new CANNON.Quaternion();
+  const GRAB_WORLD_Y = new CANNON.Vec3(0, 1, 0);
   function grabServo() {
     if (!grab.entry) return;
     const b = grab.entry.body;
@@ -812,8 +837,10 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     const il = grabImpulse.length();
     if (il > GRAB.maxImpulse) grabImpulse.scale(GRAB.maxImpulse / il, grabImpulse);
     b.applyImpulse(grabImpulse);                       // 作用于质心 → 不产生随机力矩
-    // 朝向：俯仰/翻滚锁定，只保留 A/D 的世界竖直轴偏航
-    b.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), grab.yaw);
+    // 朝向：锁定抓取瞬间的俯仰/翻滚，只把 A/D 的世界竖直轴偏航增量叠上去。
+    // 不再用纯 Y 轴四元数重建姿态——那会在第一物理步把侧躺的玻璃"扶正"。
+    grabYawQ.setFromAxisAngle(GRAB_WORLD_Y, grab.yaw - grab.yaw0);
+    grabYawQ.mult(grab.baseQuat, b.quaternion);
     b.angularVelocity.set(0, 0, 0);
   }
   world.addEventListener("preStep", grabServo);
