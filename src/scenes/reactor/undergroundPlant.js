@@ -36,9 +36,11 @@ export const PLANT_COMPONENTS = [
   { id: "UG-K01", tag: "SOURCE_VERIFIED", name: "intermediatePumpA", up: "UG-H01", down: "UG-T01" },
   { id: "UG-K02", tag: "SOURCE_VERIFIED", name: "intermediatePumpB", up: "UG-H01", down: "UG-T01" },
   { id: "UG-T01", tag: "TRIGA_ANALOGUE", name: "surgeTank", up: "UG-K01", down: "UG-H02" },
-  { id: "UG-H02", tag: "SOURCE_VERIFIED", name: "heatExchanger2", up: "UG-T01", down: "UG-V02" },
-  { id: "UG-V02", tag: "TRIGA_ANALOGUE", name: "tertiaryValve", up: "UG-H02", down: "UG-X01" },
-  { id: "UG-X01", tag: "REALTIME_PROXY", name: "tertiaryWallPenetration", up: "UG-V02", down: "site" },
+  { id: "UG-H02", tag: "SOURCE_VERIFIED", name: "heatExchanger2", up: "UG-T01", down: "UG-J01" },
+  { id: "UG-J01", tag: "TRIGA_ANALOGUE", name: "intermediateReturnHeader", up: "UG-H02", down: "UG-H01" },
+  { id: "UG-X01", tag: "REALTIME_PROXY", name: "tertiarySupplyPenetration", up: "site", down: "UG-V02" },
+  { id: "UG-V02", tag: "TRIGA_ANALOGUE", name: "tertiaryValve", up: "UG-X01", down: "UG-H02" },
+  { id: "UG-X02", tag: "REALTIME_PROXY", name: "tertiaryReturnPenetration", up: "UG-H02", down: "site" },
   { id: "UG-F01", tag: "TRIGA_ANALOGUE", name: "purificationFilter", up: "UG-V01", down: "UG-F02" },
   { id: "UG-F02", tag: "TRIGA_ANALOGUE", name: "ionExchangeColumnA", up: "UG-F01", down: "UG-F03" },
   { id: "UG-F03", tag: "TRIGA_ANALOGUE", name: "ionExchangeColumnB", up: "UG-F02", down: "UG-P02" },
@@ -46,7 +48,8 @@ export const PLANT_COMPONENTS = [
   { id: "UG-S02", tag: "REALTIME_PROXY", name: "sampleCabinet", up: "UG-S01", down: "site" },
   { id: "UG-D01", tag: "TRIGA_ANALOGUE", name: "drainTrench", up: "floorDrains", down: "UG-D02" },
   { id: "UG-D02", tag: "TRIGA_ANALOGUE", name: "sumpPit", up: "UG-D01", down: "UG-D03" },
-  { id: "UG-D03", tag: "TRIGA_ANALOGUE", name: "sumpPump", up: "UG-D02", down: "UG-X01" },
+  { id: "UG-D03", tag: "TRIGA_ANALOGUE", name: "sumpPump", up: "UG-D02", down: "UG-X03" },
+  { id: "UG-X03", tag: "REALTIME_PROXY", name: "drainWallPenetration", up: "UG-D03", down: "site" },
   { id: "UG-A01", tag: "SOURCE_VERIFIED", name: "transAirReceiver", up: "compressor", down: "UG-A02" },
   { id: "UG-A02", tag: "TRIGA_ANALOGUE", name: "transRegulatorManifold", up: "UG-A01", down: "UG-A03" },
   { id: "UG-A03", tag: "SOURCE_VERIFIED", name: "transAirRiser", up: "UG-A02", down: "bridge" },
@@ -55,6 +58,37 @@ export const PLANT_COMPONENTS = [
   { id: "UG-R01", tag: "SOURCE_VERIFIED", name: "rabbitTransferTube", up: "core", down: "UG-R02" },
   { id: "UG-R02", tag: "SOURCE_VERIFIED", name: "hotCellTransferRun", up: "UG-R01", down: "site" }
 ];
+
+// 换热器的四端口/双侧拓扑。全场只有这两台换热器（reactorModel 只保留池内取/回水
+// 接管，不再重复建模换热器）。每台两侧各有独立的进/出端口，两侧只交换热量、
+// **不交换流体**——这正是中间回路作为隔离回路存在的理由。
+export const HEAT_EXCHANGERS = [
+  {
+    id: "UG-H01", tag: "SOURCE_VERIFIED", name: "heatExchanger1",
+    sides: {
+      PRIMARY: { in: "UG-V01", out: "UG-P02" },
+      INTERMEDIATE: { in: "UG-J01", out: "UG-K01" }
+    }
+  },
+  {
+    id: "UG-H02", tag: "SOURCE_VERIFIED", name: "heatExchanger2",
+    sides: {
+      INTERMEDIATE: { in: "UG-T01", out: "UG-J01" },
+      TERTIARY: { in: "UG-V02", out: "UG-X02" }
+    }
+  }
+];
+
+// 三条**各自闭合**的流路（RP-008）：
+//   一回路   经池水闭合（池 → 取水 → HX1 一次侧 → 回水 → 池）；
+//   中间回路 在两台换热器之间闭合（HX1 二次侧 → 泵 → 缓冲罐 → HX2 一次侧 → 回程总管 → HX1）；
+//   三回路   经场外冷源闭合（场外 → 供水穿墙 → 阀 → HX2 二次侧 → 回水穿墙 → 场外）。
+// 三条路径除换热器外没有共同节点，因此不会串流。每个 id 在场景里都有同名对象。
+export const COOLANT_LOOPS = {
+  PRIMARY: ["pool", "UG-P01", "UG-V01", "UG-H01", "UG-P02", "pool"],
+  INTERMEDIATE: ["UG-H01", "UG-K01", "UG-T01", "UG-H02", "UG-J01", "UG-H01"],
+  TERTIARY: ["site", "UG-X01", "UG-V02", "UG-H02", "UG-X02", "site"]
+};
 
 export function createUndergroundPlant({ reduceMotion } = {}) {
   const group = new THREE.Group();
@@ -294,20 +328,29 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
     b.im.instanceMatrix.needsUpdate = true;
   }
 
+  // 把真实场景对象挂上部件 id，让验收可以**遍历场景**核对三条回路，而不是只读注册表
+  // 名单（R-001 的验收要求）。`pipe()`/`elbow()` 返回 Mesh，`valve()`/`pump()`/
+  // `heatExchanger()` 返回 { group, ... }，`vessel()` 直接返回 Group。
+  const tagAs = (id, node) => {
+    const o = node && node.isObject3D ? node : (node && node.group);
+    if (o) o.name = id;
+    return node;
+  };
+
   // ——————————————————————————— UG-P01/V01/H01/P02 一回路 ———————————————————————————
   const POOL_PEN_Y = -6.0;
   // 池水取水：从屏蔽体穿出 → 隔离阀 → 换热器 1
-  pipe([5.35, POOL_PEN_Y, -1.1], [9.0, POOL_PEN_Y, -1.1], 0.17, pipeHotMat);
+  tagAs("UG-P01", pipe([5.35, POOL_PEN_Y, -1.1], [9.0, POOL_PEN_Y, -1.1], 0.17, pipeHotMat));
   flange(5.45, POOL_PEN_Y, -1.1, 0.17, "x");
   elbow([9.0, POOL_PEN_Y, -1.1], 0.17, pipeHotMat);
   pipe([9.0, POOL_PEN_Y, -1.1], [9.0, floorY + 1.5, -1.1], 0.17, pipeHotMat);
   hanger(9.0, POOL_PEN_Y + 0.9, -1.1, 0.6);
-  const primaryValve = valve(9.0, floorY + 1.5, -1.1, 0.18);
+  const primaryValve = tagAs("UG-V01", valve(9.0, floorY + 1.5, -1.1, 0.18));
   elbow([9.0, floorY + 1.5, -1.1], 0.17, pipeHotMat);
   pipe([9.0, floorY + 1.5, -1.1], [9.0, floorY + 1.5, -3.2], 0.17, pipeHotMat);
-  const hx1 = heatExchanger(8.6, floorY + 1.5, -3.2, 0.55, 3.2);
-  // 换热器 1 出口 → 回池
-  pipe([8.6, floorY + 1.05, -4.9], [8.6, floorY + 1.05, 1.4], 0.16, pipeCold);
+  const hx1 = tagAs("UG-H01", heatExchanger(8.6, floorY + 1.5, -3.2, 0.55, 3.2));
+  // 换热器 1 一次侧出口 → 回池
+  tagAs("UG-P02", pipe([8.6, floorY + 1.05, -4.9], [8.6, floorY + 1.05, 1.4], 0.16, pipeCold));
   hanger(8.6, floorY + 1.05, -0.4, 0.5);
   elbow([8.6, floorY + 1.05, 1.4], 0.16, pipeCold);
   pipe([8.6, floorY + 1.05, 1.4], [8.6, POOL_PEN_Y + 0.6, 1.4], 0.16, pipeCold);
@@ -320,10 +363,10 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
   ], 14, 0x4ad0ff);
 
   // ——————————————————————————— UG-K01/K02/T01/H02 中间回路 ———————————————————————————
-  const pumpA = pump(-9.4, floorY + 0.35, 2.2, 1.0);
-  const pumpB = pump(-9.4, floorY + 0.35, 4.6, 1.0);
-  const surgeTank = vessel(-12.6, floorY + 0.35, 0, 0.75, 2.4);
-  const hx2 = heatExchanger(-9.0, floorY + 2.6, -3.0, 0.5, 3.0);
+  const pumpA = tagAs("UG-K01", pump(-9.4, floorY + 0.35, 2.2, 1.0));
+  const pumpB = tagAs("UG-K02", pump(-9.4, floorY + 0.35, 4.6, 1.0));
+  const surgeTank = tagAs("UG-T01", vessel(-12.6, floorY + 0.35, 0, 0.75, 2.4));
+  const hx2 = tagAs("UG-H02", heatExchanger(-9.0, floorY + 2.6, -3.0, 0.5, 3.0));
   // 换热器 1（+X 侧）→ 中间回路泵（-X 侧）：贯穿池下的中间回路总管
   pipe([7.0, floorY + 2.0, -3.2], [-7.4, floorY + 2.0, -3.2], 0.14, painted);
   [4.0, 0.0, -4.0].forEach(x => hanger(x, floorY + 2.0, -3.2, 0.55));
@@ -347,18 +390,62 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
     [-10.4, floorY + 0.8, 3.4], [-12.6, floorY + 1.5, 1.4], [-12.6, floorY + 2.6, -2.9], [-10.7, floorY + 2.6, -3.0]
   ], 12, 0x35c9a8);
 
-  // ——————————————————————————— UG-V02/X01 三回路冷源接口 ———————————————————————————
-  pipe([-7.4, floorY + 2.6, -3.0], [-7.4, floorY + 2.6, -7.0], 0.13, insulation);
-  elbow([-7.4, floorY + 2.6, -7.0], 0.13, insulation);
-  const tertiaryValve = valve(-7.4, floorY + 2.6, -8.2, 0.16, 0x2f6f9a);
-  pipe([-7.4, floorY + 2.6, -7.0], [-7.4, floorY + 2.6, -9.4], 0.13, insulation);
-  pipe([-7.4, floorY + 2.6, -9.4], [-7.4, floorY + 2.6, -half + 0.45], 0.13, insulation);
-  // 穿墙：真实的套管 + 法兰，不在半空结束
-  const sleeve = new THREE.Mesh(track(new THREE.CylinderGeometry(0.26, 0.26, 0.9, 16)), concrete);
-  sleeve.rotation.x = Math.PI / 2;
-  sleeve.position.set(-7.4, floorY + 2.6, -half + 0.1);
-  group.add(sleeve);
-  flange(-7.4, floorY + 2.6, -half + 0.7, 0.13, "z");
+  // —— UG-J01 中间回路回程总管：HX2 二次侧出口 → HX1 二次侧入口，回路在此闭合 ——
+  // 供水总管走 z = -3.2 / y = floorY+2.0，回程总管抬到 y = floorY+3.6 并南移到
+  // z = -6.4（XZ 距轴 6.4 > 屏蔽体净空 5.35），两根总管既不相碰也不共用端口。
+  const jRetY = floorY + 3.6;
+  const interReturn = pipe([-7.4, floorY + 2.6, -3.0], [-7.4, jRetY, -3.0], 0.13, painted);
+  tagAs("UG-J01", interReturn);
+  elbow([-7.4, jRetY, -3.0], 0.13, painted);
+  pipe([-7.4, jRetY, -3.0], [-7.4, jRetY, -6.4], 0.13, painted);
+  elbow([-7.4, jRetY, -6.4], 0.13, painted);
+  pipe([-7.4, jRetY, -6.4], [10.2, jRetY, -6.4], 0.13, painted);
+  [-3.0, 2.0, 7.0].forEach(x => hanger(x, jRetY, -6.4, 0.55));
+  elbow([10.2, jRetY, -6.4], 0.13, painted);
+  pipe([10.2, jRetY, -6.4], [10.2, floorY + 1.5, -6.4], 0.13, painted);
+  elbow([10.2, floorY + 1.5, -6.4], 0.13, painted);
+  // HX1 壳体沿 X 从 7.0 到 10.2：东封头就是二次侧回水口，管子落在实体上
+  pipe([10.2, floorY + 1.5, -6.4], [10.2, floorY + 1.5, -3.2], 0.13, painted);
+  const interReturnBeads = flowBeads([
+    [-7.4, floorY + 2.7, -3.0], [-7.4, jRetY - 0.1, -3.3], [-7.4, jRetY, -6.3],
+    [2.0, jRetY, -6.4], [10.1, jRetY, -6.3], [10.2, floorY + 1.6, -5.0], [10.2, floorY + 1.5, -3.3]
+  ], 12, 0x2f9d86);
+
+  // ——————————————————————————— UG-X01/V02/X02 三回路冷源 ———————————————————————————
+  // 三回路是**独立**的第三条流路：场外冷源经南墙进来，只穿过 HX2 的二次侧（壳体
+  // 底部两个接管），再经另一处穿墙回场外。它与中间回路除换热器外没有共同节点。
+  const tertY = floorY + 1.2;
+  // HX2 壳体中心 y = floorY+2.6、半径 0.5 → 底部接管在 y = floorY+2.1
+  const tertPortY = floorY + 2.1;
+  const wallSleeve = (x, y, z, r) => {
+    const s = new THREE.Mesh(track(new THREE.CylinderGeometry(r * 1.9, r * 1.9, 0.9, 16)), concrete);
+    s.rotation.x = Math.PI / 2;
+    s.position.set(x, y, z);
+    group.add(s);
+    return s;
+  };
+  // 供水：场外 → 穿墙 → 隔离阀 → HX2 二次侧入口
+  const tertSupplySleeve = tagAs("UG-X01", wallSleeve(-9.6, tertY, -half + 0.1, 0.13));
+  flange(-9.6, tertY, -half + 0.7, 0.13, "z");
+  pipe([-9.6, tertY, -half + 0.7], [-9.6, tertY, -5.6], 0.13, insulation);
+  hanger(-9.6, tertY, -13.0, 0.5);
+  const tertiaryValve = tagAs("UG-V02", valve(-9.6, tertY, -5.6, 0.16, 0x2f6f9a));
+  pipe([-9.6, tertY, -5.6], [-9.6, tertY, -3.0], 0.13, insulation);
+  elbow([-9.6, tertY, -3.0], 0.13, insulation);
+  pipe([-9.6, tertY, -3.0], [-9.6, tertPortY, -3.0], 0.13, insulation, false);
+  // 回水：HX2 二次侧出口 → 穿墙 → 场外
+  pipe([-8.4, tertPortY, -3.0], [-8.4, tertY, -3.0], 0.13, insulation, false);
+  elbow([-8.4, tertY, -3.0], 0.13, insulation);
+  pipe([-8.4, tertY, -3.0], [-8.4, tertY, -half + 0.7], 0.13, insulation);
+  hanger(-8.4, tertY, -13.0, 0.5);
+  const tertReturnSleeve = tagAs("UG-X02", wallSleeve(-8.4, tertY, -half + 0.1, 0.13));
+  flange(-8.4, tertY, -half + 0.7, 0.13, "z");
+  const tertBeads = flowBeads([
+    [-9.6, tertY, -half + 0.8], [-9.6, tertY, -9.0], [-9.6, tertY, -5.6],
+    [-9.6, tertPortY - 0.3, -3.0], [-8.4, tertPortY - 0.3, -3.0],
+    [-8.4, tertY, -9.0], [-8.4, tertY, -half + 0.8]
+  ], 12, 0x6fb8ff);
+  void tertSupplySleeve; void tertReturnSleeve;
   // 三回路仪表（流量/温度）：指针几何由状态驱动
   const gaugeMat = track(new THREE.MeshStandardMaterial({ color: 0x11161c, emissive: 0x1b3a66, emissiveIntensity: 0.4, roughness: 0.3 }));
   function gauge(x, y, z) {
@@ -379,9 +466,9 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
   const tertTempGauge = gauge(-6.6, floorY + 3.3, -8.2);
 
   // ——————————————————————————— UG-F01..F03/S01/S02 净化支路 ———————————————————————————
-  const filterV = vessel(11.8, floorY + 0.35, 4.4, 0.4, 1.5, painted);
-  const ixA = vessel(13.0, floorY + 0.35, 4.4, 0.45, 2.2);
-  const ixB = vessel(13.0, floorY + 0.35, 6.0, 0.45, 2.2);
+  const filterV = tagAs("UG-F01", vessel(11.8, floorY + 0.35, 4.4, 0.4, 1.5, painted));
+  const ixA = tagAs("UG-F02", vessel(13.0, floorY + 0.35, 4.4, 0.45, 2.2));
+  const ixB = tagAs("UG-F03", vessel(13.0, floorY + 0.35, 6.0, 0.45, 2.2));
   // 支路从一回路取水（隔离阀下游）→ 过滤器 → 两根离子交换柱 → 回到回池管
   pipe([9.2, floorY + 1.5, -1.1], [11.8, floorY + 1.5, -1.1], 0.09, pipeCold);
   elbow([11.8, floorY + 1.5, -1.1], 0.09, pipeCold);
@@ -458,10 +545,14 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
   elbow([-6.2, floorY + 1.2, -9.4], 0.09, boltMat);
   pipe([-6.2, floorY + 1.2, -9.4], [-6.2, floorY + 0.1, -9.4], 0.09, boltMat, false);
 
-  const sumpPump = pump(-6.2, floorY + 0.35, -9.4, 0.65);
+  const sumpPump = tagAs("UG-D03", pump(-6.2, floorY + 0.35, -9.4, 0.65));
   pipe([-6.2, floorY + 0.7, -9.4], [-6.2, floorY + 2.4, -9.4], 0.07, boltMat, false);
   elbow([-6.2, floorY + 2.4, -9.4], 0.07, boltMat);
-  pipe([-6.2, floorY + 2.4, -9.4], [-7.4, floorY + 2.4, -9.4], 0.07, boltMat, false);
+  // 集水排放有**自己**的穿墙口（UG-X03）：它不再并入三回路冷源接口
+  pipe([-6.2, floorY + 2.4, -9.4], [-6.2, floorY + 2.4, -half + 0.7], 0.07, boltMat, false);
+  hanger(-6.2, floorY + 2.4, -14.0, 0.4);
+  tagAs("UG-X03", wallSleeve(-6.2, floorY + 2.4, -half + 0.1, 0.07));
+  flange(-6.2, floorY + 2.4, -half + 0.7, 0.07, "z");
   // 泄漏收集斗（挂在换热器鞍座下）
   [[8.6, -3.2], [-9.0, -3.0]].forEach(([x, z]) => {
     const funnel = new THREE.Mesh(track(new THREE.CylinderGeometry(0.34, 0.1, 0.3, 14, 1, true)), steel);
@@ -586,9 +677,24 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
 
   function update(state, dt = 0.016) {
     if (!state) return;
+    const powered = !!state.unlocked;
+
+    // 通风/辅助电源：地下照明只在会话时钟释放后达到工作亮度。这是**唯一**在联锁
+    // 复位期间也允许变化的量——它直接读供电状态，不积分任何东西。
+    ugLight1.intensity = powered ? 70 : 26;
+    ugLight2.intensity = powered ? 70 : 26;
+    ugLampMat.emissiveIntensity = powered ? 0.7 : 0.25;
+
+    // S-002 联锁复位：首次有效交互前，地下设备层不推进任何状态。集水液位、泵轴、
+    // 阀杆、流向光珠和仪表指针全部停在建成初值——否则页面停留久了，地下水位和排水
+    // 泵会与反应堆、音频、控制权的复位状态脱节（这正是审查 R-005 记录的问题）。
+    if (!powered) {
+      sampleScreenMat.emissiveIntensity = 0.1;
+      return;
+    }
+
     const flow = clamp(state.coolantFlowProxy, 0, 1);
     const dT = clamp(state.poolTemperatureProxy - 0.12, 0, 1);
-    const powered = !!state.unlocked;
 
     // 泵：轴/风扇转速 = 流量代理；流量 0 → 真的停住
     const spin = flow * 12 * dt * (reduceMotion ? 0.25 : 1);
@@ -622,11 +728,14 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
     hx2.shellMat.emissive.copy(hotColor);
     hx2.shellMat.emissiveIntensity = dT * 0.9 * flow;
 
-    // 流向光珠
+    // 流向光珠：三条回路各自独立推进，中间回路的供水与回程读同一个流量
     updateBeads(primaryBeads, flow, dt);
     updateBeads(interBeads, flow * 0.9, dt);
-    // 净化支路：常开小流量，随泵运行增强
-    updateBeads(purifyBeads, 0.12 + flow * 0.35, dt);
+    updateBeads(interReturnBeads, flow * 0.9, dt);
+    // 三回路：冷源侧流量随中间回路热负荷开启（与 UG-V02 阀位同一条因果）
+    updateBeads(tertBeads, clamp(dT * 2, 0, 1) * flow, dt);
+    // 净化支路：一回路上的旁流，流量正比于一回路流量（没有无来源的常开定值流量）
+    updateBeads(purifyBeads, flow * 0.45, dt);
 
     // 仪表指针：三回路流量与温度
     tertFlowGauge.rotation.z = -flow * 2.2 + 1.1;
@@ -638,13 +747,8 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
     airValve.stem.position.y = 0.11 * 3.2 + (state.mode === "PULSE" ? 0.1 : 0);
 
     // 取样柜水质代理：净化支路运行时偏青，池水温度高时偏暖
-    sampleScreenMat.emissiveIntensity = powered ? 0.4 + flow * 0.5 : 0.1;
+    sampleScreenMat.emissiveIntensity = 0.4 + flow * 0.5;
     sampleScreenMat.emissive.setRGB(0.10 + dT * 0.5, 0.23 + flow * 0.2, 0.40);
-
-    // 通风/辅助电源：地下照明只在会话时钟释放后达到工作亮度
-    ugLight1.intensity = powered ? 70 : 26;
-    ugLight2.intensity = powered ? 70 : 26;
-    ugLampMat.emissiveIntensity = powered ? 0.7 : 0.25;
   }
 
   function dispose() {
@@ -656,10 +760,19 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
   function snapshot() {
     return {
       components: PLANT_COMPONENTS.length,
-      sumpLevel: +sumpLevel.toFixed(3),
-      pumpASpin: +pumpA.shaft.rotation.x.toFixed(3),
-      hx1Heat: +hx1.shellMat.emissiveIntensity.toFixed(3),
-      primaryBeadPhase: +primaryBeads.phase.toFixed(3)
+      sumpLevel: +sumpLevel.toFixed(4),
+      pumpASpin: +pumpA.shaft.rotation.x.toFixed(4),
+      sumpPumpSpin: +sumpPump.shaft.rotation.x.toFixed(4),
+      primaryValveStem: +primaryValve.stem.position.y.toFixed(4),
+      tertiaryValveStem: +tertiaryValve.stem.position.y.toFixed(4),
+      hx1Heat: +hx1.shellMat.emissiveIntensity.toFixed(4),
+      hx2Heat: +hx2.shellMat.emissiveIntensity.toFixed(4),
+      primaryBeadPhase: +primaryBeads.phase.toFixed(4),
+      interBeadPhase: +interBeads.phase.toFixed(4),
+      interReturnBeadPhase: +interReturnBeads.phase.toFixed(4),
+      tertBeadPhase: +tertBeads.phase.toFixed(4),
+      purifyBeadPhase: +purifyBeads.phase.toFixed(4),
+      tertFlowNeedle: +tertFlowGauge.rotation.z.toFixed(4)
     };
   }
 
@@ -670,5 +783,11 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
   group.traverse(o => { if (o.isMesh && !o.name) o.name = "UG-PLANT-MESH"; });
 
   void FLANGE_GEO;
-  return { group, update, dispose, snapshot, bounds: UNDERGROUND_BOUNDS, components: PLANT_COMPONENTS };
+  return {
+    group, update, dispose, snapshot,
+    bounds: UNDERGROUND_BOUNDS,
+    components: PLANT_COMPONENTS,
+    heatExchangers: HEAT_EXCHANGERS,
+    loops: COOLANT_LOOPS
+  };
 }

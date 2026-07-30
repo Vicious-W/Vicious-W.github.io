@@ -25,7 +25,7 @@ import {
   HALL_BOUNDS, HALL_COLLIDERS, LAB_COMPONENTS, createLabEnvironment
 } from "../src/scenes/reactor/labEnvironment.js";
 import {
-  UNDERGROUND_BOUNDS, PLANT_COMPONENTS, createUndergroundPlant
+  UNDERGROUND_BOUNDS, PLANT_COMPONENTS, HEAT_EXCHANGERS, COOLANT_LOOPS, createUndergroundPlant
 } from "../src/scenes/reactor/undergroundPlant.js";
 import { frameDelta, wrap01 } from "../src/scenes/reactor/timeStep.js";
 import { GLASS_ARCH, floorBrickLayout } from "../src/scenes/reactor/glassArchitecture.js";
@@ -728,6 +728,89 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   assert(hx.length === 2, `两台换热器全部在地下设备层: ${hx.map(c => c.id).join(",")}`);
   assert(!LAB_COMPONENTS.some(c => /heatExchanger|换热/i.test(c.name)),
     "地面设备清单里没有第四回路/第三台换热器一类无来源设备");
+
+  // —— R-001：三条回路各自闭合，且**遍历真实场景对象**而不是只统计注册表名单 ——
+  const plantR1 = createUndergroundPlant({});
+  const reactorR1 = createReactorModel({ reduceMotion: false });
+  const byId = new Map(PLANT_COMPONENTS.map(c => [c.id, c]));
+
+  // 1) 全场只有两台换热器实体：地下两台命名对象，池体一侧一台都没有
+  const hxNodes = [];
+  plantR1.group.traverse(o => { if (/^UG-H\d+$/.test(o.name)) hxNodes.push(o.name); });
+  assert(hxNodes.length === 2 && hxNodes.includes("UG-H01") && hxNodes.includes("UG-H02"),
+    `地下层的换热器实体正好两台: ${hxNodes.join(",") || "none"}`);
+  let poolSideHx = 0;
+  reactorR1.group.traverse(o => { if (/hx|heatExchanger|换热/i.test(o.name || "")) poolSideHx++; });
+  assert(poolSideHx === 0,
+    `reactorModel 只保留池内取/回水接管，不再重复建模换热器: ${poolSideHx} 个残留`);
+
+  // 2) 每台换热器都有可检查的双侧四端口，且两侧不共用任何端口
+  assert(HEAT_EXCHANGERS.length === 2, `换热器端口表覆盖且仅覆盖两台: ${HEAT_EXCHANGERS.length}`);
+  for (const h of HEAT_EXCHANGERS) {
+    const sides = Object.keys(h.sides);
+    assert(sides.length === 2, `${h.id} 是双侧设备: ${sides.join("/")}`);
+    const ports = sides.flatMap(s => [h.sides[s].in, h.sides[s].out]);
+    assert(new Set(ports).size === 4, `${h.id} 四个端口互不相同（两侧不串流）: ${ports.join(",")}`);
+    assert(plantR1.group.getObjectByName(h.id),
+      `${h.id} 在场景里有同名实体对象`);
+  }
+
+  // 3) 三条流路逐段闭合：每一步的下游必须真的是下一段的上游，最后回到起点
+  const EXT = new Set(["pool", "site"]);
+  for (const [loop, chain] of Object.entries(COOLANT_LOOPS)) {
+    assert(chain[0] === chain[chain.length - 1], `${loop} 回路首尾同一节点（闭合）: ${chain[0]}`);
+    for (let i = 0; i < chain.length - 1; i++) {
+      const from = chain[i], to = chain[i + 1];
+      if (EXT.has(from) || EXT.has(to)) continue;
+      const hxHere = HEAT_EXCHANGERS.find(h => h.id === from);
+      // 换热器按“本回路那一侧”的出口续接，而不是按扁平 down 字段
+      const nextOf = hxHere ? hxHere.sides[loop].out : (byId.get(from) || {}).down;
+      assert(nextOf === to, `${loop}: ${from} 的下游是 ${to}（实际 ${nextOf}）`);
+      assert(plantR1.group.getObjectByName(to) || EXT.has(to),
+        `${loop}: 节点 ${to} 在场景里有同名实体对象`);
+    }
+  }
+
+  // 4) 中间回路是**隔离**回路：它不接场外，三回路也不接池水
+  assert(!COOLANT_LOOPS.INTERMEDIATE.includes("site") && !COOLANT_LOOPS.INTERMEDIATE.includes("pool"),
+    `中间回路既不进池也不出场，只在两台换热器之间闭合: ${COOLANT_LOOPS.INTERMEDIATE.join("→")}`);
+  assert(!COOLANT_LOOPS.TERTIARY.includes("pool") && COOLANT_LOOPS.PRIMARY.includes("pool"),
+    "三回路只接场外冷源，一回路只接池水");
+  const shared = COOLANT_LOOPS.INTERMEDIATE.filter(n => COOLANT_LOOPS.TERTIARY.includes(n));
+  assert(shared.length === 1 && shared[0] === "UG-H02",
+    `中间回路与三回路唯一的共同节点是换热器 UG-H02: ${shared.join(",")}`);
+  const shared2 = COOLANT_LOOPS.PRIMARY.filter(n => COOLANT_LOOPS.INTERMEDIATE.includes(n));
+  assert(shared2.length === 1 && shared2[0] === "UG-H01",
+    `一回路与中间回路唯一的共同节点是换热器 UG-H01: ${shared2.join(",")}`);
+
+  // —— R-005：首次有效交互前，地下设备层不推进任何状态 ——
+  const idleCtl = createSessionController({});
+  const before = plantR1.snapshot();
+  for (let i = 0; i < 120 * 60; i++) plantR1.update(idleCtl.state, 1 / 60);   // 未解锁 120 s
+  const after = plantR1.snapshot();
+  const drifted = Object.keys(before).filter(k => before[k] !== after[k]);
+  assert(!idleCtl.state.unlocked, "该断言的前提：会话时钟仍未释放");
+  assert(drifted.length === 0,
+    `未解锁 120 秒后地下设备的动态状态全部保持初值: 漂移=${drifted.join(",") || "none"}`);
+  assert(after.sumpLevel === 0 && after.sumpPumpSpin === 0,
+    `集水液位与集水泵在联锁复位期间真的不动: level=${after.sumpLevel} spin=${after.sumpPumpSpin}`);
+  assert(after.purifyBeadPhase === 0,
+    `净化支路没有无来源的常开定值流量: phase=${after.purifyBeadPhase}`);
+
+  // 解锁并带流量运行后，同一批设备才按上游状态推进
+  idleCtl.unlock();
+  idleCtl.startup();
+  for (let i = 0; i < 600; i++) {
+    idleCtl.update(1 / 60);
+    plantR1.update(idleCtl.state, 1 / 60);
+  }
+  const running = plantR1.snapshot();
+  assert(running.sumpLevel > 0 && running.primaryBeadPhase !== after.primaryBeadPhase,
+    `解锁并有流量后集水与流向光珠才推进: level=${running.sumpLevel} bead=${running.primaryBeadPhase}`);
+  assert(running.interReturnBeadPhase !== 0,
+    `中间回路回程总管有独立的流向表现: ${running.interReturnBeadPhase}`);
+  plantR1.dispose?.();
+  reactorR1.dispose?.();
 
   // 跨层对接：地面的排水立管与取样管必须真的接到地下的部件上
   const drain = LAB_COMPONENTS.find(c => c.id === "LAB-D01");

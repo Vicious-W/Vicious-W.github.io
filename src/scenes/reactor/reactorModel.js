@@ -442,30 +442,27 @@ export function createReactorModel({ reduceMotion }) {
   pump1.rotation.z = Math.PI / 2;
   pump1.position.set(POOL_RADIUS + 1.3, SHIELD_BOTTOM + 0.6, 0);
   group.add(pump1);
-  // 换热器 1（一回路/中间回路）
-  const hxMat1 = track(new THREE.MeshStandardMaterial({ color: 0x596066, metalness: 0.7, roughness: 0.4, emissive: 0x0c2a3a, emissiveIntensity: 0 }));
-  const hx1 = new THREE.Mesh(track(new THREE.CylinderGeometry(0.4, 0.4, 1.6, 20)), hxMat1);
-  hx1.position.set(SHIELD_R + 0.9, SHIELD_BOTTOM + 1.2, 1.2);
-  group.add(hx1);
-  // 中间回路管
-  const midPipe = new THREE.Mesh(track(new THREE.CylinderGeometry(0.1, 0.1, 2.4, 12)), thimbleMat);
-  midPipe.rotation.z = Math.PI / 2;
-  midPipe.position.set(SHIELD_R + 2.2, SHIELD_BOTTOM + 1.2, 1.2);
-  group.add(midPipe);
-  // 换热器 2（中间回路/三回路）
-  const hxMat2 = track(new THREE.MeshStandardMaterial({ color: 0x596066, metalness: 0.7, roughness: 0.4, emissive: 0x0c2a3a, emissiveIntensity: 0 }));
-  const hx2 = new THREE.Mesh(track(new THREE.CylinderGeometry(0.36, 0.36, 1.4, 20)), hxMat2);
-  hx2.position.set(SHIELD_R + 3.6, SHIELD_BOTTOM + 1.2, 1.2);
-  group.add(hx2);
-  // 三回路管（终止于法兰盘，不悬空）
-  const tertiaryPipe = new THREE.Mesh(track(new THREE.CylinderGeometry(0.11, 0.11, 1.2, 12)), thimbleMat);
-  tertiaryPipe.rotation.z = Math.PI / 2;
-  tertiaryPipe.position.set(SHIELD_R + 4.6, SHIELD_BOTTOM + 1.2, 1.2);
-  group.add(tertiaryPipe);
-  const tertiaryFlange = new THREE.Mesh(track(new THREE.CylinderGeometry(0.16, 0.16, 0.05, 16)), steelMat);
-  tertiaryFlange.rotation.z = Math.PI / 2;
-  tertiaryFlange.position.set(SHIELD_R + 5.2, SHIELD_BOTTOM + 1.2, 1.2);
-  group.add(tertiaryFlange);
+  // 全场只有**两台**换热器，它们和整条中间/三回路都在地下设备层（undergroundPlant
+  // 的 UG-H01 / UG-H02）。池体这一侧只保留取水/回水接管本身：一回路穿出生物屏蔽的
+  // 两根管和它们的穿墙法兰。地下层的 UG-P01/UG-P02 从屏蔽外表面 (r = 5.35) 接上来，
+  // 两层的一回路是同一条管路的两段，不是两套重复设备。
+  const penY = SHIELD_BOTTOM + 1.2;
+  const primaryOut = new THREE.Mesh(track(new THREE.CylinderGeometry(0.17, 0.17, 1.4, 14)), thimbleMat);
+  primaryOut.rotation.z = Math.PI / 2;
+  primaryOut.position.set(SHIELD_R + 0.7, penY, -1.1);
+  primaryOut.name = "RP-COOL-SUCTION";
+  group.add(primaryOut);
+  const primaryIn = new THREE.Mesh(track(new THREE.CylinderGeometry(0.16, 0.16, 1.4, 14)), thimbleMat);
+  primaryIn.rotation.z = Math.PI / 2;
+  primaryIn.position.set(SHIELD_R + 0.7, penY + 0.6, 1.4);
+  primaryIn.name = "RP-COOL-RETURN";
+  group.add(primaryIn);
+  [[-1.1, 0.17, penY], [1.4, 0.16, penY + 0.6]].forEach(([z, r, y]) => {
+    const pen = new THREE.Mesh(track(new THREE.CylinderGeometry(r * 1.6, r * 1.6, 0.08, 16)), steelMat);
+    pen.rotation.z = Math.PI / 2;
+    pen.position.set(SHIELD_R + 1.35, y, z);
+    group.add(pen);
+  });
 
   // ——————————————————————————— RP-009 电气/气动/连接 ———————————————————————————
   const cableTray = new THREE.Mesh(track(new THREE.BoxGeometry(0.5, 0.06, POOL_RADIUS * 2 + 0.9)), cableMat);
@@ -512,8 +509,6 @@ export function createReactorModel({ reduceMotion }) {
 
     // 泵/换热器运行状态（几何不转，用材质发光强度代表流量，避免装饰性无因动画）
     pumpMat.emissiveIntensity = coolantFlowProxy * 1.4;
-    hxMat1.emissiveIntensity = coolantFlowProxy * 1.1;
-    hxMat2.emissiveIntensity = coolantFlowProxy * 0.9;
     statusLampMat.emissive.setRGB(gratingLocked ? 0.0 : 0.5, gratingLocked ? 0.55 : 0.0, 0);
   };
 
