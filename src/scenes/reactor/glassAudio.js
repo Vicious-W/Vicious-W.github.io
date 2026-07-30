@@ -38,6 +38,9 @@ export function createGlassAudio() {
   let lastImpact = 0;
   let unlocked = false;
   let disposed = false;
+  // 只读发声计数（验收可见性）：证明声音由实际物理事件触发，而不是循环背景音，
+  // 也证明解锁前不发声。不参与合成，只在三个发声入口通过守卫后自增。
+  const fired = { impact: 0, crack: 0, fracture: 0 };
 
   const makeNoise = () => {
     const len = Math.floor(ctx.sampleRate * 0.5);
@@ -97,6 +100,7 @@ export function createGlassAudio() {
     if (activeVoices >= MAX_VOICES) return;       // voice 上限
     lastImpact = now;
     activeVoices++;
+    fired.impact++;
 
     const s = Math.min(strength, 1);
     const v = Math.min(Math.max(velocity, 0), 1);
@@ -146,6 +150,7 @@ export function createGlassAudio() {
   // 裂纹扩展：短促高频「咔」，叠加在触发它的撞击声之上，不使用独立计时器。
   const crackTick = (pan = 0) => {
     if (!unlocked || disposed || !ctx || ctx.state !== "running") return;
+    fired.crack++;
     const now = ctx.currentTime;
     const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
     if (panner) panner.pan.value = Math.max(-1, Math.min(1, pan));
@@ -164,6 +169,7 @@ export function createGlassAudio() {
   // 破碎瞬态：独立的宽带爆发声，区别于普通撞击。
   const fracture = (pan = 0) => {
     if (!unlocked || disposed || !ctx || ctx.state !== "running") return;
+    fired.fracture++;
     const now = ctx.currentTime;
     const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
     if (panner) panner.pan.value = Math.max(-1, Math.min(1, pan));
@@ -200,5 +206,17 @@ export function createGlassAudio() {
     if (ctx) ctx.close();
   };
 
-  return { unlock, impact, crackTick, fracture, setSlide, suspend, dispose };
+  // 只读状态：解锁前 `state` 是 "NONE"（连 AudioContext 都还没建，因此不可能触发
+  // 浏览器的自动播放拦截）；解锁后是 AudioContext 自己的状态。
+  const status = () => ({
+    unlocked,
+    state: ctx ? ctx.state : "NONE",
+    sampleRate: ctx ? ctx.sampleRate : 0,
+    voices: activeVoices,
+    maxVoices: MAX_VOICES,
+    minInterval: MIN_INTERVAL,
+    fired: { ...fired }
+  });
+
+  return { unlock, impact, crackTick, fracture, setSlide, suspend, dispose, status };
 }

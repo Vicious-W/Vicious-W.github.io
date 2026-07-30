@@ -1262,6 +1262,14 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   };
   // 切伦科夫的只读快照（功率因果、有界曝光、活粒子数）
   window.__SOURCE_CHR__ = () => cherenkov.snapshot();
+  // 声音激活的只读快照。听感无法在无声卡的验收环境里检查，但"首次手势之前根本没有
+  // AudioContext / 手势之后 running / 发声计数只随真实物理事件增长"这三件事可以，
+  // 所以把它们暴露出来，而不是把整条音频路径记成不可验证。
+  window.__SOURCE_AUDIO__ = () => ({
+    unlockedAll: audioUnlocked,
+    glass: audio ? audio.status() : "NO_WEB_AUDIO",
+    reactor: reactorAudio ? reactorAudio.status() : "NO_WEB_AUDIO"
+  });
   // 渲染代价快照（绘制调用/三角形/活动刚体/粒子），供三视口性能记录
   window.__SOURCE_PERF__ = () => ({
     calls: renderer.info.render.calls,
@@ -1479,6 +1487,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       delete window.__SOURCE_CAM__;
       delete window.__SOURCE_NAV__;
       delete window.__SOURCE_CHR__;
+      delete window.__SOURCE_AUDIO__;
       delete window.__SOURCE_PERF__;
       delete window.__SOURCE_CMD__;
       delete window.__SOURCE_HOTSPOTS__;

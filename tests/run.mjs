@@ -829,6 +829,106 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   }
 }
 
+// —— 声音的手势门控与事件驱动（SOURCE_SCENE.md §7.5）——
+// 听感需要声卡，无法在这里验证；但"首次手势之前不建 AudioContext"、"解锁后才发声"、
+// "发声次数只随真实物理事件增长"和"节流/voice 上限"是纯逻辑，可以机械检查。
+// 用一个最小 AudioContext 桩：只记录被创建的节点数与 resume 次数。
+{
+  let nodes = 0, resumes = 0, clock = 0;
+  const param = () => ({
+    value: 0,
+    setValueAtTime() { return this; },
+    exponentialRampToValueAtTime() { return this; },
+    setTargetAtTime() { return this; }
+  });
+  const node = (extra = {}) => { nodes++; return { connect() {}, disconnect() {}, ...extra }; };
+  class StubAudioContext {
+    constructor() { this.state = "suspended"; this.sampleRate = 48000; this.destination = node(); }
+    get currentTime() { return clock; }   // 测试可推进的桩时钟
+    resume() { resumes++; this.state = "running"; }
+    suspend() { this.state = "suspended"; }
+    close() { this.state = "closed"; }
+    createGain() { return node({ gain: param() }); }
+    createDynamicsCompressor() {
+      return node({ threshold: param(), knee: param(), ratio: param(), attack: param(), release: param() });
+    }
+    createBiquadFilter() { return node({ type: "", frequency: param(), Q: param() }); }
+    createStereoPanner() { return node({ pan: param() }); }
+    createOscillator() { return node({ type: "", frequency: param(), start() {}, stop() {} }); }
+    createBufferSource() {
+      return node({ buffer: null, loop: false, playbackRate: param(), start() {}, stop() {} });
+    }
+    createBuffer(_ch, len) { return { getChannelData: () => new Float32Array(len) }; }
+  }
+  const prevWindow = globalThis.window;
+  globalThis.window = { AudioContext: StubAudioContext };
+  const { createGlassAudio } = await import("../src/scenes/reactor/glassAudio.js");
+  const { createReactorAudio } = await import("../src/scenes/reactor/reactorAudio.js");
+
+  const ga = createGlassAudio();
+  const ra = createReactorAudio();
+  assert(ga && ra, "有 AudioContext 时两条音频链路都被创建");
+
+  // 首次手势之前：没有 AudioContext，因此不可能被浏览器判为自动播放
+  assert(ga.status().state === "NONE" && ga.status().unlocked === false,
+    `解锁前玻璃音频无 AudioContext: ${ga.status().state}`);
+  assert(ra.status().state === "NONE" && ra.status().unlocked === false,
+    `解锁前反应堆音频无 AudioContext: ${ra.status().state}`);
+  assert(nodes === 0, `解锁前不创建任何音频节点: ${nodes}`);
+
+  // 解锁前的物理事件不发声（onPointerDown 之前的加载落位不能出声）
+  ga.impact({ strength: 1, velocity: 1, pan: 0 });
+  ga.crackTick(0);
+  ga.fracture(0);
+  const before = ga.status().fired;
+  assert(before.impact === 0 && before.crack === 0 && before.fracture === 0,
+    `解锁前物理事件不发声: ${JSON.stringify(before)}`);
+
+  // 首次手势 → 建链路并 resume
+  ga.unlock(); ra.unlock();
+  assert(ga.status().unlocked && ga.status().state === "running",
+    `手势后玻璃音频 running: ${ga.status().state}`);
+  assert(ra.status().unlocked && ra.status().state === "running",
+    `手势后反应堆音频 running: ${ra.status().state}`);
+  assert(resumes === 2, `两条链路各 resume 一次: ${resumes}`);
+  assert(nodes > 0, `手势后才创建音频节点: ${nodes}`);
+
+  // 解锁后：撞击发声，且弱撞击被阈值滤掉。
+  // 先把桩时钟推过一个最小间隔——lastImpact 初值为 0，真实 AudioContext 的
+  // currentTime 也从 0 起，所以"页面刚解锁那一瞬间的撞击"本来就会被节流吃掉。
+  clock += 0.05;
+  ga.impact({ strength: 1, velocity: 1, pan: 0 });
+  assert(ga.status().fired.impact === 1, `解锁后撞击发声: ${ga.status().fired.impact}`);
+  ga.impact({ strength: 0.01, velocity: 1, pan: 0 });
+  assert(ga.status().fired.impact === 1,
+    `低于阈值的撞击不发声: ${ga.status().fired.impact}`);
+
+  // 全局节流：currentTime 不前进时后续撞击被压掉
+  for (let i = 0; i < 20; i++) ga.impact({ strength: 1, velocity: 1, pan: 0 });
+  assert(ga.status().fired.impact === 1,
+    `同一时刻的密集撞击被节流: ${ga.status().fired.impact}`);
+
+  // voice 上限：桩时钟每次都跨过最小间隔，节流不再拦截，此时只剩 voice 上限起作用。
+  // 桩不会真的触发 onended，所以 activeVoices 永不回落——正好是最坏情况。
+  const maxV = ga.status().maxVoices;
+  const minGap = ga.status().minInterval;
+  for (let i = 0; i < maxV + 6; i++) {
+    clock += minGap * 2;
+    ga.impact({ strength: 1, velocity: 1, pan: 0 });
+  }
+  assert(ga.status().voices === maxV, `活动 voice 顶到上限即停: ${ga.status().voices}/${maxV}`);
+  assert(ga.status().fired.impact === maxV,
+    `超出上限的撞击不再发声: ${ga.status().fired.impact}/${maxV}`);
+
+  // 破碎是独立事件，与撞击分开计数
+  ga.fracture(0); ga.crackTick(0);
+  assert(ga.status().fired.fracture === 1 && ga.status().fired.crack === 1,
+    `破碎/裂纹独立计数: ${JSON.stringify(ga.status().fired)}`);
+
+  ga.dispose(); ra.dispose();
+  if (prevWindow === undefined) delete globalThis.window; else globalThis.window = prevWindow;
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 console.log(failures === 0 ? "ALL LOGIC CHECKS PASSED" : `${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

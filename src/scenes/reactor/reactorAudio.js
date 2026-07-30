@@ -141,5 +141,12 @@ export function createReactorAudio() {
     if (ctx) ctx.close();
   };
 
-  return { unlock, suspend, update, transEject, transReseat, waterImpulse, dispose };
+  // 只读状态（与 glassAudio.status 同形状，供验收证明手势门控）
+  const status = () => ({
+    unlocked,
+    state: ctx ? ctx.state : "NONE",
+    sampleRate: ctx ? ctx.sampleRate : 0
+  });
+
+  return { unlock, suspend, update, transEject, transReseat, waterImpulse, dispose, status };
 }
