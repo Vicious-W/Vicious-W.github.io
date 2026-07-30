@@ -86,8 +86,11 @@ export function createGlassArchitecture({ reduceMotion, dynamicFloorRadius = Inf
   }));
 
   const dummy = new THREE.Object3D();
-  const instanced = (geo, mat, list, rotY = 0) => {
+  // name 只用于自动化验收识别射线打到了哪一类建筑玻璃（GLA-001 "墙/天花不可抓取"
+  // 必须能证明射线**确实**打在墙砖上而不是打空）；不影响渲染。
+  const instanced = (geo, mat, list, rotY = 0, name = "") => {
     const im = new THREE.InstancedMesh(geo, mat, list.length);
+    im.name = name;
     list.forEach(([x, y, z], i) => {
       dummy.position.set(x, y, z);
       dummy.rotation.set(0, rotY, 0);
@@ -120,7 +123,7 @@ export function createGlassArchitecture({ reduceMotion, dynamicFloorRadius = Inf
         else list.push([off, y, u]);
       }
     }
-    instanced(wallBrickGeo, archGlass, list, side >= 2 ? Math.PI / 2 : 0);
+    instanced(wallBrickGeo, archGlass, list, side >= 2 ? Math.PI / 2 : 0, `GLA-WALL-${side}`);
     wallCounts.push(list.length);
   }
   // 砖缝框架：每面墙的横/竖缝各一根实例化细梁（不是贴图）
@@ -166,7 +169,7 @@ export function createGlassArchitecture({ reduceMotion, dynamicFloorRadius = Inf
       ]);
     }
   }
-  instanced(ceilBrickGeo, archGlass, ceilList);
+  instanced(ceilBrickGeo, archGlass, ceilList, 0, "GLA-CEILING");
   // 天花砖缝网格
   const ceilJointX = track(new THREE.BoxGeometry(hallHalf * 2, ceilThickness * 0.5, joint * 0.9));
   for (let i = 0; i <= cn; i++) {
@@ -189,6 +192,7 @@ export function createGlassArchitecture({ reduceMotion, dynamicFloorRadius = Inf
   const supportGeo = track(new THREE.RingGeometry(supportInnerR, supportOuterR, 96, 1));
   [supportTop, supportTop - supportThickness].forEach(y => {
     const plate = new THREE.Mesh(supportGeo, supportMat);
+    plate.name = "GLA-FLOOR-SUPPORT";
     plate.rotation.x = -Math.PI / 2;
     plate.position.y = y;
     group.add(plate);
@@ -204,7 +208,7 @@ export function createGlassArchitecture({ reduceMotion, dynamicFloorRadius = Inf
     floorBrick[0], floorBrick[1], floorBrick[2], 2, 0.03));
   // 性能档之外的固定地板砖（同一几何/材质，静态实例化，不可抓取）
   if (layout.fixed.length) {
-    instanced(floorBrickGeo, floorGlass, layout.fixed.map(p => [p.x, p.y, p.z]));
+    instanced(floorBrickGeo, floorGlass, layout.fixed.map(p => [p.x, p.y, p.z]), 0, "GLA-FLOOR-FIXED");
   }
 
   function update() { /* 建筑玻璃是固定结构：没有状态驱动的运动 */ }
