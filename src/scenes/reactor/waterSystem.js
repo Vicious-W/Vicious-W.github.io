@@ -160,12 +160,23 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
     return surfaceY + (hx0 * (1 - fz) + hx1 * fz);
   }
 
-  // 相机是否在名义水面之下且位于池体半径内（CAM-003：水上/水下光学的唯一判据）
-  function isUnderwater(camPos) {
-    if (!camPos) return false;
+  // 相机相对**实际**水面（含波动）的浸没深度 → 连续权重（CAM-003 / WTR-002）。
+  // 水上/水下不是二选一：在水面上下各 SUBMERGE_BAND 的过渡带里线性混合，池口边缘
+  // 也按半径羽化，因此相机横向掠出池口时同样不会整帧跳色。
+  const SUBMERGE_BAND = 0.35;
+  const clamp = THREE.MathUtils.clamp;
+  function submersionAt(camPos) {
+    if (!camPos) return 0;
     const r = Math.hypot(camPos.x, camPos.z);
-    if (r > poolRadius * 1.02) return false;
-    return camPos.y < heightAt(camPos.x, camPos.z);
+    // 池壁外没有水体：从 0.94R 到 1.02R 连续收敛到 0
+    const radial = 1 - clamp((r - poolRadius * 0.94) / (poolRadius * 0.08), 0, 1);
+    if (radial <= 0) return 0;
+    const depth = heightAt(camPos.x, camPos.z) - camPos.y;   // >0 = 在水面之下
+    return clamp((depth + SUBMERGE_BAND) / (SUBMERGE_BAND * 2), 0, 1) * radial;
+  }
+  // 布尔判据保留给"当前是否算在水下"的离散消费者；连续光学一律用 submersion。
+  function isUnderwater(camPos) {
+    return submersionAt(camPos) > 0.5;
   }
 
   // —— 可见水面网格（CPU 端按高度场逐帧更新顶点与法线，域为方形，边角收拢成圆）——
@@ -258,7 +269,7 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
   group.add(plume);
 
   const causticData = causticTex.image.data;
-  let underwater = false;
+  let submersion = 0;
 
   const update = (dt, sessionState) => {
     accumulator = Math.min(accumulator + dt, FIXED_STEP * 6);
@@ -293,13 +304,15 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
       // 热羽流让局部水面粗糙度略升（折射被搅动），仍然是读状态、不回写状态
       waterMat.roughness = 0.045 + diff * 0.05;
     }
-    // 水下时水面从内侧被看到：降低反射强度、提高吸收，避免"双重表面"
-    waterMat.envMapIntensity = underwater ? 0.5 : 1.25;
-    causticMat.uniforms.uIntensity.value = (reduceMotion ? 0.35 : 0.8) * (underwater ? 1.35 : 1.0);
+    // 水面从内侧被看到时反射变弱、焦散变强。按 submersion **连续**插值，跨越水面
+    // 的过渡带里不会出现"双重表面"或整帧跳变（WTR-002 / CAM-003）。
+    waterMat.envMapIntensity = 1.25 + (0.5 - 1.25) * submersion;
+    causticMat.uniforms.uIntensity.value =
+      (reduceMotion ? 0.35 : 0.8) * (1 + 0.35 * submersion);
   };
 
-  // 相机跨越水面（CAM-003）：只改变光学分支，不新建水体/会话
-  const setCamera = camPos => { underwater = isUnderwater(camPos); };
+  // 相机跨越水面（CAM-003）：只改变光学权重，不新建水体/会话
+  const setCamera = camPos => { submersion = submersionAt(camPos); };
 
   const dispose = () => {
     disposables.forEach(d => { if (d && d.dispose) d.dispose(); });
@@ -314,7 +327,9 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
     addImpulse,
     heightAt,
     isUnderwater,
-    get underwater() { return underwater; },
+    submersionAt,
+    get submersion() { return submersion; },
+    get underwater() { return submersion > 0.5; },
     surfaceY,
     poolRadius,
     poolDepth

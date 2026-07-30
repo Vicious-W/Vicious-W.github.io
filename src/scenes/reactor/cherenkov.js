@@ -24,6 +24,23 @@ export const CHERENKOV_COLOR = new THREE.Color(0.42, 0.68, 1.0);
 // 曝光：raw 超过 knee 后进入软压缩，峰值有界（CHR-003「不过曝整屏」）
 export const EXPOSURE = { knee: 0.85, headroom: 0.65, attack: 0.09, release: 0.75 };
 
+// 水体消光系数（1/世界单位，`TUNED_PRESENTATION`）：辉光穿过 L 个单位的水后
+// 剩余 exp(-L × WATER_ABSORB)。取值让堆芯→水面（约 5 单位）仍在 0.8 以上——
+// 250 kW 默认取景清楚可见——同时贴近堆芯与横穿池水之间有可测的层次差。
+export const WATER_ABSORB = 0.045;
+
+// 相机到某点之间位于水面以下的光程（CPU 端，与 GLSL 里 waterTransmittance 同一套判据）
+export function waterPathLength(from, to, surfaceY) {
+  const dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+  const len = Math.hypot(dx, dy, dz);
+  if (len < 1e-6) return 0;
+  const lo = Math.min(from.y, to.y);
+  const hi = Math.max(from.y, to.y);
+  if (hi <= surfaceY) return len;              // 两端都在水下
+  if (lo >= surfaceY) return 0;                // 两端都在水上
+  return len * ((surfaceY - lo) / (hi - lo));  // 跨水面：只算水下那一段
+}
+
 // 有界曝光增益：raw 是四层共同的原始强度，返回 <= 1 的增益。
 // 膝点以上做**软饱和**而不是简单反比——反比会让更强的脉冲反而更暗（非单调），
 // 这里让显示值渐近到 knee + headroom：峰值有界，但"更强仍然更亮"。
@@ -45,14 +62,43 @@ function makeRng(seed) {
   };
 }
 
+// —— 统一水体光程（CHR-002 / WTR-002）——
+// 辉光要穿过多少水才到达相机，只由三个共享量决定：片元世界位置、相机世界位置、
+// 名义水面高度。片元与相机连线中位于水面**之下**的那一段就是水中光程；
+// 相机在水上时，只有从辉光到水面的那一段算数。透过率 = exp(-光程 × 吸收系数)。
+//
+// 吸收系数是 `TUNED_PRESENTATION`：纯水对蓝光的真实衰减极小，这里取一个能在
+// 网页尺度上读出"近处强、远处渐弱"层次、同时保证 250 kW 默认取景清楚可见的值。
+const WATER_PATH_GLSL = `
+uniform vec3 uCamera;
+uniform float uSurfaceY;
+uniform float uAbsorb;
+uniform float uSubmersion;
+float waterTransmittance(vec3 worldPos) {
+  vec3 d = uCamera - worldPos;
+  float len = length(d);
+  float yF = worldPos.y;
+  float yC = uCamera.y;
+  float below;                                  // 该线段位于水面之下的比例
+  if (yF <= uSurfaceY && yC <= uSurfaceY) below = 1.0;
+  else if (yF > uSurfaceY && yC > uSurfaceY) below = 0.0;
+  else below = (uSurfaceY - min(yF, yC)) / max(abs(yC - yF), 1e-4);
+  float path = len * clamp(below, 0.0, 1.0);
+  // 相机在水中时前向散射把更多光送进镜头：受同一个 submersion 权重约束，有界
+  return exp(-path * uAbsorb) * (1.0 + 0.18 * uSubmersion);
+}`;
+
 const VOLUME_VERT = `
 varying vec3 vLocal;
+varying vec3 vWorld;
 void main() {
   vLocal = position;
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vWorld = wp.xyz;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`;
 
-// 体积散射层：径向 + 轴向高斯衰减，再乘以沿水深的光程衰减。
+// 体积散射层：径向 + 轴向高斯衰减，再乘以到相机的水体光程透过率。
 const VOLUME_FRAG = `
 precision highp float;
 uniform vec3 uColor;
@@ -62,12 +108,14 @@ uniform float uHalfH;
 uniform float uEdge;
 uniform float uAxial;
 varying vec3 vLocal;
+varying vec3 vWorld;
+${WATER_PATH_GLSL}
 void main() {
   float r = length(vLocal.xz) / max(uRadius, 1e-3);
   float a = abs(vLocal.y) / max(uHalfH, 1e-3);
   float radial = exp(-r * r * uEdge);
   float axial = exp(-a * a * uAxial);
-  float g = radial * axial * uIntensity;
+  float g = radial * axial * uIntensity * waterTransmittance(vWorld);
   if (g < 0.002) discard;
   gl_FragColor = vec4(uColor * g, g);
 }`;
@@ -78,8 +126,11 @@ uniform float uIntensity;
 attribute float aAlpha;
 attribute float aScale;
 varying float vAlpha;
+varying vec3 vWorld;
 void main() {
   vAlpha = aAlpha * uIntensity;
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vWorld = wp.xyz;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   gl_PointSize = uSize * aScale * (1.0 / max(-mv.z, 0.2));
   gl_Position = projectionMatrix * mv;
@@ -89,11 +140,13 @@ const PARTICLE_FRAG = `
 precision highp float;
 uniform vec3 uColor;
 varying float vAlpha;
+varying vec3 vWorld;
+${WATER_PATH_GLSL}
 void main() {
   vec2 d = gl_PointCoord - 0.5;
   float r2 = dot(d, d);
   if (r2 > 0.25) discard;
-  float f = exp(-r2 * 14.0);
+  float f = exp(-r2 * 14.0) * waterTransmittance(vWorld);
   gl_FragColor = vec4(uColor * f * vAlpha, f * vAlpha);
 }`;
 
@@ -114,19 +167,29 @@ export function createCherenkov({
   const coreR = coreBounds.radius;
   const coreH = coreBounds.height;
 
+  // 四层表现共享的水体光学 uniform（同一个相机位置、同一个水面、同一套吸收）
+  const viewerPos = { value: new THREE.Vector3(0, surfaceY + 12, 24) };
+  const surfaceUniform = { value: surfaceY };
+  const absorbUniform = { value: WATER_ABSORB };
+  const submersionUniform = { value: 0 };
+  const waterUniforms = () => ({
+    uCamera: viewerPos, uSurfaceY: surfaceUniform,
+    uAbsorb: absorbUniform, uSubmersion: submersionUniform
+  });
+
   // —— 层 1：堆芯活性段的局部发光体积（附着燃料几何）——
   const layers = [];
   const addVolume = (radius, halfH, edge, axial, intensityScale, color) => {
     const mat = track(new THREE.ShaderMaterial({
       vertexShader: VOLUME_VERT, fragmentShader: VOLUME_FRAG,
-      uniforms: {
+      uniforms: Object.assign({
         uColor: { value: color.clone() },
         uIntensity: { value: 0 },
         uRadius: { value: radius },
         uHalfH: { value: halfH },
         uEdge: { value: edge },
         uAxial: { value: axial }
-      },
+      }, waterUniforms()),
       transparent: true, depthWrite: false, side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending
     }));
@@ -159,7 +222,9 @@ export function createCherenkov({
   group.add(bloom);
 
   // —— 层 3：光传播粒子代理（TUNED_PRESENTATION）——
-  const COUNT = Math.max(0, Math.round(reduceMotion ? Math.min(particleBudget, 240) : particleBudget));
+  // `prefers-reduced-motion: reduce` 下**完全不发射**移动粒子：功率反馈由体积辉光和
+  // bloom 承担（两者都是静态强度，不含持续运动），画面因此仍然完整可读。
+  const COUNT = reduceMotion ? 0 : Math.max(0, Math.round(particleBudget));
   const rng = makeRng(0x5ce7ab1);
   const pPos = new Float32Array(COUNT * 3);
   const pVel = new Float32Array(COUNT * 3);
@@ -177,17 +242,17 @@ export function createCherenkov({
 
   const pMat = track(new THREE.ShaderMaterial({
     vertexShader: PARTICLE_VERT, fragmentShader: PARTICLE_FRAG,
-    uniforms: {
+    uniforms: Object.assign({
       uColor: { value: CHERENKOV_COLOR.clone() },
-      uSize: { value: reduceMotion ? 26 : 34 },
+      uSize: { value: 34 },
       uIntensity: { value: 0 }
-    },
+    }, waterUniforms()),
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
   }));
   const points = new THREE.Points(pGeo, pMat);
   points.renderOrder = 5;
   points.frustumCulled = false;
-  group.add(points);
+  if (COUNT > 0) group.add(points);   // reduced-motion：连绘制调用一起省掉
 
   // 从堆芯发光体积采样起点（CHR-002：起点来自体积，不是水面或相机）
   function spawn(i) {
@@ -213,6 +278,18 @@ export function createCherenkov({
   let spawnAcc = 0;
   let exposure = 1;
   let raw = 0;
+  let corePath = 0;            // 相机 → 堆芯中心之间的水体光程
+  let coreTransmittance = 1;
+
+  const coreCenter = new THREE.Vector3(0, coreCenterY, 0);
+  // 相机位置与浸没权重的唯一入口（physicalScene 每帧在 applyCamera 里调用）。
+  // 四层表现共享这两个量，因此水面跨越、水体衰减和辉光强度不会各说各话。
+  function setViewer(camWorldPos, submersion = 0) {
+    viewerPos.value.copy(camWorldPos);
+    submersionUniform.value = clamp(submersion, 0, 1);
+    corePath = waterPathLength(camWorldPos, coreCenter, surfaceY);
+    coreTransmittance = Math.exp(-corePath * WATER_ABSORB) * (1 + 0.18 * submersionUniform.value);
+  }
 
   function update(dt, sessionState) {
     raw = sessionState ? clamp(intensityOf(sessionState), 0, 4) : 0;
@@ -224,7 +301,9 @@ export function createCherenkov({
     const shown = raw * exposure;
 
     layers.forEach(l => { l.mat.uniforms.uIntensity.value = shown * l.scale; });
-    bloomMat.opacity = clamp(shown * 0.34, 0, 0.55);
+    // bloom 是精灵，没有片元世界位置可用：在 CPU 端沿相机→堆芯中心算同一条水体
+    // 光程，因此它与体积/粒子读的是同一套水面、相机位置和吸收（CHR-002）。
+    bloomMat.opacity = clamp(shown * 0.34 * coreTransmittance, 0, 0.55);
     const bs = coreR * (2.2 + shown * 2.6);
     bloom.scale.set(bs, bs, 1);
     pMat.uniforms.uIntensity.value = shown;

@@ -566,6 +566,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   //   2) 一旦某块砖开始受损（需要独立裂纹贴图），就把它"升格"成独立网格，
   //      并把它在实例里的矩阵缩到 0 —— 因此裂纹系统一点没被降级掉。
   const floorBricks = [];
+  let floorSynced = 0;   // 上一帧实际写回矩阵的地板砖数（性能证据：休眠 → 接近 0）
   const FLOOR_BRICK = GLASS_ARCH.floorBrick;
   const floorHalf = new CANNON.Vec3(FLOOR_BRICK[0] / 2, FLOOR_BRICK[1] / 2, FLOOR_BRICK[2] / 2);
   // 质量按玻璃立方体的密度等比放大（1.5 kg / 1 m³ 的同一比例尺）
@@ -596,7 +597,8 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     body.sleep(); // 初始布局是静止的：不因场景启动自行运动（GLA-002 刷新即复位）
     const entry = {
       kind: "floor", mesh: null, body, damage: createDamageState(),
-      matIndex: 0, size: FLOOR_BRICK[0], instanceId: i, home: { x: p.x, y: p.y, z: p.z }
+      matIndex: 0, size: FLOOR_BRICK[0], instanceId: i, home: { x: p.x, y: p.y, z: p.z },
+      synced: false   // 睡着且已写过最后一帧矩阵 → 后续帧跳过同步（GLA-003）
     };
     body.userData.entry = entry;
     floorBricks.push(entry);
@@ -688,19 +690,31 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   // 值，并据此设定缩放上下限；之后 resize 只更新宽高比，不覆盖用户的机位。
   const cam = createFreeCamera({ camera });
   let camInitialized = false;
-  let underwaterNow = false;
+
+  // 水面跨越是**连续**的（CAM-003 / WTR-002）：相机穿过水面时没有任何一帧发生整体
+  // 跳色。雾对象常驻场景（密度从 0 连续升到水下值），因此跨越时也不会触发材质
+  // 重编译；clear color 与雾色按同一个 submersion 权重插值。
+  scene.fog = underwaterFog;
+  underwaterFog.density = 0;
+  const ABOVE_CLEAR = new THREE.Color(0x02070f);
+  const UNDER_CLEAR = new THREE.Color(0x061c28);
+  const ABOVE_FOG = new THREE.Color(0x02070f);
+  const clearMix = new THREE.Color();
+  const UNDERWATER_FOG_DENSITY = 0.14;
+  let submersion = 0;
 
   const applyCamera = () => {
     cam.apply();
-    // 水上/水下光学的唯一判据是相机相对名义水面的位置（CAM-003）。跨越水面只切换
-    // 光学分支：不新建水体/反应堆/玻璃会话，不改控制权，不触发音频。
+    // 水上/水下光学的唯一判据是相机相对名义水面的位置（CAM-003）。跨越水面只改变
+    // 光学权重：不新建水体/反应堆/玻璃会话，不改控制权，不触发音频。
     water.setCamera(camera.position);
-    const uw = water.underwater;
-    if (uw !== underwaterNow) {
-      underwaterNow = uw;
-      scene.fog = uw ? underwaterFog : null;
-      renderer.setClearColor(uw ? 0x061c28 : 0x02070f, 1);
-    }
+    submersion = water.submersion;
+    underwaterFog.density = UNDERWATER_FOG_DENSITY * submersion;
+    underwaterFog.color.copy(ABOVE_FOG).lerp(UNDERWATER_FOG_COLOR, submersion);
+    clearMix.copy(ABOVE_CLEAR).lerp(UNDER_CLEAR, submersion);
+    renderer.setClearColor(clearMix, 1);
+    // 切伦科夫四层与 bloom 读同一个相机位置/水面/浸没权重：水体光程是唯一来源
+    cherenkov.setViewer(camera.position, submersion);
   };
 
   const layout = () => {
@@ -938,12 +952,19 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     moveHand();
   };
 
+  // 控制台 hold 控件的释放（提/插棒是持续指令：不释放就会留下幽灵输入）。
+  // 单独抽出来，好让失焦/隐藏/指针捕获丢失都能走同一条释放路径。
+  const releaseHotspot = () => {
+    if (!activeHotspot) return;
+    activeHotspot.release();
+    try { canvas.releasePointerCapture(activeHotspotPointer); } catch (e) { /* 指针已没了 */ }
+    activeHotspot = null; activeHotspotPointer = null;
+    canvas.style.cursor = "";
+  };
+
   const endDrag = event => {
     if (activeHotspot && (!event || event.pointerId === activeHotspotPointer)) {
-      activeHotspot.release();
-      try { canvas.releasePointerCapture(activeHotspotPointer); } catch (e) { /* 指针已没了 */ }
-      activeHotspot = null; activeHotspotPointer = null;
-      canvas.style.cursor = "";
+      releaseHotspot();
       return;
     }
     if (orbitPointerId !== null && (!event || event.pointerId === orbitPointerId)) {
@@ -984,13 +1005,28 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     if (k === "shift") { shiftDown = false; return; }
     keys.delete(k);
   };
-  // 键盘丢焦 / 窗口失焦：安全释放约束并清空按键，避免"键卡住"或玻璃被无人拖着
-  const onBlur = () => { keys.clear(); shiftDown = false; releaseGrab(); pointerId = null; };
+  // 键盘丢焦 / 窗口失焦 / 标签页隐藏：把**所有**持续输入都安全归零，避免"键卡住"、
+  // 玻璃被无人拖着，或者提棒指令在后台继续驱动控制棒（棒速必须立即归零）。
+  const onBlur = () => {
+    keys.clear();
+    shiftDown = false;
+    releaseHotspot();
+    if (orbitPointerId !== null) {
+      try { canvas.releasePointerCapture(orbitPointerId); } catch (e) { /* 指针已没了 */ }
+      orbitPointerId = null;
+    }
+    releaseGrab();
+    pointerId = null;
+    canvas.style.cursor = "";
+  };
+  // 指针捕获被浏览器收回（触屏手势竞争、元素移出文档等）也必须走同一条释放路径
+  const onLostCapture = event => endDrag(event);
 
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
+  canvas.addEventListener("lostpointercapture", onLostCapture);
   canvas.addEventListener("wheel", onWheel, { passive: false });
   canvas.addEventListener("contextmenu", onContextMenu);
   window.addEventListener("keydown", onKeyDown);
@@ -1156,10 +1192,18 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       mesh.quaternion.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
     }
 
-    // 完好的动态地板砖：一次绘制调用写回全部实例矩阵（受损的已升格为独立网格）
+    // 完好的动态地板砖：一次绘制调用写回实例矩阵（受损的已升格为独立网格）。
+    // GLA-003 性能边界：**睡着的砖不写矩阵**——它的位姿按定义没有变化，重写只是
+    // 白白刷 GPU 缓冲。全部 300 块砖始终保有独立刚体、耐久和抓取能力，代价靠休眠
+    // 省掉，而不是靠把远处砖降级成不可移动地面。
+    floorSynced = 0;
     if (floorMesh.count > 0) {
       for (let i = 0; i < floorBricks.length; i++) {
         const e = floorBricks[i];
+        const asleep = e.body.sleepState === CANNON.Body.SLEEPING;
+        if (asleep && e.synced) continue;
+        e.synced = asleep;               // 入睡当帧再写最后一次，之后跳过
+        floorSynced++;
         if (e.mesh) {
           e.mesh.position.set(e.body.position.x, e.body.position.y, e.body.position.z);
           e.mesh.quaternion.set(
@@ -1173,7 +1217,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
         brickDummy.updateMatrix();
         floorMesh.setMatrixAt(e.instanceId, brickDummy.matrix);
       }
-      floorMesh.instanceMatrix.needsUpdate = true;
+      if (floorSynced > 0) floorMesh.instanceMatrix.needsUpdate = true;
     }
 
     renderer.render(scene, camera);
@@ -1269,6 +1313,11 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   };
   window.__SOURCE_CAM__ = () => Object.assign(cam.snapshot(), {
     underwater: water.underwater,
+    // 连续跨越水面的证据（CAM-003）：submersion / 雾密度 / clear color 都是连续量，
+    // 相邻小步之间不会出现二选一的整体跳色。
+    submersion: +submersion.toFixed(4),
+    fogDensity: +underwaterFog.density.toFixed(5),
+    clearColor: `#${clearMix.getHexString()}`,
     home: cam.isHome(),
     near: camera.near, far: camera.far
   });
@@ -1318,7 +1367,9 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       }, {}),
     particles: cherenkov.snapshot().particles,
     floorDynamic: floorBricks.length,
-    floorFixed: arch.counts.floorFixed,
+    floorFixed: arch.counts.floorFixed,          // GLA-002：恒为 0，地板上没有固定砖
+    floorAsleep: floorBricks.filter(e => e.body.sleepState === CANNON.Body.SLEEPING).length,
+    floorSynced,                                  // 上一帧真正写回的实例矩阵数
     wallBricks: arch.counts.wall,
     ceilingBricks: arch.counts.ceiling,
     dpr: renderer.getPixelRatio()
@@ -1482,6 +1533,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerup", endDrag);
       canvas.removeEventListener("pointercancel", endDrag);
+      canvas.removeEventListener("lostpointercapture", onLostCapture);
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("contextmenu", onContextMenu);
       canvas.removeEventListener("webglcontextlost", onContextLost);
