@@ -1503,6 +1503,33 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     };
   };
 
+  // 物理验收探针（非文字、无页面可见效果）：把一块**已经存在**的动态地板玻璃摆到指定
+  // 位姿并给初速，然后照常走同一个 world.step()。GLA-001 的"墙全高 / 天花板有静态碰撞"
+  // 和 GLA-CTRL-002 的"抓取保留俯仰翻滚"只有让真实刚体真的撞上去、真的被抓住才算验完，
+  // 而它们的初始条件在软件渲染器的帧率下等不出来。这里只写既有刚体的状态，不新建物体、
+  // 不改判定、不绕过碰撞。
+  window.__SOURCE_PROBE__ = {
+    place: (i, { pos, vel = [0, 0, 0], quat } = {}) => {
+      const e = floorBricks[i];
+      if (!e) return null;
+      e.body.wakeUp();
+      if (pos) e.body.position.set(pos[0], pos[1], pos[2]);
+      if (quat) e.body.quaternion.set(quat[0], quat[1], quat[2], quat[3]);
+      e.body.velocity.set(vel[0], vel[1], vel[2]);
+      e.body.angularVelocity.set(0, 0, 0);
+      return window.__SOURCE_PICK__().brick(i);
+    },
+    // 绕世界 X 轴倾倒 rad 弧度（制造一块"侧躺"的砖，用于 R-004 抓取基准）
+    tilt: (i, rad, pos) => {
+      const h = rad / 2;
+      return window.__SOURCE_PROBE__.place(i, { pos, quat: [Math.sin(h), 0, 0, Math.cos(h)] });
+    },
+    bounds: {
+      hallHalf: GLASS_ARCH.hallHalf, ceilingY: GLASS_ARCH.ceilingY,
+      wallThickness: GLASS_ARCH.wallThickness, ceilThickness: GLASS_ARCH.ceilThickness
+    }
+  };
+
   let observer = null;
   if ("IntersectionObserver" in window) {
     observer = new IntersectionObserver(entries => {
@@ -1583,6 +1610,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       delete window.__SOURCE_GLASS__;
       delete window.__SOURCE_FLOOR__;
       delete window.__SOURCE_PICK__;
+      delete window.__SOURCE_PROBE__;
       delete window.__SOURCE_CAM__;
       delete window.__SOURCE_NAV__;
       delete window.__SOURCE_CHR__;

@@ -32,6 +32,9 @@ import { GLASS_ARCH, floorBrickLayout } from "../src/scenes/reactor/glassArchite
 import { createFreeCamera, CAM_LIMITS, CAM_INPUT, homeFitDistance } from "../src/scenes/reactor/freeCamera.js";
 import { createCherenkov, exposureGain } from "../src/scenes/reactor/cherenkov.js";
 import { createAutoConsole, AUTO_PHASE_ORDER } from "../src/scenes/reactor/autoConsole.js";
+import { createControlConsole } from "../src/scenes/reactor/controlConsole.js";
+import { createGlassArchitecture } from "../src/scenes/reactor/glassArchitecture.js";
+import { readFileSync } from "node:fs";
 import * as THREE from "three";
 
 let failures = 0;
@@ -1032,6 +1035,91 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
 
   ga.dispose(); ra.dispose();
   if (prevWindow === undefined) delete globalThis.window; else globalThis.window = prevWindow;
+}
+
+{
+  // —— 模块接线锁（R-000 那一类缺陷的通用防线）——
+  //
+  // R-000 的教训：cherenkov 定义了 setViewer()，physicalScene 每帧调用它，工厂却忘了
+  // 导出——首帧抛异常、整页空白，而 273 条纯逻辑断言全绿，因为它们从不检查"模块之间
+  // 的接线"。给单个工厂手写方法名清单只能挡住已知的那一个。
+  //
+  // 这里改成静态分析：直接读 physicalScene.js 源码，把它对每个模块实例的**所有**成员
+  // 访问抽出来，再逐个断言该成员真的存在于工厂返回值上。以后任何人给 physicalScene
+  // 加一次 `water.newThing()`，这条测试就会自动开始要求 waterSystem 导出 newThing。
+  section("模块接线锁：physicalScene 用到的成员必须真的被工厂导出");
+
+  const sceneSrc = readFileSync(
+    new URL("../src/scenes/reactor/physicalScene.js", import.meta.url), "utf8");
+
+  // 去掉注释与字符串，避免把中文注释里提到的 `water.foo` 当成真实调用
+  const code = sceneSrc
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ")
+    .replace(/`(?:\\.|[^`\\])*`/g, "``")
+    .replace(/"(?:\\.|[^"\\])*"/g, '""')
+    .replace(/'(?:\\.|[^'\\])*'/g, "''");
+
+  const noop = () => {};
+  const sessionForConsoles = createSessionController({});
+  const reactorForWiring = createReactorModel({});
+  const wiringTargets = {
+    session: sessionForConsoles,
+    reactor: reactorForWiring,
+    water: createWaterSystem({
+      poolRadius: reactorForWiring.poolBounds.radius,
+      poolDepth: reactorForWiring.poolBounds.depth,
+      surfaceY: reactorForWiring.poolBounds.surfaceY,
+      corePosition: reactorForWiring.corePosition
+    }),
+    lab: createLabEnvironment({}),
+    arch: createGlassArchitecture({}),
+    underground: createUndergroundPlant({}),
+    console3d: createControlConsole({
+      commands: {
+        autoStart: noop, startup: noop, scram: noop, setMode: noop,
+        pumpToggle: noop, rodStart: noop, rodStop: noop, pulseFire: noop
+      }
+    }),
+    autoConsole3d: createAutoConsole({ commands: { autoStart: noop, scram: noop } }),
+    cherenkov: createCherenkov({
+      coreBounds: reactorForWiring.coreBounds,
+      surfaceY: reactorForWiring.poolBounds.surfaceY,
+      particleBudget: 60,
+      intensityOf: s => cherenkovIntensity(s.powerProxy, s.pulsePowerProxy)
+    })
+  };
+
+  let wiredMembers = 0;
+  for (const [binding, instance] of Object.entries(wiringTargets)) {
+    // 只收"读"：赋值（obj.x = ...，但不含 ==/===/=>）由 physicalScene 自己新建，不要求工厂导出
+    const re = new RegExp(`\\b${binding}\\s*\\??\\.\\s*([A-Za-z_$][\\w$]*)\\s*(=[^=>]|.?)`, "g");
+    const used = new Set();
+    for (const m of code.matchAll(re)) {
+      if (/^=[^=>]?$/.test(m[2])) continue;      // 写入，跳过
+      used.add(m[1]);
+    }
+    assert(used.size > 0, `静态分析在 physicalScene 里找到了 ${binding} 的成员访问`);
+    const missing = [...used].filter(k => !(k in instance) || instance[k] === undefined);
+    assert(missing.length === 0,
+      `${binding} 工厂导出了 physicalScene 用到的全部 ${used.size} 个成员` +
+      (missing.length ? `（缺少 ${missing.join(", ")}）` : ""));
+    wiredMembers += used.size;
+  }
+  assert(wiredMembers > 40,
+    `接线锁覆盖了足够多的跨模块成员: ${wiredMembers}`);
+
+  // 每个工厂都必须有可挂载的 group 和可回收的 dispose()——这是 physicalScene 的装配契约
+  for (const [binding, instance] of Object.entries(wiringTargets)) {
+    if (binding === "session") continue;         // 纯状态机，没有几何
+    assert(instance.group && instance.group.isObject3D === true,
+      `${binding} 导出可挂载的 Object3D group`);
+    assert(typeof instance.dispose === "function", `${binding} 导出 dispose()`);
+  }
+
+  Object.entries(wiringTargets).forEach(([binding, instance]) => {
+    if (binding !== "session") instance.dispose();
+  });
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
