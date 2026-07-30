@@ -1224,6 +1224,18 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     programs: renderer.info.programs ? renderer.info.programs.length : -1,
     bodies: world.bodies.length,
     awake: world.bodies.filter(b => b.mass > 0 && b.sleepState !== CANNON.Body.SLEEPING).length,
+    // 醒着的刚体按类别拆开：格栅是弹簧悬挂的承托件，必须常醒（Spring.applyForce 不会
+    // 唤醒睡着的刚体，睡着的格栅会退化成静态件、不再响应落上来的玻璃），所以
+    // "grating: 1" 是设计结果而不是泄漏；其余类别不为 0 才需要追查。
+    awakeKinds: world.bodies
+      .filter(b => b.mass > 0 && b.sleepState !== CANNON.Body.SLEEPING)
+      .reduce((acc, b) => {
+        const k = b === gratingBody ? "grating"
+          : b.userData && b.userData.isFragment ? "fragment"
+            : b.userData && b.userData.entry ? b.userData.entry.kind : "other";
+        acc[k] = (acc[k] || 0) + 1;
+        return acc;
+      }, {}),
     particles: cherenkov.snapshot().particles,
     floorDynamic: floorBricks.length,
     floorFixed: arch.counts.floorFixed,
@@ -1270,6 +1282,73 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       pulsePower: +peaks.pulsePower.toFixed(4)
     }
   });
+
+  // 抓取验收钩子（非文字、只读）：给自动化一个"这块玻璃在屏幕的哪里"和"这个屏幕点
+  // 打到了什么"的回答。GLA-CTRL 要求真实指针拖拽格栅玻璃与地板玻璃，GLA-001 要求
+  // 证明墙/天花玻璃不可抓取——后者只有先证明射线**确实**命中墙砖才算数，否则"没抓到"
+  // 和"点空了"分不开。probe 用的是 onPointerDown 里同一条射线与同一张拾取表。
+  window.__SOURCE_PICK__ = () => {
+    const rect = canvas.getBoundingClientRect();
+    const v = new THREE.Vector3();
+    const project = (p) => {
+      v.set(p.x, p.y, p.z).project(camera);
+      return {
+        x: +(rect.left + (v.x * 0.5 + 0.5) * rect.width).toFixed(1),
+        y: +(rect.top + (-v.y * 0.5 + 0.5) * rect.height).toFixed(1),
+        onScreen: v.z < 1 && Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1
+      };
+    };
+    const pickable = pickTargets();
+    // 抓取约束的可测量量：tilt 是刚体本地 +Y 与世界 +Y 的夹角——GLA-CTRL-002 的
+    // "俯仰/翻滚锁定"等价于 tilt 恒为 0；yaw 是唯一允许变化的角；spin 是角速度模长，
+    // 用来证明抓取时不随机自转、释放时不注入角速度。
+    const up = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    const bodyReport = (b, kind, i) => {
+      q.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w);
+      up.set(0, 1, 0).applyQuaternion(q);
+      return {
+        i, kind, ...project(b.position),
+        pos: [+b.position.x.toFixed(4), +b.position.y.toFixed(4), +b.position.z.toFixed(4)],
+        tilt: +Math.acos(clamp(up.y, -1, 1)).toFixed(6),
+        yaw: +yawOf(b.quaternion).toFixed(5),
+        spin: +b.angularVelocity.length().toFixed(6),
+        speed: +b.velocity.length().toFixed(5),
+        asleep: b.sleepState === CANNON.Body.SLEEPING
+      };
+    };
+    return {
+      cube: (i = 0) => (cubes[i] ? bodyReport(cubes[i].body, "cube", i) : null),
+      brick: (i = 0) => (floorBricks[i] ? bodyReport(floorBricks[i].body, "floor", i) : null),
+      // 地板砖按到某个世界坐标的距离排序，便于挑一块"洞在相机看得见的地方"的砖
+      nearestBrick: (x, z) => {
+        let best = -1, bd = Infinity;
+        floorBricks.forEach((e, k) => {
+          const d = Math.hypot(e.body.position.x - x, e.body.position.z - z);
+          if (d < bd) { bd = d; best = k; }
+        });
+        return best < 0 ? null : bodyReport(floorBricks[best].body, "floor", best);
+      },
+      // 屏幕点 → 场景第一命中 + 是否落在可抓取表里
+      at: (clientX, clientY) => {
+        ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+        ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(ndc, camera);
+        const all = raycaster.intersectObjects(scene.children, true)
+          .filter(h => h.object.visible && h.object.type !== "Points");
+        const grabHits = raycaster.intersectObjects(pickable, false);
+        const first = all[0];
+        return {
+          sceneHit: first ? (first.object.name || first.object.type) : null,
+          sceneHitDistance: first ? +first.distance.toFixed(3) : null,
+          grabbable: grabHits.length > 0,
+          grabKind: grabHits.length ? (resolveEntry(grabHits[0]) || {}).kind || null : null,
+          // 前三个命中体，便于判断墙砖前面挡了什么
+          stack: all.slice(0, 3).map(h => h.object.name || h.object.type)
+        };
+      }
+    };
+  };
 
   let observer = null;
   if ("IntersectionObserver" in window) {
@@ -1349,6 +1428,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       if (window.__SOURCE_STATE__ === session.state) delete window.__SOURCE_STATE__;
       delete window.__SOURCE_GLASS__;
       delete window.__SOURCE_FLOOR__;
+      delete window.__SOURCE_PICK__;
       delete window.__SOURCE_CAM__;
       delete window.__SOURCE_NAV__;
       delete window.__SOURCE_CHR__;

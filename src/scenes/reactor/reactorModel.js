@@ -537,6 +537,9 @@ export function createReactorModel({ reduceMotion }) {
     // RP-001 上部作业面：池口与栏杆之间的环形走道（可见几何在 y = -0.02），
     // 栏杆立于 railRadius，是玻璃向外的真实边界。
     deck: { innerRadius: POOL_RADIUS, outerRadius: WALK_R, y: -0.02, railRadius: WALK_R - 0.08, railHeight: 0.58 },
+    // RP-001 生物屏蔽上盖：可见的 shieldTopCap 环（WALK_R → SHIELD_R，顶面 SHIELD_TOP）。
+    // 玻璃被提过栏杆丢到池外时落在这圈**看得见的**混凝土上，物理必须与它一致。
+    shield: { innerRadius: WALK_R, outerRadius: SHIELD_R, topY: SHIELD_TOP },
     bridgeAnchor: { y: BRIDGE_Y },
     corePosition: { x: 0, y: CORE_TOP, z: 0 },
     // 活性燃料段的包围体（CHR-001：辉光必须附着实际堆芯体积，不附着水面或相机）
