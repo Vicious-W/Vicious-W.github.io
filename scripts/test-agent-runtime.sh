@@ -104,6 +104,33 @@ expect_result 124 TIMEOUT timeout \
   run_agent_process 'fake timeout child' 1 1 1 "$TEST_DIR/timeout.log" -- \
   bash -c 'sleep 5'
 
+signal_child_pid_file="$TEST_DIR/signal-child.pid"
+signal_result_file="$TEST_DIR/signal-result.txt"
+rm -f -- "$signal_child_pid_file" "$signal_result_file"
+(
+  run_agent_process 'fake signal child' 30 1 1 "$TEST_DIR/signal.log" -- \
+    bash -c 'printf "%s\n" "$$" >"$1"; while true; do sleep 1; done' \
+      _ "$signal_child_pid_file"
+  signal_exit=$?
+  printf '%s %s\n' "$signal_exit" "$AGENT_RUN_REASON" >"$signal_result_file"
+) &
+signal_runner_pid=$!
+for _ in $(seq 1 100); do
+  [[ -s "$signal_child_pid_file" ]] && break
+  sleep 0.05
+done
+signal_child_pid="$(sed -n '1p' "$signal_child_pid_file" 2>/dev/null)"
+kill -TERM "$signal_runner_pid" 2>/dev/null || true
+wait "$signal_runner_pid" 2>/dev/null || true
+if [[ "$(sed -n '1p' "$signal_result_file" 2>/dev/null)" == "143 SIGNAL_TERM" ]] && \
+   [[ "$signal_child_pid" =~ ^[1-9][0-9]*$ ]] && \
+   ! kill -0 "$signal_child_pid" 2>/dev/null; then
+  printf 'PASS  parent TERM stops and reaps the isolated Agent process group\n'
+else
+  printf 'FAIL  parent TERM left an isolated Agent process running\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
 mkdir -p "$LOCK_TEST_DIR"
 printf '999999999\n' >"$LOCK_TEST_DIR/pid"
 printf '0\n' >"$LOCK_TEST_DIR/start_ticks"

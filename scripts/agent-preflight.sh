@@ -228,7 +228,7 @@ check_executor_external() {
   printf '\n## Results\n\n'
 } >"$SUMMARY_FILE"
 
-for command_name in git node npm rg sed grep timeout setsid mktemp tee; do
+for command_name in git node npm rg sed grep timeout setsid nohup mktemp tee; do
   check_command "$command_name"
 done
 
@@ -283,6 +283,7 @@ required_files=(
   scripts/agent-preflight.sh
   scripts/agent-cycle.sh
   scripts/agent-supervisor.sh
+  scripts/agent-supervisor-service.sh
   scripts/agent-runners/claude.sh
   scripts/agent-runners/codex.sh
   scripts/lib/agent-telemetry.mjs
@@ -296,6 +297,7 @@ required_files=(
   scripts/lib/agent-runtime.sh
   scripts/test-agent-runtime.sh
   scripts/test-agent-supervisor.sh
+  scripts/test-agent-supervisor-service.sh
 )
 for relative_path in "${required_files[@]}"; do
   if [[ -s "$ROOT_DIR/$relative_path" ]]; then
@@ -371,13 +373,15 @@ if [[ -x "$ROOT_DIR/scripts/run-validation.sh" && \
       -x "$ROOT_DIR/scripts/run-monitor.sh" && \
       -x "$ROOT_DIR/scripts/agent-cycle.sh" && \
       -x "$ROOT_DIR/scripts/agent-supervisor.sh" && \
+      -x "$ROOT_DIR/scripts/agent-supervisor-service.sh" && \
       -x "$ROOT_DIR/scripts/agent-runners/claude.sh" && \
       -x "$ROOT_DIR/scripts/agent-runners/codex.sh" && \
       -x "$ROOT_DIR/scripts/lib/agent-telemetry.mjs" && \
       -x "$ROOT_DIR/scripts/lib/agent-usage-ledger.mjs" && \
       -x "$ROOT_DIR/scripts/generate-cycle-summary.sh" && \
       -x "$ROOT_DIR/scripts/test-agent-runtime.sh" && \
-      -x "$ROOT_DIR/scripts/test-agent-supervisor.sh" ]]; then
+      -x "$ROOT_DIR/scripts/test-agent-supervisor.sh" && \
+      -x "$ROOT_DIR/scripts/test-agent-supervisor-service.sh" ]]; then
   record_pass 'Agent entry and adapter scripts are executable'
 else
   record_fail 'one or more Agent entry/adapter scripts are not executable'
@@ -389,6 +393,7 @@ if bash -n \
   "$ROOT_DIR/scripts/lib/implementation-round-state.sh" \
   "$ROOT_DIR/scripts/test-agent-runtime.sh" \
   "$ROOT_DIR/scripts/test-agent-supervisor.sh" \
+  "$ROOT_DIR/scripts/test-agent-supervisor-service.sh" \
   "$ROOT_DIR/scripts/run-implementation.sh" \
   "$ROOT_DIR/scripts/run-monitor.sh" \
   "$ROOT_DIR/scripts/run-review.sh" \
@@ -396,7 +401,8 @@ if bash -n \
   "$ROOT_DIR/scripts/agent-runners/codex.sh" \
   "$ROOT_DIR/scripts/generate-cycle-summary.sh" \
   "$ROOT_DIR/scripts/agent-cycle.sh" \
-  "$ROOT_DIR/scripts/agent-supervisor.sh"; then
+  "$ROOT_DIR/scripts/agent-supervisor.sh" \
+  "$ROOT_DIR/scripts/agent-supervisor-service.sh"; then
   record_pass 'Agent shell scripts pass bash -n'
 else
   record_fail 'Agent shell script syntax check failed'

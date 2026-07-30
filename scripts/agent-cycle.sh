@@ -30,8 +30,11 @@ Commands:
   accept                 Accept the pending final implementation without
                          REVIEWER, then create a local state checkpoint.
   archive                Archive latest-review.md if not already archived.
-  supervise [options]     Run the multi-window, quota-aware outer supervisor.
-  supervisor-status      Show persisted outer-supervisor state.
+  supervise [options]    Run the multi-window outer supervisor. attached stays
+                         in the foreground; persistent-cli detaches safely.
+  supervisor-status      Show detached-service and outer-supervisor state.
+  supervisor-stop        Safely stop the detached supervisor process group.
+  supervisor-log [lines] Show the latest detached supervisor log.
   supervisor-action ACTION [EVENT_ID]
                          Submit an attached GENERAL supervision decision at a
                          safe boundary.
@@ -497,11 +500,41 @@ case "$command_name" in
     printf 'Archived latest review at %s\n' "$destination"
     ;;
   supervise)
+    supervision_mode="$(
+      agent_runtime_enum_config MONITOR_MODE attached attached persistent-cli
+    )" || exit 2
+    supervision_mode_explicit=0
+    option_index=1
+    while (( option_index <= $# )); do
+      if [[ "${!option_index}" == "--monitor-mode" ]]; then
+        option_index=$((option_index + 1))
+        [[ "$option_index" -le "$#" ]] || { usage >&2; exit 2; }
+        supervision_mode="${!option_index}"
+        supervision_mode_explicit=1
+        break
+      fi
+      option_index=$((option_index + 1))
+    done
+    if [[ "$supervision_mode" == "persistent-cli" ]]; then
+      if (( supervision_mode_explicit == 0 )); then
+        exec "$ROOT_DIR/scripts/agent-supervisor-service.sh" start \
+          --monitor-mode persistent-cli "$@"
+      fi
+      exec "$ROOT_DIR/scripts/agent-supervisor-service.sh" start "$@"
+    fi
     exec "$ROOT_DIR/scripts/agent-supervisor.sh" supervise "$@"
     ;;
   supervisor-status)
     if (( $# != 0 )); then usage >&2; exit 2; fi
-    exec "$ROOT_DIR/scripts/agent-supervisor.sh" status
+    exec "$ROOT_DIR/scripts/agent-supervisor-service.sh" status
+    ;;
+  supervisor-stop)
+    if (( $# != 0 )); then usage >&2; exit 2; fi
+    exec "$ROOT_DIR/scripts/agent-supervisor-service.sh" stop
+    ;;
+  supervisor-log)
+    if (( $# > 1 )); then usage >&2; exit 2; fi
+    exec "$ROOT_DIR/scripts/agent-supervisor-service.sh" log "${1:-120}"
     ;;
   supervisor-action)
     exec "$ROOT_DIR/scripts/agent-supervisor.sh" action "$@"

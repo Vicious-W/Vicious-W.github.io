@@ -72,7 +72,9 @@
 记录恢复时间并由 shell 等待。等待期间没有工作 Agent 或模型请求，不消耗模型 token。
 `attached` 表示当前可见 GENERAL 对话从头到尾持有这个前台进程；该对话结束后
 shell 无法重新唤醒它。无人值守时使用 `--monitor-mode persistent-cli`，父脚本在
-启动时创建一个任务级只读 CLI GENERAL 控制会话，并在后续事件边界恢复同一会话。
+启动时由 `agent-supervisor-service.sh` 放入独立 WSL session/进程组，再创建一个
+任务级只读 CLI GENERAL 控制会话，并在后续事件边界恢复同一会话。父脚本进程与
+GENERAL 逻辑会话必须同时持久，缺一不可。
 
 Claude `--print` 调用同时受 agentic-turn 上限和 API 等价预算约束。任一保险先到会产生
 `AUTONOMY_SLICE_LIMIT`。合法现场保存后进入 GENERAL 决策点，而不是直接假定额度
@@ -131,6 +133,17 @@ ID、`new/resume` 模式、会话代次、预算保险及这些文件的路径�
 ./scripts/agent-cycle.sh supervisor-action WAIT_FOR_QUOTA <EVENT_ID>
 ./scripts/agent-cycle.sh supervisor-action STOP_OWNER <EVENT_ID>
 ```
+
+`persistent-cli` 后台监督使用：
+
+```bash
+./scripts/agent-cycle.sh supervisor-status
+./scripts/agent-cycle.sh supervisor-log 120
+./scripts/agent-cycle.sh supervisor-stop
+```
+
+状态使用 PID 与 Linux `/proc` start ticks 共同校验，避免 PID 已复用时误判或误停
+其他进程。
 
 ## 权限原则
 

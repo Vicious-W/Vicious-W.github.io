@@ -7,6 +7,8 @@ AGENT_RUNTIME_ROOT=""
 AGENT_ACTIVE_PID=""
 AGENT_ACTIVE_PGID=""
 AGENT_ACTIVE_GRACE_SECONDS=15
+AGENT_PROCESS_SIGNAL_EXIT=0
+AGENT_PROCESS_SIGNAL_NAME=""
 AGENT_RUN_EXIT=0
 AGENT_RUN_REASON="NOT_RUN"
 AGENT_RUN_ELAPSED_SECONDS=0
@@ -711,6 +713,12 @@ agent_stop_active_process() {
   fi
 }
 
+agent_handle_active_process_signal() {
+  AGENT_PROCESS_SIGNAL_EXIT="$1"
+  AGENT_PROCESS_SIGNAL_NAME="$2"
+  agent_stop_active_process
+}
+
 run_agent_process() {
   local label="$1"
   local timeout_seconds="$2"
@@ -743,6 +751,11 @@ run_agent_process() {
   local events_file="${AGENT_EVENT_FILE:-}"
   local telemetry_script="$AGENT_RUNTIME_ROOT/scripts/lib/agent-telemetry.mjs"
   AGENT_ACTIVE_GRACE_SECONDS="$grace_seconds"
+  AGENT_PROCESS_SIGNAL_EXIT=0
+  AGENT_PROCESS_SIGNAL_NAME=""
+  trap 'agent_handle_active_process_signal 130 INT' INT
+  trap 'agent_handle_active_process_signal 143 TERM' TERM
+  trap 'agent_handle_active_process_signal 129 HUP' HUP
 
   setsid "$@" </dev/null >"$log_file" 2>&1 &
   AGENT_ACTIVE_PID=$!
@@ -784,11 +797,15 @@ run_agent_process() {
 
   wait "$AGENT_ACTIVE_PID" 2>/dev/null
   child_exit=$?
+  trap - INT TERM HUP
   AGENT_RUN_ELAPSED_SECONDS="$elapsed"
   AGENT_ACTIVE_PID=""
   AGENT_ACTIVE_PGID=""
 
-  if (( timed_out == 1 )); then
+  if (( AGENT_PROCESS_SIGNAL_EXIT != 0 )); then
+    AGENT_RUN_EXIT="$AGENT_PROCESS_SIGNAL_EXIT"
+    AGENT_RUN_REASON="SIGNAL_$AGENT_PROCESS_SIGNAL_NAME"
+  elif (( timed_out == 1 )); then
     AGENT_RUN_EXIT=124
     AGENT_RUN_REASON="TIMEOUT"
   else

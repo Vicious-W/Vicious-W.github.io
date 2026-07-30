@@ -99,8 +99,10 @@ Git 或控制面。只有工作 Agent 完全退出后，监督层才能执行恢
 
 中立监督脚本负责长时间等待和确定性动作，不消耗模型 token。GENERAL 不做高频
 AI 轮询。可见的附着式 GENERAL 必须从开始到终止一直持有前台 supervisor 工具
-调用；该对话一旦结束，shell 无法重新唤醒它。无人值守模式则由父脚本在启动时创建
-一个任务级只读 CLI GENERAL 控制会话，并在后续事件边界精确恢复该会话。
+调用；该对话一旦结束，shell 无法重新唤醒它。无人值守模式必须同时满足两种持久化：
+`agent-supervisor-service.sh` 用独立 session/进程组托管父脚本，父脚本再创建一个
+任务级只读 CLI GENERAL 控制会话并在后续事件边界精确恢复。只持久化 Agent 会话而
+让父脚本依附启动对话，不属于有效的无人值守监督。
 
 ## 中立父脚本
 
@@ -154,6 +156,12 @@ Agent 不递归启动下一 Agent；角色交接由仍在前台等待子进程�
 续片、等待额度窗口或停止。`AWAITING_MONITOR_ACTION` 与 `MONITOR_ACTION` 是为兼容
 现有状态文件和脚本保留的控制消息名，不表示存在 MONITOR 角色；`persistent-cli`
 必须读取并执行该动作，不能只生成装饰性报告。
+
+`scripts/agent-supervisor-service.sh` 是无人值守进程托管层。由于项目所在 WSL 当前
+没有 systemd user manager，它使用 `setsid -f`、`nohup`、独立标准输入输出和
+PID/start-ticks 双重身份记录，使 `persistent-cli` 父脚本不会在启动终端或 Agent
+工具调用结束时收到 `SIGHUP`。停止操作必须面向记录的独立进程组；PID 已复用时不得
+发送信号。`agent-cycle.sh supervise --monitor-mode persistent-cli` 自动进入该层。
 
 ## 运行清单
 

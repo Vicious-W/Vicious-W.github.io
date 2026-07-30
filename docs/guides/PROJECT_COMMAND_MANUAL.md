@@ -61,7 +61,8 @@ npm run dev -- --port 8000
 `GENERAL` 是默认统一身份：作为通用协作者工作，也负责控制面维护和跨额度窗口监督，
 不需要切换成独立 MONITOR。监督时只检查流程、进程、Git 和恢复证据，不评价业务
 质量。`attached` 模式由当前可见 GENERAL 对话持有 supervisor；`persistent-cli`
-模式由父脚本创建并恢复一个后台任务级只读 GENERAL 控制会话。
+模式先把父脚本放入独立 WSL session/进程组，再创建并恢复一个后台任务级只读
+GENERAL 控制会话。
 
 `IMPLEMENTER` 和 `REVIEWER` 是显式分配的专用身份。任何受支持的执行器都可以承担
 任一角色，同一执行器也可以在两个全新进程中先实现再审查。后一种配置具有权限和
@@ -279,11 +280,14 @@ Agent 不负责启动下一个 Agent。中立父脚本一直等待子进程结�
 监督器分为两层：
 
 ```text
-agent-supervisor.sh：跨额度窗口、恢复次数、定时等待、异常交接
-└── agent-cycle.sh：N 次实现轮回、相邻实现间按需审查的状态机
-    ├── IMPLEMENTER
-    └── REVIEWER
+agent-supervisor-service.sh：persistent-cli 的独立 WSL 进程托管
+└── agent-supervisor.sh：跨额度窗口、恢复次数、定时等待、异常交接
+    └── agent-cycle.sh：N 次实现轮回、相邻实现间按需审查的状态机
+        ├── IMPLEMENTER
+        └── REVIEWER
 ```
+
+`attached` 不经过最外层服务，仍由当前 GENERAL 前台持有。
 
 额度中断或 Claude 主动预算保险触发时，监督器会先确认工作 Agent 已退出。若实现
 阶段留下合法半成品，它运行统一验证并创建标题明确的 recovery checkpoint；该提交
@@ -352,6 +356,7 @@ supervisor 会读取并真正执行。该字段是控制消息名，不是角色
 ```bash
 ./scripts/agent-cycle.sh supervisor-status
 ./scripts/agent-cycle.sh status
+./scripts/agent-cycle.sh supervisor-log 120
 ```
 
 `--start-stage reviewer` 只用于恢复已经登记为 `PENDING_REVIEW=YES` 的审查阶段，
@@ -389,8 +394,21 @@ supervisor 会读取并真正执行。该字段是控制消息名，不是角色
 
 在 `attached` 模式中，当前可见 GENERAL 对话必须一直保留前台工具调用；一旦该
 对话回合结束，外部 shell 无法重新唤醒它。等待仍由 shell 完成，不需要模型轮询。
-在 `persistent-cli` 模式中，父脚本于启动事件创建只读 GENERAL 控制会话，并在异常、等待和
-恢复边界精确恢复该会话；它不会显示成当前 VS Code 对话。
+在 `persistent-cli` 模式中，`agent-cycle.sh supervise` 自动通过
+`agent-supervisor-service.sh` 使用 `setsid -f + nohup` 建立独立 session/进程组；
+父脚本随后创建只读 GENERAL 控制会话，并在异常、等待和恢复边界精确恢复。启动它的
+Codex 回合或终端结束，不会再向父脚本发送 `SIGHUP`。
+
+当前 WSL 没有 systemd user manager，因此服务状态用 PID 与 `/proc` start ticks
+共同校验，防止 PID 复用导致误判或误停。需要人为终止时运行：
+
+```bash
+./scripts/agent-cycle.sh supervisor-stop
+```
+
+该命令只向已验证身份的独立进程组发送 `TERM`，不会自动升级为 `KILL`。Windows
+重启或主动执行 `wsl --shutdown` 仍会终止全部 Linux 进程，不属于项目脚本可以跨越
+的生命周期。
 
 ## 7. 父脚本命令
 
@@ -399,8 +417,10 @@ supervisor 会读取并真正执行。该字段是控制消息名，不是角色
 | `status` | 查看状态、默认配置、验证和停止原因 | 否 |
 | `preflight [options]` | 检查选定配置 | 否 |
 | `cycle [options]` | 运行指定次数的串行轮回 | 是 |
-| `supervise [options]` | 跨额度窗口运行指定轮回 | 串行启动 |
-| `supervisor-status` | 查看外层监督状态和恢复时间 | 否 |
+| `supervise [options]` | attached 前台运行；persistent-cli 独立后台运行 | 串行启动 |
+| `supervisor-status` | 查看后台服务、外层监督状态和恢复时间 | 否 |
+| `supervisor-log [lines]` | 查看最近后台监督日志 | 否 |
+| `supervisor-stop` | 向已验证的后台监督进程组发送 TERM | 否 |
 | `supervisor-action ACTION [EVENT_ID]` | 附着式 GENERAL 提交安全边界决策 | 否 |
 | `implement [options]` | 单独运行一次 IMPLEMENTER 轮回并提交 | 一个 |
 | `review [options] [target base]` | 单独运行一次只读 REVIEWER | 一个 |
@@ -415,6 +435,7 @@ supervisor 会读取并真正执行。该字段是控制消息名，不是角色
 ./scripts/agent-cycle.sh --help
 ./scripts/agent-preflight.sh --help
 ./scripts/agent-supervisor.sh --help
+./scripts/agent-supervisor-service.sh --help
 ./scripts/run-implementation.sh --help
 ./scripts/run-review.sh --help
 ```
@@ -455,6 +476,7 @@ typecheck。未配置的项目写 `NOT CONFIGURED`，不能算作 PASS。摘要�
 ```bash
 ./scripts/test-agent-runtime.sh
 ./scripts/test-agent-supervisor.sh
+./scripts/test-agent-supervisor-service.sh
 ```
 
 这两个测试都不会启动真实 Claude 或 Codex。

@@ -89,7 +89,8 @@
   实现之间，最后一次实现交由所有者查看；`agent-supervisor.sh` 管理跨额度窗口
   的恢复、定时续跑和异常交接；
 - 长时间等待由 shell 完成，不运行工作 Agent；可见 GENERAL 使用 `attached` 模式
-  持有前台 supervisor，后台全自动模式则恢复一个任务级持久 CLI GENERAL 控制会话；
+  持有前台 supervisor；后台全自动模式由独立 WSL session/进程组托管父脚本，并
+  恢复一个任务级持久 CLI GENERAL 控制会话，因此不依附启动它的 Agent 工具调用；
 - Claude 非交互调用使用 `stream-json` 实时记录 assistant 事件、token、缓存和最终
   agentic turns/API 等价用量；最大 turns/预算保险触发后保存合法现场，由 GENERAL
   决定立即续片、轮换

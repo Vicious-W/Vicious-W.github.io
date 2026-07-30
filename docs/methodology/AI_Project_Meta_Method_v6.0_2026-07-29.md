@@ -105,6 +105,15 @@ GENERAL 启动 supervisor
 决策点仍可用；完全无人值守时使用 `persistent-cli`，由父脚本恢复只读 GENERAL
 控制会话。
 
+无人值守需要两层独立生命周期：
+
+1. 中立 supervisor 父进程脱离启动终端/Agent 工具调用；
+2. 只读 GENERAL 控制事件会话跨事件恢复。
+
+只实现第二层会导致启动对话结束时父进程收到 `SIGHUP`，即使 Agent 会话可恢复也
+无法到点启动。没有 systemd user manager 的 WSL 环境可以使用 `setsid -f + nohup`
+建立独立 session/进程组，并用 PID 与 `/proc` start ticks 共同防止 PID 复用误停。
+
 等待到点的依据依次为所有者显式指定的首次恢复时间、执行器结构化遥测返回的真实
 额度 reset 时间、固定窗口锚点。不得在已经取得真实 reset 时间时继续凭固定五小时
 间隔猜测。

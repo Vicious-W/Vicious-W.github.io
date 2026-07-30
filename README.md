@@ -74,7 +74,8 @@ npm test
 默认循环仍采用 Claude Code 实现、Codex 审查，但可在启动时交换角色、改用同一种
 执行器或显式指定各自模型与 effort。直接进入项目而未指定专用角色的 Agent 默认
 为 `GENERAL`。预计会跨额度窗口时使用 `supervise`：外层 shell 会保存安全恢复
-检查点并零 Token 等待，GENERAL 只在事件边界处理决策和未知异常。同一任务内实现与审查分别恢复
+检查点并零 Token 等待；`persistent-cli` 自动把父脚本放入独立 WSL 进程组，GENERAL
+只在事件边界处理决策和未知异常。同一任务内实现与审查分别恢复
 自己的专属会话；`--rounds N` 指定本次追加的实现次数。
 
 详细说明见 `docs/guides/PROJECT_COMMAND_MANUAL.md`。
