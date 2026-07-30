@@ -663,6 +663,12 @@ export function createUndergroundPlant({ reduceMotion } = {}) {
     };
   }
 
+  // 验收可辨识性：地下设备几乎全是匿名网格，`__SOURCE_PICK__().at()` 只会报 "Mesh"，
+  // 于是“移开地板砖后能看见地下设备”和“看见了别的东西”分不开。这里只给未命名网格补一
+  // 个前缀名（`glassArchitecture.js` 对固定玻璃做过同一件事），不改几何、材质或状态。
+  group.name = "UG-PLANT";
+  group.traverse(o => { if (o.isMesh && !o.name) o.name = "UG-PLANT-MESH"; });
+
   void FLANGE_GEO;
   return { group, update, dispose, snapshot, bounds: UNDERGROUND_BOUNDS, components: PLANT_COMPONENTS };
 }

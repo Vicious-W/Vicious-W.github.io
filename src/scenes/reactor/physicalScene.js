@@ -1380,8 +1380,10 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
           sceneHitDistance: first ? +first.distance.toFixed(3) : null,
           grabbable: grabHits.length > 0,
           grabKind: grabHits.length ? (resolveEntry(grabHits[0]) || {}).kind || null : null,
-          // 前三个命中体，便于判断墙砖前面挡了什么
-          stack: all.slice(0, 3).map(h => h.object.name || h.object.type)
+          // 前四个命中体（带命中距离），便于判断墙砖前面挡了什么，以及移开地板砖后
+          // 这条射线到底穿过了多深、落在哪个地下设备上
+          stack: all.slice(0, 4).map(h =>
+            `${h.object.name || h.object.type}@${h.distance.toFixed(2)}`)
         };
       }
     };
