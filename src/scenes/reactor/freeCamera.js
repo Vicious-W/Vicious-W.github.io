@@ -46,6 +46,30 @@ export const CAM_INPUT = {
   panSpeed: 1.0
 };
 
+// 规范初始取景的距离（CAM-002）。
+//
+// 纯几何 fit 距离在竖直窄视口上会失控：halfH 随宽高比一起变小，`radiusH / sin(halfH)`
+// 因此暴涨——1440×900 是 16.56，768×1024 已是 18.78，390×844 到 29.44。按 40° 仰角
+// 换算，后两者的初始机位分别落在 y=12.37 和 y=19.2（钳到 15.6，z=22.55）：一个在
+// 12.0 的玻璃天花板之上，一个直接在 22 的玻璃墙之外。初始画面于是只剩两块贴脸折射
+// 的玻璃砖，看不到反应堆池。
+//
+// 初始机位必须留在玻璃建筑内部，所以在纯几何 fit 之外再按大厅净空反解两个上限。
+// 窄视口宁可裁掉两侧，也不出屋——用户随时可以滚轮拉远。
+export function homeFitDistance({
+  aspect, fovDeg, radiusV, radiusH, elevationDeg, targetY, ceilingLimitY, wallLimit
+}) {
+  const halfV = (fovDeg * Math.PI) / 360;
+  const halfH = Math.atan(Math.tan(halfV) * aspect);
+  const fit = Math.max(radiusV / Math.sin(halfV), radiusH / Math.sin(halfH));
+  const elev = (elevationDeg * Math.PI) / 180;
+  return Math.min(
+    fit,
+    (ceilingLimitY - targetY) / Math.sin(elev),  // 机位高度不得顶到天花板玻璃
+    wallLimit / Math.cos(elev)                   // 机位纵深不得穿出墙玻璃
+  );
+}
+
 // 世界包围盒钳制：pivot 与相机位置都必须留在可达空间内。
 function clampToWorld(v) {
   const h = CAM_LIMITS.worldHalf;

@@ -19,7 +19,7 @@ import { createWaterSystem, cherenkovIntensity, UNDERWATER_FOG_COLOR } from "./w
 import { createSessionController } from "./sessionController.js";
 import { createControlConsole } from "./controlConsole.js";
 import { createAutoConsole } from "./autoConsole.js";
-import { createFreeCamera, CAM_LIMITS } from "./freeCamera.js";
+import { createFreeCamera, CAM_LIMITS, homeFitDistance } from "./freeCamera.js";
 import { createCherenkov } from "./cherenkov.js";
 import { createLabEnvironment, HALL_BOUNDS, HALL_COLLIDERS } from "./labEnvironment.js";
 import { createGlassArchitecture, GLASS_ARCH } from "./glassArchitecture.js";
@@ -43,6 +43,11 @@ const CAM_TARGET_Y = 0.3;
 // 取景半径：竖直方向到屏蔽体上沿，水平/纵深方向要同时容纳前景控制台（z≈6.9）。
 const FIT_RADIUS_V = 7.0;
 const FIT_RADIUS_H = 6.2;
+// 初始机位的净空上限（见 freeCamera.homeFitDistance）。留出的余量刻意取得比
+// 1440×900 的几何 fit 距离宽：桌面取景保持不变，只有会把相机顶出玻璃建筑的竖直
+// 窄视口才被封顶。
+const HOME_CEILING_LIMIT_Y = GLASS_ARCH.ceilingY - 0.8;   // 11.2
+const HOME_WALL_LIMIT = GLASS_ARCH.hallHalf - 1.5;        // 20.5
 const LIFT_Y = 1.0;  // 抓取平面高度：松手落差约 0.3，正常拖放不掉耐久（见 glassDamage 标定）
 const MAX_DPR = 1.5;
 const PAN_REF = 4.0; // 声像参考半宽（走道外沿量级），与视口无关
@@ -692,9 +697,12 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     camera.aspect = cssW / cssH;
     camera.updateProjectionMatrix();
 
-    const halfV = (FOV * Math.PI) / 360;
-    const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
-    const fit = Math.max(FIT_RADIUS_V / Math.sin(halfV), FIT_RADIUS_H / Math.sin(halfH));
+    const fit = homeFitDistance({
+      aspect: camera.aspect, fovDeg: FOV,
+      radiusV: FIT_RADIUS_V, radiusH: FIT_RADIUS_H,
+      elevationDeg: CAM_ELEVATION_DEG, targetY: CAM_TARGET_Y,
+      ceilingLimitY: HOME_CEILING_LIMIT_Y, wallLimit: HOME_WALL_LIMIT
+    });
     // 规范初始取景（CAM-002 的"可回到初始取景"就是回到这里）。resize 只更新宽高比
     // 与 home 距离，不再覆盖用户当前机位。
     cam.setHome({

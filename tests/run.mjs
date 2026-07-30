@@ -29,7 +29,7 @@ import {
 } from "../src/scenes/reactor/undergroundPlant.js";
 import { frameDelta, wrap01 } from "../src/scenes/reactor/timeStep.js";
 import { GLASS_ARCH, floorBrickLayout } from "../src/scenes/reactor/glassArchitecture.js";
-import { createFreeCamera, CAM_LIMITS, CAM_INPUT } from "../src/scenes/reactor/freeCamera.js";
+import { createFreeCamera, CAM_LIMITS, CAM_INPUT, homeFitDistance } from "../src/scenes/reactor/freeCamera.js";
 import { createCherenkov, exposureGain } from "../src/scenes/reactor/cherenkov.js";
 import { createAutoConsole, AUTO_PHASE_ORDER } from "../src/scenes/reactor/autoConsole.js";
 import * as THREE from "three";
@@ -804,6 +804,29 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   } catch (e) { threw = e; }
   assert(threw === null, `首帧负步长不再让地下厂房抛异常: ${threw && threw.message}`);
   plant.dispose?.();
+}
+
+// —— CAM-002：任何宽高比下的初始机位都必须留在玻璃建筑内部 ——
+// 纯几何 fit 距离在竖直窄视口上会把相机顶到天花板之上/墙外，初始画面只剩贴脸的
+// 玻璃砖（768×1024 与 390×844 实测如此）。homeFitDistance 按大厅净空封顶。
+{
+  const A = { fovDeg: 50, radiusV: 7.0, radiusH: 6.2, elevationDeg: 40, targetY: 0.3,
+    ceilingLimitY: 12.0 - 0.8, wallLimit: 22 - 1.5 };
+  const elev = (A.elevationDeg * Math.PI) / 180;
+  const desktop = homeFitDistance({ ...A, aspect: 1440 / 900 });
+  assert(Math.abs(desktop - 16.563) < 0.01,
+    `桌面 1440×900 初始取景距离不变: ${desktop.toFixed(3)}`);
+  for (const [w, h] of [[768, 1024], [390, 844], [360, 900], [1440, 900], [1920, 1080]]) {
+    const d = homeFitDistance({ ...A, aspect: w / h });
+    const camY = A.targetY + d * Math.sin(elev);
+    const camZ = d * Math.cos(elev);
+    assert(camY <= A.ceilingLimitY + 1e-6,
+      `${w}×${h} 初始机位在天花板玻璃之下: y=${camY.toFixed(2)}`);
+    assert(camZ <= A.wallLimit + 1e-6,
+      `${w}×${h} 初始机位在墙玻璃之内: z=${camZ.toFixed(2)}`);
+    assert(d > 0 && d <= CAM_LIMITS.maxDistance,
+      `${w}×${h} 初始取景距离有界: ${d.toFixed(2)}`);
+  }
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
