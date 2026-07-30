@@ -17,7 +17,7 @@ CLAUDE_ARGS="$TEST_DIR/claude-args.txt"
 SESSION_EVENTS="$TEST_DIR/session-events.json"
 SESSION_TEST_TASK="runtime-session-test-$(date +%s%N)-$$"
 QUOTA_SESSION_TEST_TASK="runtime-quota-session-test-$(date +%s%N)-$$"
-MONITOR_SESSION_TEST_TASK="runtime-monitor-session-test-$(date +%s%N)-$$"
+GENERAL_SESSION_TEST_TASK="runtime-general-session-test-$(date +%s%N)-$$"
 LEDGER_TEST="$TEST_DIR/usage-ledger.json"
 LEDGER_RUN_DIR="$TEST_DIR/ledger-runs"
 ROUND_BASE_TEST_DIR=""
@@ -607,17 +607,27 @@ else
   failure_count=$((failure_count + 1))
 fi
 agent_prepare_role_session \
-  "$MONITOR_SESSION_TEST_TASK" MONITOR codex gpt-5.6-terra medium
+  "$GENERAL_SESSION_TEST_TASK" GENERAL codex gpt-5.6-terra medium
 agent_finalize_role_session codex "$CODEX_EVENTS" SUCCESS
 monitor_session_id="$AGENT_SESSION_ID"
 agent_prepare_role_session \
-  "$MONITOR_SESSION_TEST_TASK" MONITOR codex gpt-5.6-terra medium
+  "$GENERAL_SESSION_TEST_TASK" GENERAL codex gpt-5.6-terra medium
 if [[ "$AGENT_SESSION_MODE" == "resume" && \
       "$AGENT_SESSION_ID" == "$monitor_session_id" && \
       -n "$monitor_session_id" ]]; then
-  printf 'PASS  task-scoped CLI MONITOR resumes one persistent conversation\n'
+  printf 'PASS  task-scoped CLI GENERAL supervisor resumes one persistent conversation\n'
 else
-  printf 'FAIL  CLI MONITOR session was not persisted across events\n' >&2
+  printf 'FAIL  CLI GENERAL supervisor session was not persisted across events\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+if "$ROOT_DIR/scripts/agent-preflight.sh" \
+     --control-only --allow-dirty --skip-git-write --skip-external \
+     --reviewer-agent codex --reviewer-model gpt-5.6-terra \
+     --reviewer-effort medium >/dev/null 2>&1; then
+  printf 'PASS  GENERAL control-event preflight ignores implementation/review phase\n'
+else
+  printf 'FAIL  GENERAL control-event preflight was blocked by task phase\n' >&2
   failure_count=$((failure_count + 1))
 fi
 
@@ -625,7 +635,7 @@ printf '%s\n' \
   'There is an issue with the selected model. It may not exist or you may not have access.' \
   >"$TEST_DIR/model-unavailable.log"
 if [[ "$(agent_classify_log "$TEST_DIR/model-unavailable.log")" == "MODEL_UNAVAILABLE" ]]; then
-  printf 'PASS  unavailable models are classified without invoking MONITOR\n'
+  printf 'PASS  unavailable models are classified without invoking GENERAL supervision\n'
 else
   printf 'FAIL  unavailable model error was not classified\n' >&2
   failure_count=$((failure_count + 1))
@@ -639,6 +649,14 @@ for adapter in claude codex; do
     failure_count=$((failure_count + 1))
   else
     printf 'PASS  %s adapter rejects invalid roles without starting an Agent\n' "$adapter"
+  fi
+  if "$ROOT_DIR/scripts/agent-runners/$adapter.sh" \
+    MONITOR test-model high "$PROMPT_TEST" - >/dev/null 2>&1; then
+    printf 'FAIL  %s adapter still accepted the removed MONITOR identity\n' \
+      "$adapter" >&2
+    failure_count=$((failure_count + 1))
+  else
+    printf 'PASS  %s adapter rejects the removed MONITOR identity\n' "$adapter"
   fi
 done
 

@@ -1,8 +1,8 @@
 # 项目参与者指令手册
 
-版本：v4.2
+版本：v4.3
 
-更新日期：2026-07-25
+更新日期：2026-07-29
 
 适用目录：`/home/vicious/projects/Vicious-W.github.io`
 
@@ -20,7 +20,8 @@ cd /home/vicious/projects/Vicious-W.github.io
 - 反应堆池工程基线：`docs/engineering/REACTOR_POOL_SYSTEM.md`
 - 反应堆模型基线：`docs/engineering/REACTOR_MODEL.md`
 - Agent 身份总协议：`AGENT_PROTOCOL.md`
-- 四种角色：`.agent/roles/`
+- 三种角色：`.agent/roles/`
+- 当前协作方法：`docs/methodology/AI_Project_Meta_Method_v6.0_2026-07-29.md`
 - 正式审查格式：`REVIEW_CONTRACT.md`
 
 ## 2. 最常用命令
@@ -53,16 +54,14 @@ npm run dev -- --port 8000
 
 | 概念 | 可选值 | 含义 |
 | --- | --- | --- |
-| 角色 | GENERAL / MONITOR / IMPLEMENTER / REVIEWER | 本次调用要承担什么职责 |
+| 角色 | GENERAL / IMPLEMENTER / REVIEWER | 本次调用要承担什么职责 |
 | 执行器 | claude / codex | 使用哪个 CLI 与服务运行 |
 | 运行参数 | model / effort / timeout / permissions | 这次调用怎样运行 |
 
-`GENERAL` 是默认身份：所有者直接请一个 Agent 进入项目而没有指定专用身份时，它
-作为通用协作者工作，不自动写正式交接或推进轮回。
-
-`MONITOR` 是跨额度窗口的监督身份：只检查流程、进程、Git 和恢复证据，不评价业务
-质量。`attached` 模式由当前可见 MONITOR 对话从开始到终止持有 supervisor；
-`persistent-cli` 模式由父脚本创建并恢复一个后台任务级 MONITOR 会话。
+`GENERAL` 是默认统一身份：作为通用协作者工作，也负责控制面维护和跨额度窗口监督，
+不需要切换成独立 MONITOR。监督时只检查流程、进程、Git 和恢复证据，不评价业务
+质量。`attached` 模式由当前可见 GENERAL 对话持有 supervisor；`persistent-cli`
+模式由父脚本创建并恢复一个后台任务级只读 GENERAL 控制会话。
 
 `IMPLEMENTER` 和 `REVIEWER` 是显式分配的专用身份。任何受支持的执行器都可以承担
 任一角色，同一执行器也可以在两个全新进程中先实现再审查。后一种配置具有权限和
@@ -125,7 +124,8 @@ MAX_AUTONOMY_SLICES_PER_WINDOW=4
 MONITOR_ACTION_TIMEOUT_SECONDS=7200
 ```
 
-这只是默认调用配置，不是永久身份绑定。可以在每次 `cycle` 启动时覆盖。
+这只是默认调用配置，不是永久身份绑定。`MONITOR_*` 是兼容 v5 的监督功能字段名，
+自动调用的实际身份是 GENERAL。可以在每次 `cycle` 启动时覆盖。
 
 ### 5.1 使用默认配置
 
@@ -292,14 +292,14 @@ agent-supervisor.sh：跨额度窗口、恢复次数、定时等待、异常交�
 进入 `AWAITING_MONITOR_ACTION`，不能直接冒充额度耗尽。
 
 Claude 非交互调用不是一次模型请求，而是工具调用—模型调用循环。为防止几十分钟内
-重复读取数千万缓存 token，默认对 IMPLEMENTER、REVIEWER 和后台 MONITOR 分别设置
+重复读取数千万缓存 token，默认对 IMPLEMENTER、REVIEWER 和后台 GENERAL 控制会话分别设置
 最大 turns 与 API 等价预算。命中任一值记录为 `AUTONOMY_SLICE_LIMIT`，状态进入
-Monitor 决策点。Claude 使用 `stream-json`，监督心跳实时显示精简的 assistant 事件、
+GENERAL 决策点。Claude 使用 `stream-json`，监督心跳实时显示精简的 assistant 事件、
 token 和缓存增长；最终 agentic turns 只采用终态结果，监督窗口累计账本还记录
 API 等价用量。这些金额是 Claude CLI
 返回的等价用量，不等于订阅账单金额。
 
-Monitor 根据当前切片和
+GENERAL 根据当前切片和
 `.agent/artifacts/supervisor/usage-ledger.json` 选择：
 
 - `CONTINUE_NOW`：当前上下文效率正常且真实额度仍可能充足，立即恢复原角色；
@@ -321,17 +321,17 @@ Monitor 根据当前切片和
 实时 `assistant` 事件数不等于最终 turns。恢复 Claude 会话时事件流可能先回放历史
 `result`；只有当前进程退出后的最后终态 usage 才能用于正式结算。
 
-附着式 Monitor 使用 supervisor 输出的事件 ID 提交：
+附着式 GENERAL 使用 supervisor 输出的事件 ID 提交：
 
 ```bash
 ./scripts/agent-cycle.sh supervisor-action CONTINUE_NOW <EVENT_ID>
 ```
 
-无人值守的 `persistent-cli` Monitor 会输出同一组 `MONITOR_ACTION`；supervisor 会
-读取并真正执行，不再只保存报告。
+无人值守的 `persistent-cli` GENERAL 控制会话会输出兼容的 `MONITOR_ACTION`；
+supervisor 会读取并真正执行。该字段是控制消息名，不是角色名。
 
 默认每个真实额度窗口最多连续运行 4 个自主切片；达到
-`MAX_AUTONOMY_SLICES_PER_WINDOW` 后，即使 Monitor 请求继续，supervisor 也会拒绝，
+`MAX_AUTONOMY_SLICES_PER_WINDOW` 后，即使 GENERAL 请求继续，supervisor 也会拒绝，
 防止自动小切片变成无限额度消耗。attached 决策默认最多等待 7200 秒，可在
 `.agent/runtime.env` 调整。
 
@@ -381,13 +381,15 @@ Monitor 根据当前切片和
 `WAITING_FOR_QUOTA` 或 `WAITING_FOR_BUDGET_WINDOW`，再重新生成简报，因此简报
 看到的是同一事件的最终外层状态。
 
-`--start-at` 默认也作为固定额度窗口锚点。例如首次恢复为 10:42、窗口为 5 小时，
-后续会对齐 15:42、20:42，而不是从 Agent 实际中断时刻再等待整整 5 小时。首次
-启动时间与额度锚点不相同时，可另传 `--quota-anchor`。
+恢复时间按以下优先级选择：显式 `--resume-at`、执行器遥测返回的真实
+`rateLimitResetsAt`、固定额度窗口锚点。`--start-at` 默认也作为后备锚点。例如首次
+恢复为 10:42、窗口为 5 小时，后续在没有真实 reset 遥测时对齐 15:42、20:42，
+而不是从 Agent 实际中断时刻再等待整整 5 小时。首次启动时间与后备锚点不同时，
+可另传 `--quota-anchor`。
 
-在 `attached` 模式中，当前可见 MONITOR 对话必须一直保留前台工具调用；一旦该
+在 `attached` 模式中，当前可见 GENERAL 对话必须一直保留前台工具调用；一旦该
 对话回合结束，外部 shell 无法重新唤醒它。等待仍由 shell 完成，不需要模型轮询。
-在 `persistent-cli` 模式中，父脚本于启动事件创建 MONITOR 会话，并在异常、等待和
+在 `persistent-cli` 模式中，父脚本于启动事件创建只读 GENERAL 控制会话，并在异常、等待和
 恢复边界精确恢复该会话；它不会显示成当前 VS Code 对话。
 
 ## 7. 父脚本命令
@@ -399,7 +401,7 @@ Monitor 根据当前切片和
 | `cycle [options]` | 运行指定次数的串行轮回 | 是 |
 | `supervise [options]` | 跨额度窗口运行指定轮回 | 串行启动 |
 | `supervisor-status` | 查看外层监督状态和恢复时间 | 否 |
-| `supervisor-action ACTION [EVENT_ID]` | 附着式 Monitor 提交安全边界决策 | 否 |
+| `supervisor-action ACTION [EVENT_ID]` | 附着式 GENERAL 提交安全边界决策 | 否 |
 | `implement [options]` | 单独运行一次 IMPLEMENTER 轮回并提交 | 一个 |
 | `review [options] [target base]` | 单独运行一次只读 REVIEWER | 一个 |
 | `validate` | 统一构建/测试检查 | 否 |
@@ -506,7 +508,7 @@ git show <审查提交>:.agent/latest-review.md
 
 - Claude IMPLEMENTER：`dontAsk` + 项目工具白名单/禁止列表；
 - Claude REVIEWER：无 Write/Edit，只有只读命令、公开资料和 Playwright MCP；
-- Claude/Codex MONITOR：与 REVIEWER 同级的只读权限，只写忽略目录中的候选报告；
+- 自动 GENERAL 控制事件：与 REVIEWER 同级的只读权限，只写忽略目录中的候选报告；
 - Codex IMPLEMENTER：`workspace-write` + `approval_policy="never"`；
 - Codex REVIEWER：`read-only` + `approval_policy="never"`。
 
@@ -528,7 +530,7 @@ cat .agent/artifacts/runtime/last-stop.env
 | 分类 | 含义 | 处理 |
 | --- | --- | --- |
 | `USAGE_OR_BILLING_LIMIT` | 额度、余额或速率限制 | `supervise` 自动保存并定时续跑 |
-| `AUTONOMY_SLICE_LIMIT` | 项目 turns/预算保险命中，不等于额度耗尽 | Monitor 根据实时/累计用量决定立即续片、轮换、等待或停止 |
+| `AUTONOMY_SLICE_LIMIT` | 项目 turns/预算保险命中，不等于额度耗尽 | GENERAL 根据实时/累计用量决定立即续片、轮换、等待或停止 |
 | `AUTHENTICATION` | 登录或令牌失效 | 在普通终端恢复对应 CLI 登录 |
 | `MODEL_UNAVAILABLE` | 模型标识无效或账户无访问权 | 改用 CLI 支持的别名/完整 slug 后重新预检 |
 | `PERMISSION` | 角色所需能力未授权 | 只调整确有需要的最小权限 |

@@ -33,7 +33,8 @@ Commands:
   supervise [options]     Run the multi-window, quota-aware outer supervisor.
   supervisor-status      Show persisted outer-supervisor state.
   supervisor-action ACTION [EVENT_ID]
-                         Submit an attached MONITOR decision at a safe boundary.
+                         Submit an attached GENERAL supervision decision at a
+                         safe boundary.
 
 Cycle options:
   --implementer, --implementer-agent claude|codex

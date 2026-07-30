@@ -17,9 +17,9 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/run-monitor.sh --event TYPE [options]
 
-Starts or resumes the task-scoped read-only MONITOR conversation for an event
-boundary. It never edits the repository or starts a work Agent. The report is
-stored in ignored artifacts.
+Starts or resumes the task-scoped read-only GENERAL supervisor conversation for
+an event boundary. It never edits the repository or starts a work Agent. The
+report is stored in ignored artifacts.
 
 Options:
   --event TYPE
@@ -50,11 +50,11 @@ while (( $# > 0 )); do
     --model) monitor_model="${2:-}"; shift 2 ;;
     --effort) monitor_effort="${2:-}"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
-    *) printf 'Unknown monitor option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    *) printf 'Unknown GENERAL supervision option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-[[ -n "$event" ]] || { printf 'MONITOR event is required.\n' >&2; exit 2; }
+[[ -n "$event" ]] || { printf 'GENERAL supervision event is required.\n' >&2; exit 2; }
 agent_validate_executor "$monitor_agent" || exit 2
 agent_validate_model "$monitor_model" || exit 2
 agent_validate_effort "$monitor_effort" || exit 2
@@ -77,7 +77,7 @@ if [[ "$monitor_agent" == "claude" ]]; then
   )" || exit 2
 fi
 runner="$ROOT_DIR/scripts/agent-runners/$monitor_agent.sh"
-[[ -x "$runner" ]] || { printf 'Monitor adapter is unavailable: %s\n' "$runner" >&2; exit 127; }
+[[ -x "$runner" ]] || { printf 'GENERAL adapter is unavailable: %s\n' "$runner" >&2; exit 127; }
 
 mkdir -p "$ARTIFACT_DIR" "$RUN_DIR"
 event_slug="$(printf '%s' "$event" | tr -c '[:alnum:]_.-' '_')"
@@ -92,10 +92,10 @@ task_id="$(sed -n 's/^ACTIVE_TASK_ID=//p' "$AGENT_DIR/state.env" | head -n 1)"
 head_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 
 agent_prepare_role_session \
-  "$task_id" MONITOR "$monitor_agent" "$monitor_model" "$monitor_effort"
+  "$task_id" GENERAL "$monitor_agent" "$monitor_model" "$monitor_effort"
 
 agent_write_run_manifest \
-  "$manifest_file" "$run_id" "$task_id" 0 MONITOR \
+  "$manifest_file" "$run_id" "$task_id" 0 GENERAL \
   "$monitor_agent" "$monitor_model" "$monitor_effort" read-only \
   "$monitor_timeout" "$head_commit" "$head_commit" "$report_file"
 agent_append_run_session \
@@ -106,23 +106,24 @@ agent_append_run_limits \
   "$claude_context_rotate_tokens"
 
 if [[ -n "$AGENT_SESSION_ROTATED_FROM" ]]; then
-  context_instructions="The prior raw MONITOR session
+  context_instructions="The prior raw GENERAL supervisor session
 $AGENT_SESSION_ROTATED_FROM exceeded its context guard. Continue the same
-task-scoped MONITOR role from persisted supervisor state, event logs and run
+task-scoped GENERAL role from persisted supervisor state, event logs and run
 manifests; do not reconstruct unrelated business history."
 elif [[ "$AGENT_SESSION_MODE" == "resume" ]]; then
-  context_instructions="Resume this task-scoped MONITOR conversation. Re-read
+  context_instructions="Resume this task-scoped GENERAL supervisor conversation. Re-read
 only current supervisor state, the new event evidence and control files that
 changed since the previous event."
 else
-  context_instructions="Initialize the task-scoped MONITOR conversation from
+  context_instructions="Initialize the task-scoped GENERAL supervisor conversation from
 the current project protocol, supervisor state and this event."
 fi
 
 cat >"$prompt_file" <<EOF
 You are one event-driven Agent invocation with the explicitly assigned role
-MONITOR. You are not IMPLEMENTER or REVIEWER. Do not judge business quality,
-edit files, start another Agent, or change Git. Your sandbox is read-only.
+GENERAL in its supervisor-event context. The project has no separate MONITOR
+role. You are not IMPLEMENTER or REVIEWER. Do not judge business quality, edit
+files, start another Agent, or change Git. Your sandbox is read-only.
 
 Event: $event
 Stage: $stage
@@ -134,7 +135,7 @@ Session generation: $AGENT_SESSION_GENERATION
 
 $context_instructions
 
-Read PROJECT.md, AGENT_PROTOCOL.md, .agent/roles/MONITOR.md,
+Read PROJECT.md, AGENT_PROTOCOL.md, .agent/roles/GENERAL.md,
 .agent/state.env, .agent/runtime.env, the current Git status, the latest cycle
 summary, $STOP_FILE and .agent/artifacts/supervisor/action-request.env when
 present, the supervisor usage ledger, and only the control/process evidence
@@ -142,7 +143,7 @@ needed to classify this event. Respect CAN_CONTINUE=NO: in that case choose
 WAIT_FOR_QUOTA or STOP_OWNER.
 
 Output a concise Simplified Chinese Markdown report. The first heading must be
-"# Monitor Event Report". Include exactly one standalone action line chosen
+"# General Supervisor Event Report". Include exactly one standalone action line chosen
 from:
 
 MONITOR_ACTION: WAIT_FOR_QUOTA
@@ -160,11 +161,11 @@ to a real quota boundary. Do not propose business fixes.
 EOF
 
 if ! "$ROOT_DIR/scripts/agent-preflight.sh" \
-  --review-only --allow-dirty --skip-git-write \
+  --control-only --allow-dirty --skip-git-write \
   --reviewer-agent "$monitor_agent" \
   --reviewer-model "$monitor_model" \
   --reviewer-effort "$monitor_effort"; then
-  printf 'MONITOR was not started because executor preflight failed.\n' >&2
+  printf 'GENERAL supervisor event was not started because executor preflight failed.\n' >&2
   exit 6
 fi
 
@@ -174,9 +175,9 @@ export AGENT_CLAUDE_MAX_BUDGET_USD="$claude_max_budget_usd"
 export AGENT_EVENT_FILE="$events_file"
 export AGENT_LIVE_TELEMETRY_EXECUTOR="$monitor_agent"
 run_agent_process \
-  "MONITOR ($monitor_agent) event $event" \
+  "GENERAL supervisor ($monitor_agent) event $event" \
   "$monitor_timeout" "$heartbeat_seconds" "$termination_grace" "$log_file" -- \
-  "$runner" MONITOR "$monitor_model" "$monitor_effort" "$prompt_file" "$report_file"
+  "$runner" GENERAL "$monitor_model" "$monitor_effort" "$prompt_file" "$report_file"
 monitor_exit=$?
 unset AGENT_EVENT_FILE AGENT_LIVE_TELEMETRY_EXECUTOR
 unset AGENT_CLAUDE_MAX_TURNS AGENT_CLAUDE_MAX_BUDGET_USD
@@ -199,16 +200,16 @@ printf 'SESSION_ROTATION_REQUIRED=%s\n' "$session_rotation" >>"$manifest_file"
 agent_finish_run_manifest \
   "$manifest_file" "$run_status" "$monitor_exit" "$AGENT_RUN_REASON"
 if (( monitor_exit != 0 )); then
-  printf 'MONITOR event analysis failed (exit %s, reason %s).\n' \
+  printf 'GENERAL supervisor event analysis failed (exit %s, reason %s).\n' \
     "$monitor_exit" "$AGENT_RUN_REASON" >&2
   exit "$monitor_exit"
 fi
 
-if ! grep -Fqx '# Monitor Event Report' "$report_file" || \
+if ! grep -Fqx '# General Supervisor Event Report' "$report_file" || \
    [[ "$(grep -Ec '^MONITOR_ACTION: (WAIT_FOR_QUOTA|CONTINUE_NOW|ROTATE_AND_CONTINUE|STOP_OWNER|CONTROL_REPAIR_REQUIRED)$' "$report_file" || true)" != "1" ]]; then
-  printf 'MONITOR report format is invalid: %s\n' "$report_file" >&2
+  printf 'GENERAL supervisor report format is invalid: %s\n' "$report_file" >&2
   exit 4
 fi
 
-printf 'Monitor report: %s\n' "$report_file"
+printf 'GENERAL supervisor report: %s\n' "$report_file"
 grep -E '^MONITOR_ACTION:' "$report_file"

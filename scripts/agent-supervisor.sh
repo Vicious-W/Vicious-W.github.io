@@ -39,9 +39,9 @@ Role options:
   --monitor-model MODEL
   --monitor-effort LEVEL
   --monitor-mode attached|persistent-cli
-                         attached: the visible MONITOR conversation owns this
+                         attached: the visible GENERAL conversation owns this
                          foreground process; persistent-cli: start/resume one
-                         task-scoped CLI MONITOR at event boundaries.
+                         task-scoped read-only CLI GENERAL at event boundaries.
   --rounds N             Additional rounds requested now (default 1). One
                          round is exactly one IMPLEMENTER invocation.
   --max-rounds N         Deprecated alias for --rounds.
@@ -56,7 +56,7 @@ Recovery options:
   --quota-wait-seconds N Subsequent quota wait; default runtime.env value.
   --max-quota-resumes N  Hard recovery limit.
 
-Attached MONITOR actions:
+Attached GENERAL supervision actions:
   CONTINUE_NOW            Resume the interrupted role in the same context.
   ROTATE_AND_CONTINUE     Compact to a new role-session generation, then resume.
   WAIT_FOR_QUOTA          Wait for the configured quota window.
@@ -87,6 +87,10 @@ state_write() {
     printf 'LAST_STOP_REASON=%s\n' "$last_reason"
     printf 'IMPLEMENTER=%s/%s/%s\n' "$implementer_agent" "$implementer_model" "$implementer_effort"
     printf 'REVIEWER=%s/%s/%s\n' "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
+    printf 'GENERAL_SUPERVISOR=%s/%s/%s\n' "$monitor_agent" "$monitor_model" "$monitor_effort"
+    printf 'SUPERVISION_MODE=%s\n' "$monitor_mode"
+    printf 'LAST_SUPERVISION_ACTION=%s\n' "${last_monitor_action:-}"
+    # v5 state readers may still consume these compatibility keys.
     printf 'MONITOR=%s/%s/%s\n' "$monitor_agent" "$monitor_model" "$monitor_effort"
     printf 'MONITOR_MODE=%s\n' "$monitor_mode"
     printf 'REQUESTED_ROUNDS=%s\n' "${max_rounds:-1}"
@@ -114,6 +118,26 @@ refresh_cycle_summary() {
 
 stop_value() {
   sed -n "s/^${1}=//p" "$STOP_FILE" 2>/dev/null | head -n 1
+}
+
+usage_reset_epoch() {
+  local usage_path="${1:-}"
+  local usage_absolute=""
+
+  [[ -n "$usage_path" ]] || return 1
+  if [[ "$usage_path" == /* ]]; then
+    usage_absolute="$usage_path"
+  else
+    usage_absolute="$ROOT_DIR/$usage_path"
+  fi
+  [[ -s "$usage_absolute" ]] || return 1
+  node -e '
+    const fs = require("fs");
+    const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const value = Number(data.rateLimitResetsAt);
+    if (!Number.isInteger(value) || value <= 0) process.exit(1);
+    process.stdout.write(String(value));
+  ' "$usage_absolute" 2>/dev/null
 }
 
 is_protected_recovery_path() {
@@ -223,19 +247,19 @@ submit_monitor_action() {
   case "$action" in
     CONTINUE_NOW|ROTATE_AND_CONTINUE|WAIT_FOR_QUOTA|STOP_OWNER) ;;
     *)
-      printf 'Invalid MONITOR action: %s\n' "$action" >&2
+      printf 'Invalid GENERAL supervision action: %s\n' "$action" >&2
       return 2
       ;;
   esac
   [[ -s "$ACTION_REQUEST_FILE" ]] || {
-    printf 'No attached MONITOR action is currently pending.\n' >&2
+    printf 'No attached GENERAL supervision action is currently pending.\n' >&2
     return 2
   }
   active_event_id="$(
     sed -n 's/^EVENT_ID=//p' "$ACTION_REQUEST_FILE" | head -n 1
   )"
   [[ -n "$active_event_id" ]] || {
-    printf 'Pending MONITOR request has no event ID.\n' >&2
+    printf 'Pending GENERAL supervision request has no event ID.\n' >&2
     return 2
   }
   supervisor_status="$(
@@ -246,11 +270,11 @@ submit_monitor_action() {
   )"
   if [[ "$supervisor_status" != "AWAITING_MONITOR_ACTION" || \
         "$state_event_id" != "$active_event_id" ]]; then
-    printf 'MONITOR action request is stale or supervisor is not waiting.\n' >&2
+    printf 'GENERAL supervision action request is stale or supervisor is not waiting.\n' >&2
     return 2
   fi
   if [[ -n "$requested_event_id" && "$requested_event_id" != "$active_event_id" ]]; then
-    printf 'MONITOR action event mismatch: expected %s, got %s.\n' \
+    printf 'GENERAL supervision action event mismatch: expected %s, got %s.\n' \
       "$active_event_id" "$requested_event_id" >&2
     return 2
   fi
@@ -260,7 +284,7 @@ submit_monitor_action() {
     printf 'SUBMITTED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   } >"$response_tmp"
   mv "$response_tmp" "$ACTION_RESPONSE_FILE"
-  printf 'Submitted MONITOR action %s for event %s.\n' \
+  printf 'Submitted GENERAL supervision action %s for event %s.\n' \
     "$action" "$active_event_id"
 }
 
@@ -304,7 +328,7 @@ dispatch_monitor_event() {
   MONITOR_DECISION=""
 
   if [[ "$monitor_mode" == "attached" ]]; then
-    event_record "attached MONITOR handoff: event=$event stage=$stage exit=$event_exit"
+    event_record "attached GENERAL handoff: event=$event stage=$stage exit=$event_exit"
     printf '[%s] ATTACHED_MONITOR_EVENT: %s/%s (exit %s).\n' \
       "$(date -u +'%H:%M:%SZ')" "$stage" "$event" "$event_exit"
     return 0
@@ -364,7 +388,7 @@ request_monitor_action() {
       CONTINUE_NOW|ROTATE_AND_CONTINUE|WAIT_FOR_QUOTA|STOP_OWNER) ;;
       CONTROL_REPAIR_REQUIRED) MONITOR_DECISION=STOP_OWNER ;;
       *)
-        printf 'Persistent MONITOR returned no valid action: %s\n' \
+        printf 'Persistent GENERAL supervisor returned no valid action: %s\n' \
           "${MONITOR_DECISION:-missing}" >&2
         return 1
         ;;
@@ -372,12 +396,12 @@ request_monitor_action() {
   elif [[ -n "${AGENT_SUPERVISOR_ATTACHED_ACTION:-}" ]]; then
     MONITOR_DECISION="$AGENT_SUPERVISOR_ATTACHED_ACTION"
   else
-    printf '\nMONITOR decision required; no work Agent is running.\n'
+    printf '\nGENERAL supervision decision required; no work Agent is running.\n'
     printf '  Event ID: %s\n' "$pending_action_id"
     printf '  Stage: %s\n' "$stage"
     printf '  Usage: %s\n' "${last_usage_file:-unavailable}"
     printf '  Ledger: %s\n' "${USAGE_LEDGER_FILE#"$ROOT_DIR/"}"
-    printf 'Submit from this attached MONITOR conversation:\n'
+    printf 'Submit from this attached GENERAL conversation:\n'
     printf '  ./scripts/agent-cycle.sh supervisor-action ACTION %s\n' \
       "$pending_action_id"
     deadline=$(( $(date +%s) + monitor_action_timeout ))
@@ -385,7 +409,7 @@ request_monitor_action() {
     while true; do
       now="$(date +%s)"
       if (( now >= deadline )); then
-        printf 'Timed out waiting for attached MONITOR action.\n' >&2
+        printf 'Timed out waiting for attached GENERAL action.\n' >&2
         return 1
       fi
       if [[ -s "$ACTION_RESPONSE_FILE" ]]; then
@@ -419,12 +443,12 @@ request_monitor_action() {
       ;;
     WAIT_FOR_QUOTA|STOP_OWNER) ;;
     *)
-      printf 'Invalid MONITOR decision: %s\n' "${MONITOR_DECISION:-missing}" >&2
+      printf 'Invalid GENERAL supervision decision: %s\n' "${MONITOR_DECISION:-missing}" >&2
       return 1
       ;;
   esac
   last_monitor_action="$MONITOR_DECISION"
-  event_record "MONITOR action $MONITOR_DECISION for $pending_action_id"
+  event_record "GENERAL supervision action $MONITOR_DECISION for $pending_action_id"
   rm -f -- "$ACTION_REQUEST_FILE" "$ACTION_RESPONSE_FILE"
   pending_action_id=""
 }
@@ -630,8 +654,8 @@ event_record "supervisor started"
 if [[ "$monitor_mode" == "persistent-cli" && \
       "${AGENT_SUPERVISOR_MONITOR_ON_ERROR:-1}" == "1" ]]; then
   if ! dispatch_monitor_event SUPERVISOR_START "$next_stage" 0 ""; then
-    state_write STOPPED MONITOR 0 "$quota_resumes" "" 6 MONITOR_START_FAILED
-    event_record "persistent CLI MONITOR failed to initialize"
+    state_write STOPPED GENERAL 0 "$quota_resumes" "" 6 MONITOR_START_FAILED
+    event_record "persistent CLI GENERAL supervisor failed to initialize"
     refresh_cycle_summary 6
     exit 6
   fi
@@ -768,7 +792,7 @@ while true; do
         WAIT_FOR_QUOTA) ;;
       esac
       waiting_status="WAITING_FOR_BUDGET_WINDOW"
-      wait_label="MONITOR-selected quota window after budget/turn guard"
+      wait_label="GENERAL-selected quota window after budget/turn guard"
     else
       waiting_status="WAITING_FOR_QUOTA"
       wait_label="actual quota"
@@ -785,9 +809,15 @@ while true; do
     fi
     quota_resumes=$((quota_resumes + 1))
     now_epoch="$(date +%s)"
+    telemetry_resume_epoch="$(usage_reset_epoch "$last_usage_file" || true)"
     if [[ -n "$first_resume_epoch" && "$first_resume_epoch" -gt "$now_epoch" ]]; then
       resume_epoch="$first_resume_epoch"
       first_resume_epoch=""
+      event_record "using explicit first quota-resume time $resume_epoch"
+    elif [[ "$telemetry_resume_epoch" =~ ^[1-9][0-9]*$ ]] && \
+         (( telemetry_resume_epoch > now_epoch )); then
+      resume_epoch="$telemetry_resume_epoch"
+      event_record "using executor-reported quota reset $resume_epoch"
     elif [[ -n "$quota_anchor_epoch" ]]; then
       if (( now_epoch < quota_anchor_epoch )); then
         resume_epoch="$quota_anchor_epoch"
@@ -809,7 +839,7 @@ while true; do
     wait_until_epoch "$resume_epoch" "$supervisor_heartbeat" "$waiting_status"
     if [[ "$monitor_mode" == "persistent-cli" ]]; then
       dispatch_monitor_event WINDOW_RESUME "$resume_stage" 0 "" || {
-        state_write STOPPED MONITOR "$attempt" "$quota_resumes" "" \
+        state_write STOPPED GENERAL "$attempt" "$quota_resumes" "" \
           6 MONITOR_RESUME_FAILED
         refresh_cycle_summary 6
         exit 6

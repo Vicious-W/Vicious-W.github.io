@@ -10,7 +10,7 @@ Codex 是本项目支持的一种 Agent 执行器，不与任何角色固定绑�
 
 ## 身份选择
 
-- 项目所有者或父脚本明确指定 `GENERAL`、`MONITOR`、`IMPLEMENTER` 或 `REVIEWER` 时，读取
+- 项目所有者或父脚本明确指定 `GENERAL`、`IMPLEMENTER` 或 `REVIEWER` 时，读取
   `.agent/roles/<ROLE>.md` 并严格按该角色工作；
 - 未明确指定角色时，身份默认为 `GENERAL`；
 - 指定信息冲突时停止，不自行猜测或切换身份。

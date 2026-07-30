@@ -177,13 +177,19 @@ fi
   fi
   supervisor_status="$(supervisor_value SUPERVISOR_STATUS)"
   if [[ -n "$supervisor_status" ]]; then
-    printf -- '- 外层监督：`%s`，阶段 `%s`，额度窗口恢复 `%s` 次，自主切片 `%s` 次，Monitor 模式 `%s`\n' \
+    supervision_mode="$(supervisor_value SUPERVISION_MODE)"
+    [[ -n "$supervision_mode" ]] || \
+      supervision_mode="$(supervisor_value MONITOR_MODE)"
+    last_supervision_action="$(supervisor_value LAST_SUPERVISION_ACTION)"
+    [[ -n "$last_supervision_action" ]] || \
+      last_supervision_action="$(supervisor_value LAST_MONITOR_ACTION)"
+    printf -- '- 外层监督：`%s`，阶段 `%s`，额度窗口恢复 `%s` 次，自主切片 `%s` 次，GENERAL 监督模式 `%s`\n' \
       "$supervisor_status" "$(supervisor_value CURRENT_STAGE)" \
       "$(supervisor_value QUOTA_RESUMES)" \
-      "$(supervisor_value AUTONOMY_SLICES)" "$(supervisor_value MONITOR_MODE)"
-    if [[ -n "$(supervisor_value LAST_MONITOR_ACTION)" ]]; then
-      printf -- '- 最近 Monitor 决策：`%s`\n' \
-        "$(supervisor_value LAST_MONITOR_ACTION)"
+      "$(supervisor_value AUTONOMY_SLICES)" "$supervision_mode"
+    if [[ -n "$last_supervision_action" ]]; then
+      printf -- '- 最近 GENERAL 监督决策：`%s`\n' \
+        "$last_supervision_action"
     fi
     if [[ -n "$(supervisor_value RESUME_AT)" ]]; then
       printf -- '- 计划恢复时间：`%s`\n' "$(supervisor_value RESUME_AT)"
@@ -328,7 +334,7 @@ fi
     printf -- '- 若追加轮回，父脚本会先审查当前实现，再决定是否进入下一次实现。\n'
   elif [[ -n "$stop_reason" ]]; then
     if [[ "$supervisor_status" == "AWAITING_MONITOR_ACTION" ]]; then
-      printf -- '- 工作 Agent 已退出；由附着式 Monitor 根据用量提交下一动作。\n'
+      printf -- '- 工作 Agent 已退出；由附着式 GENERAL 根据用量提交下一动作。\n'
     elif [[ "$supervisor_status" == "WAITING_FOR_QUOTA" || \
           "$supervisor_status" == "WAITING_FOR_BUDGET_WINDOW" || \
           "$supervisor_status" == "SCHEDULED" ]]; then

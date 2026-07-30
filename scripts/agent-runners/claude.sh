@@ -4,10 +4,10 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: claude.sh <IMPLEMENTER|REVIEWER|MONITOR> <model> <effort> <prompt-file> <output-file>
+Usage: claude.sh <GENERAL|IMPLEMENTER|REVIEWER> <model> <effort> <prompt-file> <output-file>
 
 Runs one Claude Code process using the permission profile for the assigned role.
-For REVIEWER or MONITOR, output-file receives the final Markdown report.
+For GENERAL or REVIEWER, output-file receives the final Markdown report.
 EOF
 }
 
@@ -30,8 +30,8 @@ fi
 
 prompt_text="$(<"$prompt_file")"
 session_id="${AGENT_SESSION_ID:-}"
-session_mode="${AGENT_SESSION_MODE:-$([[ "$role" == "MONITOR" ]] && printf ephemeral || printf new)}"
-event_file="${AGENT_EVENT_FILE:-$([[ "$role" == "MONITOR" ]] && printf '%s.events.json' "$output_file")}"
+session_mode="${AGENT_SESSION_MODE:-$([[ "$role" == "GENERAL" ]] && printf ephemeral || printf new)}"
+event_file="${AGENT_EVENT_FILE:-$([[ "$role" == "GENERAL" ]] && printf '%s.events.json' "$output_file")}"
 telemetry_script="$root_dir/scripts/lib/agent-telemetry.mjs"
 max_turns="${AGENT_CLAUDE_MAX_TURNS:-}"
 max_budget_usd="${AGENT_CLAUDE_MAX_BUDGET_USD:-}"
@@ -75,8 +75,8 @@ case "$session_mode" in
     session_args=(--resume "$session_id")
     ;;
   ephemeral)
-    [[ "$role" == "MONITOR" ]] || {
-      printf 'Ephemeral Claude sessions are reserved for MONITOR.\n' >&2
+    [[ "$role" == "GENERAL" ]] || {
+      printf 'Ephemeral Claude sessions are reserved for GENERAL supervisor events.\n' >&2
       exit 2
     }
     session_args=(--no-session-persistence)
@@ -145,7 +145,7 @@ case "$role" in
       || claude_exit=$?
     finish_claude "$claude_exit"
     ;;
-  REVIEWER|MONITOR)
+  GENERAL|REVIEWER)
     if [[ "$output_file" == "-" ]]; then
       printf 'Claude %s requires a report output file.\n' "$role" >&2
       exit 2

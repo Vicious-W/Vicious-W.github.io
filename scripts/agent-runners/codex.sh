@@ -4,10 +4,10 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: codex.sh <IMPLEMENTER|REVIEWER|MONITOR> <model> <effort> <prompt-file> <output-file>
+Usage: codex.sh <GENERAL|IMPLEMENTER|REVIEWER> <model> <effort> <prompt-file> <output-file>
 
 Runs one Codex process using the sandbox profile for the assigned role.
-For REVIEWER or MONITOR, output-file receives the final Markdown report.
+For GENERAL or REVIEWER, output-file receives the final Markdown report.
 EOF
 }
 
@@ -30,8 +30,8 @@ fi
 
 prompt_text="$(<"$prompt_file")"
 session_id="${AGENT_SESSION_ID:-}"
-session_mode="${AGENT_SESSION_MODE:-$([[ "$role" == "MONITOR" ]] && printf ephemeral || printf new)}"
-event_file="${AGENT_EVENT_FILE:-$([[ "$role" == "MONITOR" ]] && printf '%s.events.jsonl' "$output_file")}"
+session_mode="${AGENT_SESSION_MODE:-$([[ "$role" == "GENERAL" ]] && printf ephemeral || printf new)}"
+event_file="${AGENT_EVENT_FILE:-$([[ "$role" == "GENERAL" ]] && printf '%s.events.jsonl' "$output_file")}"
 
 if [[ -z "$event_file" ]]; then
   printf 'AGENT_EVENT_FILE is required for persistent Codex runs.\n' >&2
@@ -81,8 +81,8 @@ run_codex() {
         "$session_id" "$prompt_text" | tee "$event_file"
       ;;
     ephemeral)
-      [[ "$role" == "MONITOR" ]] || {
-        printf 'Ephemeral Codex sessions are reserved for MONITOR.\n' >&2
+      [[ "$role" == "GENERAL" ]] || {
+        printf 'Ephemeral Codex sessions are reserved for GENERAL supervisor events.\n' >&2
         return 2
       }
       codex exec \
@@ -109,7 +109,7 @@ case "$role" in
   IMPLEMENTER)
     run_codex workspace-write true
     ;;
-  REVIEWER|MONITOR)
+  GENERAL|REVIEWER)
     if [[ "$output_file" == "-" ]]; then
       printf 'Codex %s requires a report output file.\n' "$role" >&2
       exit 2

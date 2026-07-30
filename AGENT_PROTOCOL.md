@@ -11,7 +11,7 @@
 调用身份 = 角色契约 + 执行器 + 模型/推理强度 + 权限配置 + 任务边界
 ```
 
-- **角色契约**：`GENERAL`、`MONITOR`、`IMPLEMENTER` 或 `REVIEWER`；
+- **角色契约**：`GENERAL`、`IMPLEMENTER` 或 `REVIEWER`；
 - **执行器**：当前支持 `claude` 与 `codex`；
 - **运行参数**：模型、推理强度、超时和非交互权限；
 - **任务边界**：任务 ID、轮回编号、基准提交、目标提交和允许输出。
@@ -29,21 +29,15 @@
 身份信息冲突、缺失关键运行清单或角色无法安全履行时，Agent 必须停止并把控制权
 交还所有者。Agent 不得自行从一个角色切换到另一个角色。
 
-## 四种角色
+## 三种角色
 
 ### GENERAL
 
-默认通用身份。直接协助项目所有者分析、规划、维护基础设施或完成所有者明确授权
-的工作。其范围由当前指令决定，不自动承担正式轮回或正式审查职责。
+默认统一身份。直接协助项目所有者分析、规划、维护基础设施或完成明确授权的工作，
+并在所有者要求时负责轮转监督、额度恢复与控制面修复。监督是 GENERAL 的运行上下文，
+不再通过切换到独立 MONITOR 身份实现。
 
 完整契约见 `.agent/roles/GENERAL.md`。
-
-### MONITOR
-
-专用轮回监督身份。负责跨额度窗口的流程监视、恢复检查点、定时续跑和异常交接，
-不评价实现质量，也不代替审查者。
-
-完整契约见 `.agent/roles/MONITOR.md`。
 
 ### IMPLEMENTER
 
@@ -97,16 +91,16 @@ transcript，不构成压缩；只有新 session generation 才以 Git、当前�
 输出与任务完成概率。确定性工具运行期间若 API 用量不增长，应等待工具完成，不能为了
 制造“正在工作”的表象而重启模型。
 
-## 工作 Agent 与监视者并发
+## 工作 Agent 与 GENERAL 监督并发
 
-任意时刻最多运行一个工作 Agent：`IMPLEMENTER` 或 `REVIEWER`。MONITOR 可以在
+任意时刻最多运行一个工作 Agent：`IMPLEMENTER` 或 `REVIEWER`。GENERAL 可以在
 工作 Agent 运行期间并存，但只能读取流程、进程和仓库状态，不得修改业务文件、
 Git 或控制面。只有工作 Agent 完全退出后，监督层才能执行恢复或状态写入。
 
-中立监督脚本负责长时间等待和确定性动作，不消耗模型 token。MONITOR 不做高频
-AI 轮询。可见的附着式 MONITOR 必须从开始到终止一直持有前台 supervisor 工具
+中立监督脚本负责长时间等待和确定性动作，不消耗模型 token。GENERAL 不做高频
+AI 轮询。可见的附着式 GENERAL 必须从开始到终止一直持有前台 supervisor 工具
 调用；该对话一旦结束，shell 无法重新唤醒它。无人值守模式则由父脚本在启动时创建
-一个任务级 CLI MONITOR 会话，并在后续事件边界精确恢复该会话。
+一个任务级只读 CLI GENERAL 控制会话，并在后续事件边界精确恢复该会话。
 
 ## 中立父脚本
 
@@ -153,12 +147,13 @@ Agent 不递归启动下一 Agent；角色交接由仍在前台等待子进程�
 
 `scripts/agent-supervisor.sh` 位于 cycle 之外，负责一次可能跨多个额度窗口的完整
 轮回运行：保存恢复现场、记录 `WAITING_FOR_QUOTA`、零 token 等待、按原角色续跑，
-并按 `attached` 或 `persistent-cli` 模式交接 MONITOR。Claude 非交互调用还必须
+并按 `attached` 或 `persistent-cli` 模式交接 GENERAL 监督上下文。Claude 非交互调用还必须
 具有最大自主轮次与 API 等价预算；命中任一保险时记为
 `AUTONOMY_SLICE_LIMIT`，但这不等于真实额度耗尽。监督器保存合法现场并进入
-`AWAITING_MONITOR_ACTION`：MONITOR 根据实时/累计用量选择立即续片、轮换上下文后
-续片、等待额度窗口或停止。`persistent-cli` 的 `MONITOR_ACTION` 必须被父脚本读取
-并执行，不能只生成装饰性报告。
+`AWAITING_MONITOR_ACTION`：GENERAL 根据实时/累计用量选择立即续片、轮换上下文后
+续片、等待额度窗口或停止。`AWAITING_MONITOR_ACTION` 与 `MONITOR_ACTION` 是为兼容
+现有状态文件和脚本保留的控制消息名，不表示存在 MONITOR 角色；`persistent-cli`
+必须读取并执行该动作，不能只生成装饰性报告。
 
 ## 运行清单
 

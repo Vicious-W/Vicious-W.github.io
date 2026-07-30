@@ -5,13 +5,13 @@
 
 ## 文件职责
 
-- `roles/GENERAL.md`：默认通用身份；
-- `roles/MONITOR.md`：跨额度窗口的只读监督身份；
+- `roles/GENERAL.md`：默认通用、控制面维护与跨额度窗口监督身份；
 - `roles/IMPLEMENTER.md`：专用实现身份；
 - `roles/REVIEWER.md`：专用独立审查身份；
 - `next-task.md`：所有者确认的当前执行切片；
 - `state.env`：任务、轮回、结论和上一轮实际运行配置；
-- `runtime.env`：三种专用角色的默认执行器、模型、effort、超时、Monitor 模式、
+- `runtime.env`：实现、审查与 GENERAL 监督上下文的默认执行器、模型、effort、超时、
+  Monitor 兼容模式名、
   Claude 自主预算和恢复策略；
 - `implementation-report.md`：最近一轮实现交接，由 IMPLEMENTER 更新；
 - `latest-review.md`：最近一次正式审查，由中立审查包装器替换；
@@ -20,8 +20,9 @@
 
 ## 身份规则
 
-直接启动 Agent 且没有明确指定身份时，默认是 `GENERAL`。只有项目所有者或父脚本
-明确分配后，Agent 才成为 `MONITOR`、`IMPLEMENTER` 或 `REVIEWER`。同一执行器
+直接启动 Agent 且没有明确指定身份时，默认是 `GENERAL`。GENERAL 同时负责普通协作、
+控制面维护与轮转监督；只有项目所有者或父脚本明确分配后，Agent 才成为
+`IMPLEMENTER` 或 `REVIEWER`。同一执行器
 可以在不同的新进程中承担不同角色；同一任务内只恢复同角色专属会话，绝不跨角色
 复用，也不得在一个进程中自行切换。
 
@@ -69,12 +70,12 @@
 
 `agent-supervisor.sh` 调用有界的 `agent-cycle.sh`，在额度中断后保存合法实现现场、
 记录恢复时间并由 shell 等待。等待期间没有工作 Agent 或模型请求，不消耗模型 token。
-`attached` 表示当前可见 MONITOR 对话从头到尾持有这个前台进程；该对话结束后
+`attached` 表示当前可见 GENERAL 对话从头到尾持有这个前台进程；该对话结束后
 shell 无法重新唤醒它。无人值守时使用 `--monitor-mode persistent-cli`，父脚本在
-启动时创建一个任务级 CLI MONITOR，并在后续事件边界恢复同一会话。
+启动时创建一个任务级只读 CLI GENERAL 控制会话，并在后续事件边界恢复同一会话。
 
 Claude `--print` 调用同时受 agentic-turn 上限和 API 等价预算约束。任一保险先到会产生
-`AUTONOMY_SLICE_LIMIT`。合法现场保存后进入 Monitor 决策点，而不是直接假定额度
+`AUTONOMY_SLICE_LIMIT`。合法现场保存后进入 GENERAL 决策点，而不是直接假定额度
 耗尽：可立即续片、轮换上下文后续片、等待窗口或停止。Claude 的逐事件
 `stream-json` 让心跳能够显示 assistant 事件、token 和缓存增长；最终 turns 只采用
 执行器终态结果，两个计数不互相冒充。监督窗口累计账本位于
@@ -122,7 +123,7 @@ ID、`new/resume` 模式、会话代次、预算保险及这些文件的路径�
 把它缩短为某次续跑进程的起点。`DEFAULT_ROUNDS` 是每次命令默认追加的轮回数，
 不是任务生命周期的总上限。
 
-附着式 Monitor 在 `AWAITING_MONITOR_ACTION` 状态用以下命令提交决策：
+附着式 GENERAL 在 `AWAITING_MONITOR_ACTION` 状态用以下命令提交决策：
 
 ```bash
 ./scripts/agent-cycle.sh supervisor-action CONTINUE_NOW <EVENT_ID>
@@ -170,6 +171,6 @@ cat .agent/artifacts/runtime/last-stop.env
 
 权限、认证、额度、自主切片保险、MCP、超时、工作区污染、越权或报告无效都会立即
 停止，不会增加审查次数。普通 `cycle` 会停止；`supervise` 只对明确分类的额度或
-自主切片事件进行有界恢复，其他错误交给附着式或持久 CLI MONITOR 后停止。不要用
+自主切片事件进行有界恢复，其他错误交给附着式或持久 CLI GENERAL 控制会话后停止。不要用
 `git reset --hard`、`git clean -fd`
 或删除活动锁来恢复；先检查保留现场，再由所有者决定。

@@ -10,6 +10,7 @@ ARGS_FILE="$TEST_DIR/second-args"
 FAKE_SUMMARY="$TEST_DIR/fake-summary.sh"
 FAKE_MONITOR="$TEST_DIR/fake-monitor.sh"
 MONITOR_COUNT_FILE="$TEST_DIR/monitor-count"
+FAKE_USAGE_FILE="$TEST_DIR/fake-usage.json"
 ACTION_REQUEST_FILE="$ROOT_DIR/.agent/artifacts/supervisor/action-request.env"
 ACTION_RESPONSE_FILE="$ROOT_DIR/.agent/artifacts/supervisor/action-response.env"
 USAGE_LEDGER_FILE="$ROOT_DIR/.agent/artifacts/supervisor/usage-ledger.json"
@@ -26,7 +27,8 @@ EVENT_FILE="$ROOT_DIR/.agent/artifacts/supervisor/events.log"
 EVENT_BACKUP="$TEST_DIR/events.backup"
 
 mkdir -p "$TEST_DIR" "$(dirname "$STOP_FILE")"
-rm -f -- "$COUNT_FILE" "$ARGS_FILE" "$STOP_BACKUP" "$STATE_BACKUP" "$EVENT_BACKUP"
+rm -f -- "$COUNT_FILE" "$ARGS_FILE" "$FAKE_USAGE_FILE"
+rm -f -- "$STOP_BACKUP" "$STATE_BACKUP" "$EVENT_BACKUP"
 rm -f -- "$USAGE_LEDGER_BACKUP"
 rm -f -- "$MONITOR_COUNT_FILE"
 if [[ -f "$STOP_FILE" ]]; then
@@ -80,12 +82,17 @@ count=0
 count=\$((count + 1))
 printf '%s\n' "\$count" >"$COUNT_FILE"
 if (( count <= \${AGENT_FAKE_STOP_COUNT:-1} )); then
+  if [[ -n "\${AGENT_FAKE_USAGE_RESET_EPOCH:-}" ]]; then
+    printf '{"rateLimitResetsAt":%s}\n' \
+      "\$AGENT_FAKE_USAGE_RESET_EPOCH" >"$FAKE_USAGE_FILE"
+  fi
   {
     printf 'STOPPED_AT_UTC=2026-07-23T00:00:00Z\n'
     printf 'STAGE=REVIEWER\n'
     printf 'STOP_REASON=%s\n' "\${AGENT_FAKE_STOP_REASON:-USAGE_OR_BILLING_LIMIT}"
     printf 'EXIT_CODE=1\n'
     printf 'LOG_FILE=.agent/artifacts/supervisor-test/fake.log\n'
+    printf 'USAGE_FILE=%s\n' "$FAKE_USAGE_FILE"
     printf 'BASE_COMMIT=%s\n' "$TEST_REVIEW_BASE"
   } >"$STOP_FILE"
   exit 1
@@ -114,6 +121,7 @@ chmod +x "$FAKE_MONITOR"
 
 AGENT_SUPERVISOR_CYCLE_COMMAND="$FAKE_CYCLE" \
 AGENT_SUPERVISOR_SUMMARY_COMMAND="$FAKE_SUMMARY" \
+AGENT_FAKE_USAGE_RESET_EPOCH=2000000000 \
 AGENT_SUPERVISOR_NO_SLEEP=1 \
 AGENT_SUPERVISOR_SKIP_RECOVERY=1 \
 AGENT_SUPERVISOR_ALLOW_DIRTY_TEST=1 \
@@ -170,6 +178,13 @@ if grep -Fqx 'SUPERVISOR_STATUS=COMPLETE' "$SUMMARY_CAPTURE" 2>/dev/null; then
   printf 'PASS  final summary sees the persisted COMPLETE supervisor state\n'
 else
   printf 'FAIL  final summary ran before the COMPLETE state was persisted\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+if grep -Fq 'using executor-reported quota reset 2000000000' "$EVENT_FILE" && \
+   grep -Fq 'until 2033-05-18T03:33:20Z' "$EVENT_FILE"; then
+  printf 'PASS  executor-reported quota reset overrides the fixed anchor\n'
+else
+  printf 'FAIL  supervisor ignored the executor-reported quota reset\n' >&2
   failure_count=$((failure_count + 1))
 fi
 
@@ -243,9 +258,9 @@ persistent_supervisor_exit=$?
 if (( persistent_supervisor_exit == 0 )) && \
    [[ "$(sed -n '1p' "$MONITOR_COUNT_FILE" 2>/dev/null)" == "2" ]] && \
    grep -Fqx 'LAST_MONITOR_ACTION=CONTINUE_NOW' "$STATE_FILE"; then
-  printf 'PASS  persistent CLI MONITOR action controls the autonomy-guard resume\n'
+  printf 'PASS  persistent CLI GENERAL action controls the autonomy-guard resume\n'
 else
-  printf 'FAIL  persistent CLI MONITOR action was not executed by supervisor\n' >&2
+  printf 'FAIL  persistent CLI GENERAL action was not executed by supervisor\n' >&2
   failure_count=$((failure_count + 1))
 fi
 
@@ -275,7 +290,7 @@ if (( slice_limit_exit == 6 )) && \
    grep -Fqx 'LAST_STOP_REASON=MAX_AUTONOMY_SLICES' "$STATE_FILE" && \
    grep -Fqx 'PENDING_ACTION_ID=' "$STATE_FILE" && \
    [[ ! -e "$ACTION_REQUEST_FILE" && ! -e "$ACTION_RESPONSE_FILE" ]]; then
-  printf 'PASS  per-window slice limit prevents persistent MONITOR from restarting forever\n'
+  printf 'PASS  per-window slice limit prevents persistent GENERAL from restarting forever\n'
 else
   printf 'FAIL  per-window slice limit did not stop repeated automatic resumes\n' >&2
   failure_count=$((failure_count + 1))
@@ -283,10 +298,10 @@ fi
 
 if "$ROOT_DIR/scripts/agent-cycle.sh" \
      supervisor-action WAIT_FOR_QUOTA stale-event >/dev/null 2>&1; then
-  printf 'FAIL  attached MONITOR accepted an action with no pending event\n' >&2
+  printf 'FAIL  attached GENERAL accepted an action with no pending event\n' >&2
   failure_count=$((failure_count + 1))
 else
-  printf 'PASS  attached MONITOR rejects stale or unsolicited actions\n'
+  printf 'PASS  attached GENERAL rejects stale or unsolicited actions\n'
 fi
 
 if (( failure_count != 0 )); then

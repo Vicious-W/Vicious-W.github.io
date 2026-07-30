@@ -14,6 +14,7 @@ agent_runtime_init "$ROOT_DIR"
 
 check_implementation=1
 check_review=1
+control_only=0
 allow_dirty=0
 skip_git_write=0
 skip_external=0
@@ -36,6 +37,8 @@ It never starts an Agent.
 Options:
   --implementation-only       Check only the IMPLEMENTER configuration.
   --review-only               Check only the REVIEWER configuration.
+  --control-only              Check one read-only GENERAL supervisor-event
+                              configuration without task-phase eligibility.
   --implementer-agent NAME    claude or codex.
   --implementer-model MODEL
   --implementer-effort LEVEL
@@ -59,6 +62,12 @@ while (( $# > 0 )); do
     --review-only)
       check_implementation=0
       check_review=1
+      shift
+      ;;
+    --control-only)
+      check_implementation=0
+      check_review=1
+      control_only=1
       shift
       ;;
     --implementer-agent)
@@ -202,12 +211,17 @@ check_executor_external() {
   printf '# Agent preflight summary\n\n'
   printf -- '- Checked at: `%s`\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   printf -- '- Implementation checks: `%s`\n' "$check_implementation"
-  printf -- '- Review checks: `%s`\n' "$check_review"
+  printf -- '- Review checks: `%s`\n' \
+    "$((control_only == 1 ? 0 : check_review))"
+  printf -- '- GENERAL control-event checks: `%s`\n' "$control_only"
   if (( check_implementation == 1 )); then
     printf -- '- IMPLEMENTER: `%s / %s / %s`\n' \
       "$implementer_agent" "$implementer_model" "$implementer_effort"
   fi
-  if (( check_review == 1 )); then
+  if (( control_only == 1 )); then
+    printf -- '- GENERAL supervisor: `%s / %s / %s`\n' \
+      "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
+  elif (( check_review == 1 )); then
     printf -- '- REVIEWER: `%s / %s / %s`\n' \
       "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
   fi
@@ -248,7 +262,6 @@ required_files=(
   CLAUDE.md
   REVIEW_CONTRACT.md
   .agent/roles/GENERAL.md
-  .agent/roles/MONITOR.md
   .agent/roles/IMPLEMENTER.md
   .agent/roles/REVIEWER.md
   docs/engineering/SOURCE_SCENE.md
@@ -259,6 +272,7 @@ required_files=(
   docs/methodology/AI_Project_Meta_Method_v3.0_2026-07-23.md
   docs/methodology/AI_Project_Meta_Method_v4.0_2026-07-23.md
   docs/methodology/AI_Project_Meta_Method_v5.0_2026-07-24.md
+  docs/methodology/AI_Project_Meta_Method_v6.0_2026-07-29.md
   references/README.md
   .vscode/settings.json
   .agent/next-task.md
@@ -434,7 +448,9 @@ effective_max_rounds="${max_rounds_override:-$((current_round + default_rounds))
 task_status="$(sed -n 's/^ACTIVE_TASK_STATUS=//p' "$STATE_FILE" | head -n 1)"
 pending_review="$(sed -n 's/^PENDING_REVIEW=//p' "$STATE_FILE" | head -n 1)"
 task_can_run=0
-if [[ "$current_round" =~ ^[0-9]+$ && "$effective_max_rounds" =~ ^[1-9][0-9]*$ ]]; then
+if (( control_only == 1 )); then
+  task_can_run=1
+elif [[ "$current_round" =~ ^[0-9]+$ && "$effective_max_rounds" =~ ^[1-9][0-9]*$ ]]; then
   if [[ "$pending_review" == "YES" && "$task_status" == "AWAITING_OWNER" && \
         "$check_review" == "1" ]]; then
     task_can_run=1
@@ -445,7 +461,9 @@ if [[ "$current_round" =~ ^[0-9]+$ && "$effective_max_rounds" =~ ^[1-9][0-9]*$ ]
     task_can_run=1
   fi
 fi
-if (( task_can_run == 1 )); then
+if (( control_only == 1 )); then
+  record_pass 'GENERAL control-event preflight is independent of implementation/review task phase'
+elif (( task_can_run == 1 )); then
   record_pass "active task can run: status=$task_status, implementation=$current_round/$effective_max_rounds, pending_review=${pending_review:-NO}"
 else
   record_fail "active task cannot run: status=$task_status, implementation=$current_round/$effective_max_rounds, pending_review=${pending_review:-NO}"

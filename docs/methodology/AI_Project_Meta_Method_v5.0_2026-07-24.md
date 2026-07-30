@@ -1,5 +1,8 @@
 # AI Project Meta Method v5.0
 
+> 历史版本。当前身份与监督规则以
+> `AI_Project_Meta_Method_v6.0_2026-07-29.md` 为准。
+
 ## 面向可恢复会话与用量预算的人—多 Agent 角色化协作元方法
 
 - 版本：v5.0

@@ -52,7 +52,8 @@ docs/methodology/        项目构建方法论
 Agent 协作：
 
 - `AGENT_PROTOCOL.md`：角色、执行器、权限和身份分配总协议；
-- `.agent/roles/`：`GENERAL`、`MONITOR`、`IMPLEMENTER`、`REVIEWER` 四种角色契约；
+- `.agent/roles/`：`GENERAL`、`IMPLEMENTER`、`REVIEWER` 三种角色契约；GENERAL
+  同时负责通用协作和轮转监督；
 - `AGENTS.md`、`CLAUDE.md`：Codex 与 Claude Code 的薄入口，不再绑定角色；
 - `REVIEW_CONTRACT.md`：适用于任意审查执行器的报告和通过规则。
 
@@ -73,7 +74,7 @@ npm test
 默认循环仍采用 Claude Code 实现、Codex 审查，但可在启动时交换角色、改用同一种
 执行器或显式指定各自模型与 effort。直接进入项目而未指定专用角色的 Agent 默认
 为 `GENERAL`。预计会跨额度窗口时使用 `supervise`：外层 shell 会保存安全恢复
-检查点并零 Token 等待，MONITOR 只处理未知异常。同一任务内实现与审查分别恢复
+检查点并零 Token 等待，GENERAL 只在事件边界处理决策和未知异常。同一任务内实现与审查分别恢复
 自己的专属会话；`--rounds N` 指定本次追加的实现次数。
 
 详细说明见 `docs/guides/PROJECT_COMMAND_MANUAL.md`。
