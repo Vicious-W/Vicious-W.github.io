@@ -621,17 +621,20 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
 
 {
   // —— GLA-001 / GLA-002 / GLA-003 玻璃砖建筑与动态地板 ——
-  const full = floorBrickLayout(Infinity);
+  // R-002：地板上**没有**"固定装饰砖"这一档。性能不靠取消功能来买（那会让远处
+  // 地板不可抓、不可损伤、不可破碎），而是靠休眠 + 只同步醒着的实例。因此布局与
+  // 视口/性能档无关：任何调用都返回同一批独立动态砖。
+  const full = floorBrickLayout();
   const tiered = floorBrickLayout(15);
   const mobile = floorBrickLayout(10.5);
-  assert(full.fixed.length === 0 && full.dynamic.length > 200,
-    `无性能档时整块地板都是动态砖: ${full.dynamic.length}`);
-  assert(tiered.dynamic.length > 40 && tiered.fixed.length > 0,
-    `桌面档既有动态砖也有固定砖: ${tiered.dynamic.length} / ${tiered.fixed.length}`);
-  assert(mobile.dynamic.length < tiered.dynamic.length && mobile.dynamic.length > 20,
-    `移动档减少动态砖但不退化成不可移动平面: ${mobile.dynamic.length}`);
-  assert(tiered.dynamic.length + tiered.fixed.length === full.dynamic.length,
-    "分档不丢砖：动态 + 固定 = 全部格位");
+  assert(full.fixed === undefined && full.dynamic.length > 200,
+    `地板上不存在固定砖档，全部格位都是动态砖: ${full.dynamic.length}`);
+  assert(tiered.dynamic.length === full.dynamic.length &&
+    mobile.dynamic.length === full.dynamic.length,
+    `动态砖数量不随视口/性能档减少: ${mobile.dynamic.length} / ${tiered.dynamic.length} / ${full.dynamic.length}`);
+  assert(full.dynamic.every((p, i) =>
+    p.x === mobile.dynamic[i].x && p.z === mobile.dynamic[i].z),
+    "移动端与桌面端拿到逐块一致的规范布局，没有整片被降级成不可移动地面");
   assert(full.dynamic.every(p => Math.hypot(p.x, p.z) >= GLASS_ARCH.poolClearR),
     "地板砖不侵入池口/屏蔽体让位半径");
   assert(Math.abs(full.restY - (GLASS_ARCH.floorTop - GLASS_ARCH.floorBrick[1] / 2)) < 1e-9,
@@ -785,27 +788,28 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
 
   // —— R-005：首次有效交互前，地下设备层不推进任何状态 ——
   const idleCtl = createSessionController({});
-  const before = plantR1.snapshot();
+  const ugBefore = plantR1.snapshot();
   for (let i = 0; i < 120 * 60; i++) plantR1.update(idleCtl.state, 1 / 60);   // 未解锁 120 s
-  const after = plantR1.snapshot();
-  const drifted = Object.keys(before).filter(k => before[k] !== after[k]);
+  const ugAfter = plantR1.snapshot();
+  const drifted = Object.keys(ugBefore).filter(k => ugBefore[k] !== ugAfter[k]);
   assert(!idleCtl.state.unlocked, "该断言的前提：会话时钟仍未释放");
   assert(drifted.length === 0,
     `未解锁 120 秒后地下设备的动态状态全部保持初值: 漂移=${drifted.join(",") || "none"}`);
-  assert(after.sumpLevel === 0 && after.sumpPumpSpin === 0,
-    `集水液位与集水泵在联锁复位期间真的不动: level=${after.sumpLevel} spin=${after.sumpPumpSpin}`);
-  assert(after.purifyBeadPhase === 0,
-    `净化支路没有无来源的常开定值流量: phase=${after.purifyBeadPhase}`);
+  assert(ugAfter.sumpLevel === 0 && ugAfter.sumpPumpSpin === 0,
+    `集水液位与集水泵在联锁复位期间真的不动: level=${ugAfter.sumpLevel} spin=${ugAfter.sumpPumpSpin}`);
+  assert(ugAfter.purifyBeadPhase === 0,
+    `净化支路没有无来源的常开定值流量: phase=${ugAfter.purifyBeadPhase}`);
 
   // 解锁并带流量运行后，同一批设备才按上游状态推进
   idleCtl.unlock();
   idleCtl.startup();
+  idleCtl.pumpToggle();         // 一回路泵起来才有冷却剂流量（流向光珠读同一个代理）
   for (let i = 0; i < 600; i++) {
     idleCtl.update(1 / 60);
     plantR1.update(idleCtl.state, 1 / 60);
   }
   const running = plantR1.snapshot();
-  assert(running.sumpLevel > 0 && running.primaryBeadPhase !== after.primaryBeadPhase,
+  assert(running.sumpLevel > 0 && running.primaryBeadPhase !== ugAfter.primaryBeadPhase,
     `解锁并有流量后集水与流向光珠才推进: level=${running.sumpLevel} bead=${running.primaryBeadPhase}`);
   assert(running.interReturnBeadPhase !== 0,
     `中间回路回程总管有独立的流向表现: ${running.interReturnBeadPhase}`);

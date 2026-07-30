@@ -1346,6 +1346,26 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     glass: audio ? audio.status() : "NO_WEB_AUDIO",
     reactor: reactorAudio ? reactorAudio.status() : "NO_WEB_AUDIO"
   });
+  // 地下设备层的只读快照 + 三条回路拓扑（R-001 / R-005 的浏览器侧证据）：
+  // 换热器实体在整个 scene 里的数量、每条回路逐段闭合、以及联锁复位期间设备状态
+  // 是否真的停住，都必须能在真实页面上读出来，而不是只在 Node 逻辑测试里成立。
+  window.__SOURCE_PLANT__ = () => {
+    const hxNames = [];
+    scene.traverse(o => {
+      if (/^UG-H\d+$/.test(o.name)) hxNames.push(o.name);
+      else if (/hx|heatExchanger/i.test(o.name || "")) hxNames.push("STRAY:" + o.name);
+    });
+    const missing = [];
+    Object.values(plant.loops).forEach(chain => chain.forEach(id => {
+      if (id !== "pool" && id !== "site" && !scene.getObjectByName(id)) missing.push(id);
+    }));
+    return {
+      heatExchangers: hxNames.sort(),
+      loops: plant.loops,
+      loopNodesMissingFromScene: missing,
+      snapshot: plant.snapshot()
+    };
+  };
   // 渲染代价快照（绘制调用/三角形/活动刚体/粒子），供三视口性能记录
   window.__SOURCE_PERF__ = () => ({
     calls: renderer.info.render.calls,
