@@ -397,6 +397,18 @@ const reactor = createReactorModel({ reduceMotion: false });
     "安全格栅位于水面之上（玻璃不漂在水上）");
   const rods = reactor.controlRods;
   assert(!!rods.SHIM && !!rods.REG && !!rods.TRANS, "Pavia 三棒构型：SHIM / REG / TRANS");
+  // 玻璃可以被抓取伺服提过 0.58 高的栏杆丢到池外。掉落路径上的每一层**可见**结构
+  // 都必须有对应的落脚点，否则玻璃会穿过看得见的混凝土永远下坠（浏览器实测过）。
+  assert(reactor.shield.innerRadius === reactor.deck.outerRadius,
+    "生物屏蔽上盖内边与走道外沿相接：落点之间没有缝");
+  assert(reactor.shield.outerRadius > reactor.shield.innerRadius &&
+    reactor.shield.topY > reactor.deck.y,
+    `屏蔽上盖是高于走道的实体环: r ${reactor.shield.innerRadius}→${reactor.shield.outerRadius}, y=${reactor.shield.topY}`);
+  assert(reactor.shield.outerRadius < GLASS_ARCH.supportInnerR,
+    "屏蔽外皮到承托层内边之间是敞开采光井（可以看见地下设备）");
+  assert(UNDERGROUND_BOUNDS.floorY < reactor.poolBounds.floorY &&
+    UNDERGROUND_BOUNDS.half > GLASS_ARCH.supportInnerR,
+    `采光井底部有地坑底板兜底: floorY=${UNDERGROUND_BOUNDS.floorY}, half=${UNDERGROUND_BOUNDS.half}`);
   const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
   assert(dist(rods.SHIM, rods.TRANS) > 0.1 && dist(rods.TRANS, rods.REG) > 0.1 && dist(rods.SHIM, rods.REG) > 0.1,
     "三根控制棒位于互不相同的格位");

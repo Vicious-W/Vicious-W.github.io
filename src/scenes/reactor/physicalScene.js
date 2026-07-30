@@ -285,6 +285,43 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   }
   world.addBody(hallFloor);
 
+  // RP-001 生物屏蔽上盖的碰撞体（可见的 shieldTopCap 环：deck.outerRadius →
+  // shield.outerRadius，顶面 shield.topY）。栏杆只有 0.58 高，抓取伺服可以把玻璃提到
+  // y=11，所以玻璃**可以**被丢到池外——实测它会穿过这圈看得见的混凝土继续下坠。
+  // 这不是新增隐形平面：它逐段对齐已经画出来的八角上盖。
+  const shieldCap = new CANNON.Body({ mass: 0, material: glassPhys });
+  {
+    const SEG = 16;
+    const rIn = reactor.deck.outerRadius;
+    const rOut = reactor.shield.outerRadius;
+    const rMid = (rIn + rOut) / 2;
+    const halfRadial = (rOut - rIn) / 2;
+    const halfTangent = rMid * Math.tan(Math.PI / SEG) * 1.05;
+    const segShape = new CANNON.Box(new CANNON.Vec3(halfRadial, 0.12, halfTangent));
+    const q = new CANNON.Quaternion();
+    for (let i = 0; i < SEG; i++) {
+      const a = (i / SEG) * Math.PI * 2;
+      q.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), -a);
+      shieldCap.addShape(
+        segShape,
+        new CANNON.Vec3(Math.cos(a) * rMid, reactor.shield.topY - 0.12, Math.sin(a) * rMid),
+        q.clone()
+      );
+    }
+  }
+  world.addBody(shieldCap);
+
+  // LAB-003 地坑底板的碰撞体（可见的混凝土底板，UNDERGROUND_BOUNDS.floorY）。
+  // 屏蔽体外皮（4.9）与透明承托层内边（5.6）之间是敞开的采光井——那是有意的，
+  // 从操作层就能看见地下设备。但掉进去的玻璃必须停在地下设备层的地面上，
+  // 而不是永远下坠：没有这块底板时实测玻璃穿过 y=-1 后速度持续增长、永不休眠。
+  const pitFloor = new CANNON.Body({
+    mass: 0, material: glassPhys,
+    shape: new CANNON.Box(new CANNON.Vec3(UNDERGROUND_BOUNDS.half, 0.2, UNDERGROUND_BOUNDS.half)),
+    position: new CANNON.Vec3(0, UNDERGROUND_BOUNDS.floorY - 0.2, 0)
+  });
+  world.addBody(pitFloor);
+
   const hallWalls = new CANNON.Body({ mass: 0, material: glassPhys });
   {
     const w = HALL_COLLIDERS.wallInner;
