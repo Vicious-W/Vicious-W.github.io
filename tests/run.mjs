@@ -667,6 +667,24 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
     coreBounds: reactor.coreBounds, surfaceY: reactor.poolBounds.surfaceY,
     particleBudget: 200, intensityOf: s => cherenkovIntensity(s.powerProxy, s.pulsePowerProxy)
   });
+  // physicalScene 每帧在 applyCamera 里调用这些方法。工厂少导出一个，整个场景就在
+  // 首帧抛异常、页面空白——纯逻辑断言看不出来，所以在这里锁住 API 表面。
+  ["update", "setViewer", "snapshot", "dispose"].forEach(fn =>
+    assert(typeof chr[fn] === "function", `切伦科夫工厂导出 ${fn}()（physicalScene 每帧调用）`));
+  assert(chr.group && chr.group.isObject3D, "切伦科夫工厂导出可挂载的 group");
+
+  // 统一水体光程（CHR-002 / WTR-002）：同一个入口同时喂相机位置与连续浸没权重，
+  // 离堆芯越远、穿过的水层越厚，透射率必须单调下降
+  const V = (x, y, z) => new THREE.Vector3(x, y, z);
+  chr.setViewer(V(0, -2.8, 4), 1);
+  const near = chr.snapshot();
+  chr.setViewer(V(0, 8, 20), 0);
+  const far = chr.snapshot();
+  assert(far.corePathLength > near.corePathLength && far.coreTransmittance < near.coreTransmittance,
+    `水体光程随距离增长、透射率随之衰减: 近 ${near.corePathLength}/${near.coreTransmittance} → 远 ${far.corePathLength}/${far.coreTransmittance}`);
+  assert(near.submersion === 1 && far.submersion === 0,
+    `浸没权重与水面跨越读同一个连续量: ${near.submersion} / ${far.submersion}`);
+
   const shut = { powerProxy: 0, pulsePowerProxy: 0 };
   for (let i = 0; i < 120; i++) chr.update(1 / 60, shut);
   assert(chr.snapshot().particles === 0, "停堆时不发射粒子（池水里没有蓝点）");

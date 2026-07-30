@@ -1356,14 +1356,14 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       else if (/hx|heatExchanger/i.test(o.name || "")) hxNames.push("STRAY:" + o.name);
     });
     const missing = [];
-    Object.values(plant.loops).forEach(chain => chain.forEach(id => {
+    Object.values(underground.loops).forEach(chain => chain.forEach(id => {
       if (id !== "pool" && id !== "site" && !scene.getObjectByName(id)) missing.push(id);
     }));
     return {
       heatExchangers: hxNames.sort(),
-      loops: plant.loops,
+      loops: underground.loops,
       loopNodesMissingFromScene: missing,
-      snapshot: plant.snapshot()
+      snapshot: underground.snapshot()
     };
   };
   // 渲染代价快照（绘制调用/三角形/活动刚体/粒子），供三视口性能记录

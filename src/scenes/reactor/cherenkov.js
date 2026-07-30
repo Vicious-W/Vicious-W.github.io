@@ -346,7 +346,12 @@ export function createCherenkov({
       shown: +(raw * exposure).toFixed(4),
       particles: alive,
       budget: COUNT,
-      coreCenterY: +coreCenterY.toFixed(3)
+      coreCenterY: +coreCenterY.toFixed(3),
+      // 统一水体光程状态（CHR-002 / WTR-002）：相机到堆芯中心穿过的水层厚度、
+      // 由它得到的透射率、以及与水面/雾共用的连续浸没权重
+      corePathLength: +corePath.toFixed(3),
+      coreTransmittance: +coreTransmittance.toFixed(4),
+      submersion: +submersionUniform.value.toFixed(4)
     };
   }
 
@@ -355,5 +360,5 @@ export function createCherenkov({
     group.clear();
   }
 
-  return { group, update, dispose, snapshot, particleBudget: COUNT };
+  return { group, update, setViewer, dispose, snapshot, particleBudget: COUNT };
 }
