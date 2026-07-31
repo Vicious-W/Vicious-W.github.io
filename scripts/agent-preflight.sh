@@ -268,6 +268,8 @@ required_files=(
   docs/engineering/REACTOR_POOL_SYSTEM.md
   docs/engineering/REACTOR_MODEL.md
   docs/engineering/SOURCE_LAB_OPTICS.md
+  docs/engineering/FLY_PHYSICS.md
+  docs/engineering/FLY_SCENE_ARCHITECTURE.md
   docs/guides/PROJECT_COMMAND_MANUAL.md
   docs/methodology/AI_Project_Meta_Method_v3.0_2026-07-23.md
   docs/methodology/AI_Project_Meta_Method_v4.0_2026-07-23.md
