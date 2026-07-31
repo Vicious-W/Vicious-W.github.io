@@ -1,8 +1,8 @@
 # 项目参与者指令手册
 
-版本：v4.3
+版本：v4.4
 
-更新日期：2026-07-29
+更新日期：2026-07-31
 
 适用目录：`/home/vicious/projects/Vicious-W.github.io`
 
@@ -16,6 +16,8 @@ cd /home/vicious/projects/Vicious-W.github.io
 
 - 当前事实与技术结构：`PROJECT.md`
 - 正式目标与验收标准：`PROJECT_SPEC.md`
+- FLY 统一物理引擎：`docs/engineering/FLY_PHYSICS.md`
+- 多场景与 FLY 体验架构：`docs/engineering/FLY_SCENE_ARCHITECTURE.md`
 - SOURCE 物理系统：`docs/engineering/SOURCE_SCENE.md`
 - 反应堆池工程基线：`docs/engineering/REACTOR_POOL_SYSTEM.md`
 - 反应堆模型基线：`docs/engineering/REACTOR_MODEL.md`

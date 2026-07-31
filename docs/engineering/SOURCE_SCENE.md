@@ -1,8 +1,8 @@
 # SOURCE 场景工程设计基线
 
-DESIGN_STATUS: ACTIVE
+DESIGN_STATUS: STABLE_ACCEPTED
 
-本文件定义当前唯一场景《SOURCE》的空间关系、连续运行、跨系统物理耦合、
+本文件定义已实现并由所有者验收的场景《SOURCE》的空间关系、连续运行、跨系统物理耦合、
 重置规则和验收条件。完整反应堆池系统见 `REACTOR_POOL_SYSTEM.md`，堆芯内部结构
 见 `REACTOR_MODEL.md`；实验室、地下设备、自由相机、水体光学、辉光粒子、玻璃
 建筑和双控制台见 `SOURCE_LAB_OPTICS.md`。
@@ -10,8 +10,8 @@ DESIGN_STATUS: ACTIVE
 ## 1. 场景定义
 
 - 场景正式名称：`SOURCE`；
-- 当前网站只包含这个场景；
-- 未来可以增加其他场景，但不属于当前任务；
+- SOURCE 是网站两个已命名场景之一；另一场景 FLY 通过独立会话和物理世界开发；
+- 本文件只约束 SOURCE，不把 FLY 的大气、飞行器或场景生命周期混入反应堆业务；
 - 页面保持全屏、无可见文字、以蓝色为核心颜色；
 - 场景主要对象分为两个大部分：完整 Pavia TRIGA Mark II 反应堆池系统，以及位于
   其上部安全格栅的实心玻璃方块；
