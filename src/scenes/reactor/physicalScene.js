@@ -1692,6 +1692,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       delete window.__SOURCE_HOTSPOTS__;
       delete window.__SOURCE_ADVANCE__;
       delete window.__SOURCE_WATER__;
+      delete window.__SOURCE_PLANT__;
     }
   };
 }

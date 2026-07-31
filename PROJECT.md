@@ -40,8 +40,19 @@ SOURCE 的完整事实、近似和真实性边界保存在 `docs/engineering/SOU
 
 ## 当前目标：FLY
 
-`FLY` 是以真实大气、气象和飞行器为核心的无限天空旅程。当前代码尚未实现 FLY；
-本节记录已经由所有者锁定的目标，而不是声称已完成的功能。
+`FLY` 是以真实大气、气象和飞行器为核心的无限天空旅程。当前代码已建立第一阶段
+“晴空 + Cameron C-100 参考热气球”纵向切片，正在等待本任务正式审查；后续类别仍是
+锁定目标，不能把第一阶段实现误写成全部 FLY 已完成。
+
+当前第一阶段实现：
+
+- `src/core/sceneHost.js`：单 canvas、单活动场景的 SITE_SELECT / SOURCE / FLY 宿主与
+  资源代次；
+- `src/scenes/selector/selectorScene.js`：无文字实时三维 SOURCE / FLY 缩影入口；
+- `src/scenes/fly/`：天气/飞行器注册、`1/120 s` 权威仿真、标准大气、确定性分层风、
+  程序化区块与浮动原点、C-100 双体热气球、指南/触控/相机、状态音频和自动回收；
+- SOURCE 只增加 `sourceScene.js` 生命周期包装与遗漏调试钩子的 dispose 清理，既有业务
+  模型未改写。
 
 ### 体验定义
 

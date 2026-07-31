@@ -34,6 +34,14 @@ import { createCherenkov, exposureGain } from "../src/scenes/reactor/cherenkov.j
 import { createAutoConsole, AUTO_PHASE_ORDER } from "../src/scenes/reactor/autoConsole.js";
 import { createControlConsole } from "../src/scenes/reactor/controlConsole.js";
 import { createGlassArchitecture } from "../src/scenes/reactor/glassArchitecture.js";
+import { createSimulationClock } from "../src/core/simulationClock.js";
+import { standardAtmosphere, ATMOSPHERE_CONSTANTS } from "../src/scenes/fly/atmosphere/standardAtmosphere.js";
+import { createClearWeather } from "../src/scenes/fly/weather/clearWeather.js";
+import { createProceduralWorld, CHUNK_SIZE_M } from "../src/scenes/fly/world/proceduralWorld.js";
+import { C100_MANIFEST } from "../src/scenes/fly/vehicles/c100Manifest.js";
+import { aerodynamicDragForce } from "../src/scenes/fly/vehicles/hotAirBalloon.js";
+import { createFlySession } from "../src/scenes/fly/flySession.js";
+import { planBalloonRecovery } from "../src/scenes/fly/recovery/recoveryPlanner.js";
 import { readFileSync } from "node:fs";
 import * as THREE from "three";
 
@@ -1255,6 +1263,158 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   Object.entries(wiringTargets).forEach(([binding, instance]) => {
     if (binding !== "session") instance.dispose();
   });
+}
+
+// ————————————————— FLY unified simulation foundation —————————————————
+section("FLY fixed clock / atmosphere / deterministic world");
+{
+  let steps = 0;
+  const clock = createSimulationClock({ step: 1 / 120, maxSubsteps: 12, onStep: () => { steps++; } });
+  clock.resume();
+  for (let i = 0; i < 30; i++) clock.update(1 / 30);
+  assert(steps === 120 && Math.abs(clock.simTime - 1) < 1e-10,
+    `固定 1/120 s 时钟在 30 Hz 渲染下一秒正好执行 120 步: ${steps}`);
+  clock.update(10);
+  assert(steps === 132 && clock.droppedTime > 0,
+    "长帧只追赶 maxSubsteps 并明确丢弃积压时间，不产生死亡螺旋");
+  clock.dispose();
+
+  const sea = standardAtmosphere(0);
+  const h1 = standardAtmosphere(1000);
+  const h11 = standardAtmosphere(11000);
+  assert(Math.abs(sea.temperatureK - 288.15) < 1e-9 && Math.abs(sea.pressurePa - 101325) < 1e-6,
+    "U.S. Standard Atmosphere 海平面温度/压力基线准确");
+  assert(Math.abs(sea.densityKgM3 - 1.225) / 1.225 < 0.001,
+    `海平面标准密度误差 <0.1%: ${sea.densityKgM3.toFixed(5)} kg/m³`);
+  assert(h1.temperatureK < sea.temperatureK && h1.pressurePa < sea.pressurePa && h1.densityKgM3 < sea.densityKgM3,
+    "对流层温度、压力和密度随高度连续下降");
+  assert(Math.abs(h11.temperatureK - 216.65) < 0.01,
+    `11 km 分层边界温度连续: ${h11.temperatureK.toFixed(3)} K`);
+  assert(ATMOSPHERE_CONSTANTS.gravityMps2 === 9.80665, "标准重力常数有明确 SI 值");
+
+  const clearA = createClearWeather(1234);
+  const clearB = createClearWeather(1234);
+  const sampleA = clearA.sample({ x: 120, y: 360, z: -47 }, 18.2);
+  const sampleB = clearB.sample({ x: 120, y: 360, z: -47 }, 18.2);
+  assert(JSON.stringify(sampleA) === JSON.stringify(sampleB), "相同种子/位置/时间得到完全相同的晴空状态");
+  const lowWind = clearA.sample({ x: 120, y: 20, z: -47 }, 18.2).windVelocityMps;
+  const highWind = clearA.sample({ x: 120, y: 700, z: -47 }, 18.2).windVelocityMps;
+  assert(Math.hypot(lowWind.x - highWind.x, lowWind.z - highWind.z) > 1,
+    "跨高度采样得到可测的分层风向/风速差");
+  assert(sampleA.precipitationKgM2s === 0 && sampleA.liquidWaterKgM3 === 0,
+    "第一阶段晴空没有伪造降雨或雷暴状态");
+
+  const worldA = createProceduralWorld(991);
+  const worldB = createProceduralWorld(991);
+  const points = [[0, 0], [127.9, -64], [128.1, -64], [945, 812]];
+  assert(points.every(([x, z]) => JSON.stringify(worldA.terrainAt(x, z)) === JSON.stringify(worldB.terrainAt(x, z))),
+    "程序化地形由 seed + 逻辑世界坐标确定");
+  const edgeLeft = worldA.heightAt(CHUNK_SIZE_M - 1e-5, 17);
+  const edgeRight = worldA.heightAt(CHUNK_SIZE_M + 1e-5, 17);
+  assert(Math.abs(edgeLeft - edgeRight) < 1e-4, "相邻区块共享连续高度函数，边界无裂缝");
+  worldA.updateChunks({ x: 5000, z: -3500 });
+  assert(worldA.chunks.size === 25, `长距离移动后活动区块仍有界: ${worldA.chunks.size}`);
+  const beforeOrigin = worldA.snapshot();
+  const shift = worldA.maybeShiftOrigin({ x: 5000, y: 20, z: -3500 }, 12);
+  assert(shift && worldA.originShiftCount === 1 && beforeOrigin.seed === worldA.seed,
+    "跨阈值只迁移局部原点，世界种子与逻辑坐标不变");
+}
+
+section("FLY C-100 manifest / relative air / thermal causality");
+{
+  assert(C100_MANIFEST.geometry.gores.value === 16, "C-100 包络按官方 16 gores 建模");
+  assert(Math.abs(C100_MANIFEST.geometry.volume.value - 2831.6846592) / 2831.6846592 < 0.005,
+    `100,000 ft³ 公制转换在 0.5% 内: ${C100_MANIFEST.geometry.volume.value.toFixed(3)} m³`);
+  assert(Math.abs(C100_MANIFEST.geometry.height.value - 19.812) < 1e-9
+    && Math.abs(C100_MANIFEST.geometry.diameter.value - 17.3736) < 1e-9,
+    "65 ft 高度与 57 ft 直径转换准确");
+  assert(C100_MANIFEST.certifiedWeight.role === "limit-not-takeoff-mass"
+    && C100_MANIFEST.masses.envelope.value < C100_MANIFEST.certifiedWeight.value,
+    "certified weight、包络自重和实际质量字段没有混用");
+
+  const still = aerodynamicDragForce({ x: 4, y: -1, z: 2 }, { x: 4, y: -1, z: 2 }, 1.2, 0.5, 20);
+  assert(Math.hypot(still.x, still.y, still.z) < 1e-12,
+    "v_body == v_wind 时相对空气阻力为零");
+  const drag = aerodynamicDragForce({ x: 5, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, 1.2, 0.5, 20);
+  assert(drag.x < 0 && drag.y === 0 && drag.z === 0, "相对风阻力方向与相对空气速度相反");
+
+  const fly = createFlySession({ seed: 0x1234 });
+  fly.resume();
+  const cold = fly.snapshot().vehicle;
+  fly.setControl("burner", true);
+  fly.advance(1);
+  const warm = fly.snapshot().vehicle;
+  assert(warm.fuelKg < cold.fuelKg && warm.heatInputW > 0,
+    "burner 先消耗燃料并产生热功率");
+  assert(warm.internalTemperatureK > cold.internalTemperatureK
+    && warm.internalDensityKgM3 < cold.internalDensityKgM3
+    && warm.buoyancyN >= cold.buoyancyN,
+    "热输入随后提高内温、降低内部密度并增加净浮力趋势");
+  fly.setControl("burner", false);
+  const beforeVent = fly.snapshot().vehicle;
+  fly.setControl("vent", true);
+  fly.advance(4);
+  const afterVent = fly.snapshot().vehicle;
+  assert(afterVent.internalTemperatureK < beforeVent.internalTemperatureK
+    && afterVent.heatLossW > beforeVent.heatLossW,
+    "vent 增加焓损失并连续降低内部温度，不直接设置下降速度");
+  const fuelAfterVent = afterVent.fuelKg;
+  fly.advance(2);
+  assert(fly.snapshot().vehicle.fuelKg === fuelAfterVent, "燃烧器关闭后燃料严格不变且从不增加");
+  fly.dispose();
+}
+
+section("FLY render-rate determinism / origin / recovery");
+{
+  const runTimeline = hz => {
+    const fly = createFlySession({ seed: 0x7788 });
+    fly.clock.queue(0, () => fly.setControl("burner", true));
+    fly.clock.queue(28, () => fly.setControl("burner", false));
+    fly.clock.queue(48, () => fly.setControl("vent", true));
+    fly.clock.queue(56, () => fly.setControl("vent", false));
+    fly.resume();
+    for (let i = 0; i < hz * 120; i++) fly.update(1 / hz);
+    return fly.snapshot();
+  };
+  const r30 = runTimeline(30), r60 = runTimeline(60), r120 = runTimeline(120);
+  for (const field of ["internalTemperatureK", "fuelKg"]) {
+    const values = [r30.vehicle[field], r60.vehicle[field], r120.vehicle[field]];
+    assert(Math.max(...values) - Math.min(...values) < 1e-8,
+      `${field} 在 30/60/120 Hz 渲染节奏下确定一致`);
+  }
+  const heights = [r30.vehicle.heightAgl, r60.vehicle.heightAgl, r120.vehicle.heightAgl];
+  assert(Math.max(...heights) - Math.min(...heights) < 1e-8,
+    "120 s 后高度在 30/60/120 Hz 下确定一致");
+  assert(r30.world.originShiftCount > 0, `物理航程触发浮动原点迁移: ${r30.world.originShiftCount}`);
+  assert(r30.world.activeChunkCount === 25, "原点迁移与长距离飞行后区块数仍固定有界");
+
+  const recovery = createFlySession({ seed: 0xc1002026 });
+  recovery.resume();
+  recovery.setControl("burner", true);
+  recovery.advance(28);
+  recovery.setControl("burner", false);
+  const poseBeforeRequest = recovery.vehicle.snapshot();
+  const plan = planBalloonRecovery({ vehicle: recovery.vehicle, world: recovery.world, atmosphere: recovery.atmosphere, simTime: recovery.clock.simTime });
+  const poseAfterPlan = recovery.vehicle.snapshot();
+  assert(plan.writesPose === false
+    && JSON.stringify(poseBeforeRequest.basket) === JSON.stringify(poseAfterPlan.basket)
+    && JSON.stringify(poseBeforeRequest.envelope) === JSON.stringify(poseAfterPlan.envelope),
+    "AUTO_RECOVERY 规划只评估地形/风并输出控制目标，从不写篮筐或包络位姿");
+  assert(plan.selected?.terrain.safe && !["WATER", "FOREST", "ROAD"].includes(plan.selected.terrain.surface),
+    `规划器拒绝水面、树林和道路，选择安全地表: ${plan.selected?.terrain.surface}`);
+  recovery.requestRecovery();
+  let recoverySeconds = 0;
+  while (recovery.state.controlOwner !== "RECOVERED" && recoverySeconds < 420) {
+    recovery.advance(2); recoverySeconds += 2;
+  }
+  const landed = recovery.snapshot();
+  assert(landed.controlOwner === "RECOVERED" && landed.stage === "RECOVERED",
+    `AUTO_RECOVERY 通过同一物理在有界时间内真实接地回收: ${recoverySeconds}s`);
+  assert(landed.vehicle.contact && landed.vehicle.terrain.safe && landed.vehicle.burnerValve === 0,
+    "RECOVERED 只在安全地表接触稳定且燃烧器关闭后成立");
+  assert(recovery.state.recoveryPlans.every(entry => entry.writesPose === false),
+    "整个自动回收重规划历史均未获得位姿写权限");
+  recovery.dispose();
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

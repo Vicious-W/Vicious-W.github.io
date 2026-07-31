@@ -1,306 +1,312 @@
 # Agent Implementation Report
 
 IMPLEMENTATION_STATUS: COMPLETE
-VERDICT_ADDRESSED: none (latest review is `NOT_RUN` / `NOT_REVIEWED`)
+VERDICT_ADDRESSED: none — `.agent/latest-review.md` is `NOT_RUN / NOT_REVIEWED` for the
+previous task and contains no Blocker or Major for this task.
 
 ## Metadata
 
-- Task: `source-camera-control-refinement-2026-07-30`
-- Implementation round: 1 (absolute target for this parent run: 1)
-- Round review base commit: `b6b9caddd6eedee39fc90ed85daab268309ac4c6`
-- Last recovery checkpoint this slice started from: `43bd7f40d93d5937df4c0880e2f9cbc4b2d6acc1`
-- Implementer runtime: claude / opus / high
-- Session generation: 1 (role session `b9b4671a-091b-45b2-aba8-00323822e2ab`, resumed across
-  three autonomy slices; slices 1–3 produced recovery checkpoints `0ae673d…43bd7f4`)
-- Scope: SOURCE observation camera input and motion only. No laboratory, reactor,
-  underground, water, Cherenkov, console or glass business model was changed.
+- Task: `fly-foundation-hot-air-balloon-v1-2026-07-31`
+- Implementation round: 1 (absolute target for this parent run: 2)
+- Implementation segment: 1
+- Round review base commit: `a0f0907b0d42e6bfaed74811457c65a3bc8388ac`
+- Process base commit / current HEAD: `a4785e6f40c0a91d7f454c9f1d49c5cc4f40edcb`
+- Implementer runtime: codex / gpt-5.6-sol / xhigh
+- Session generation: 1 (new role session; run manifest
+  `.agent/artifacts/runs/implementation-r1-s1-20260731T180311Z-14431.env`)
+- Scope: the first complete FLY `clear + hotAirBalloonC100` vertical slice, the shared
+  multi-scene host, and only the minimum SOURCE lifecycle adapter/cleanup required by that host.
+- Git: no stage, commit, push, deploy, reset, clean, rebase, branch switch or Git-history write was
+  performed. The neutral wrapper still owns the checkpoint.
 
-## 1. Objective and what actually changed
+## 1. Outcome and changed components
 
-Owner-locked goal: rebuild the SOURCE observation camera so the laboratory can be
-inspected slowly and predictably. Files touched across this round
-(`git diff b6b9cad..working tree`):
+The site now opens in a textless real-time three-dimensional selector rather than directly creating
+SOURCE. One canvas and one host generation own exactly one of `SITE_SELECT`, `SOURCE`, or `FLY`.
+The FLY route supports the registered clear-weather/C-100 configuration, its vehicle-specific guide,
+explicit departure, manual burner and vent controls, three cameras, a deterministic journey with
+floating-origin shifts, and a physical automatic safe landing that ends only after stable contact.
 
-| File | Change |
-| --- | --- |
-| `src/scenes/reactor/freeCamera.js` | Camera state model, `beginOrbit()`, sensitivity, damped dolly, `panKeys()`, `tick()` |
-| `src/scenes/reactor/physicalScene.js` | Centre-ray focus pick, focus marker, wheel `deltaMode` normalisation, input ownership, blur cleanup, `__SOURCE_NAV__` verification hooks |
-| `src/styles/main.css` | `.physical-focus-marker` (blue, textless, 10 px, fades) |
-| `src/scenes/reactor/cherenkov.js` | `raycast = () => {}` on glow volume, bloom sprite, particle proxy |
-| `src/scenes/reactor/waterSystem.js` | `raycast = () => {}` on caustics and plume proxies |
-| `tests/run.mjs` | Camera logic tests rewritten and extended (338 checks total) |
-| `PROJECT.md` | Current-fact update for the camera (already in checkpointed history) |
+| Component ID | Files | Implemented result |
+| --- | --- | --- |
+| `SITE-HOST-001` | `src/core/sceneHost.js`, `resourceScope.js`, `src/main.js` | Single active scene generation; explicit create/dispose ownership; visibility/resize/Escape routing; test-only direct URL support; resource counters. |
+| `SITE-SELECT-001` | `src/scenes/selector/selectorScene.js` | Textless pickable SOURCE reactor-pool miniature and FLY 16-gore balloon miniature; pointer and keyboard activation; portrait framing. It never creates either business physics world. |
+| `SOURCE-LIFE-001` | `src/scenes/reactor/sourceScene.js`, one cleanup line in `physicalScene.js` | Idempotent SOURCE adapter around the accepted factory. Existing SOURCE owns its established visibility behavior. Dispose now also removes the previously omitted `__SOURCE_PLANT__` hook. No reactor, lab, water, glass, camera, console, or audio business behavior was rewritten. |
+| `FLY-REG-001` | `src/scenes/fly/registry.js` | Data-driven registries contain exactly `clear` and `hotAirBalloonC100`; compatibility, guide, control schema, recovery strategy, and source manifest are vehicle/weather data. |
+| `FLY-CLK-001` | `src/core/simulationClock.js`, `flySession.js` | `1/120 s` authoritative fixed step, timestamped action queue, 12-substep cap, explicit dropped backlog, pause/resume, previous/current snapshots, and render-only interpolation. |
+| `FLY-ATM-001` | `atmosphere/standardAtmosphere.js`, `weather/clearWeather.js` | U.S. Standard Atmosphere troposphere/lower-stratosphere baseline plus one coherent moist density, layered wind, continuous deterministic gusts, thermal columns/downwash, and near-ground mechanical turbulence; precipitation/cloud water/electric field remain zero for clear weather. |
+| `FLY-WORLD-001` | `world/proceduralWorld.js`, `worldView.js` | Seeded analytic terrain shared by render, ground contact, and landing safety; FIELD/FOREST/ROAD/WATER metadata; 25 bounded active chunks; continuous borders; instanced forest proxies; procedural sky/sun/fog; thermal-site 3D cloud clusters whose opacity reads atmospheric humidity; 96 m floating-origin threshold. |
+| `FLY-C100-GEO-001` | `vehicles/c100Manifest.js`, `balloonModel.js` | 16 separately grouped longitudinal gores, 24 vertical envelope rings, longitudinal/horizontal load tapes, Nomex mouth, top parachute vent, deflation line, four load lines, frame, twin burners/valves/flames, two tanks/valves/hoses, four-wall wicker basket with thickness/ribs/floor/rim, and physical burner/vent handles. |
+| `FLY-C100-THERM-001` | `vehicles/hotAirBalloon.js` | Fuel mass flow → thermal power → lumped internal energy → temperature/density/internal-air mass → displaced-air buoyancy. Heat transfer, mouth exchange, vent enthalpy loss, fuel exhaustion and maximum-temperature interlock are continuous states, not velocity commands. |
+| `FLY-C100-DYN-001` | `vehicles/hotAirBalloon.js` | Independent envelope and basket positions/velocities, tension-only spring/damper suspension, distinct relative-wind drag, gravity, terrain contact/friction, visible swing/line load, liftoff/landing stages, and a recovered envelope-unload visual proxy. There is no horizontal user force. |
+| `FLY-CTRL-001` | `flyScene.js`, `main.css` | Guide focus boundary, `Space`/burner, `V`/vent, `R`/recovery, `C`/camera, pointer-held physical handles, icon-only mobile controls, touch pointer cancellation, focus-loss zeroing, and icon-only abandon confirmation. Guide pause zeroes holds and does not accrue missed physics. |
+| `FLY-REC-001` | `recovery/recoveryPlanner.js`, `flySession.js` | Candidate scoring rejects WATER/FOREST/ROAD, slope, and dense obstacles; planner records `writesPose:false`; AUTO owns only burner/vent, replans near unsafe terrain, follows real wind/contact, and requires 3 s stable safe-field contact before `RECOVERED`. |
+| `FLY-CAM-001` | `flyScene.js` | PILOT (basket eye), CHASE, and ORBIT views read interpolated vehicle state only; camera switches do not write physics. |
+| `FLY-AUD-001` | `audio/flyAudio.js` | AudioContext is created only by departure gesture. Independent burner, relative-wind, fabric/swing, suspension-load and contact-impact voices read authoritative state; pause/dispose suspends or closes all nodes. |
 
-### CAM-001 centre focus
+`PROJECT.md` and `README.md` were updated from the now-false “FLY not implemented” fact to the
+present first-slice status. `tests/run.mjs` grew from 338 to 372 checks.
 
-- `pickFocusPoint()` casts an **independent** ray from NDC `(0, 0)` — the screen centre,
-  not the mouse position — on right-button `pointerdown` only.
-- The first hit with `distance > 1e-3` becomes the orbit focus. Purely optical proxies
-  (Cherenkov volume/bloom/particles, caustics, convection plume) now have `raycast`
-  disabled, so the focus can only land on real structure. This is the same principle
-  the spec already applies to those proxies ("particles are light-transport proxies,
-  they own no collision"), extended to picking; no whitelist/blacklist was needed.
-- `beginOrbit(hitPoint)` rebuilds the pivot **along the current view axis**
-  (`camera.position + forward * clamp(dist, min, max)`) rather than copying the hit
-  point. Inside the distance range this is bit-identical to the hit point; beyond
-  `maxDistance = 64` it prevents `apply()` from dragging the camera forward, i.e. no
-  jump at the instant the right button goes down. Covered by a dedicated node check.
-- No hit → pivot and distance are left untouched. That *is* the "stable virtual focus
-  along the current sight line at the existing focal length" the contract asks for; no
-  extra construction is needed.
-- The focus never re-picks during a drag: `orbit()` only writes yaw/pitch.
+## 2. Resource ownership and SOURCE protection
 
-### CAM-001 sensitivity
+- `SceneHost` tears down the current scene before incrementing the generation and constructing the
+  next. Each scene owns one renderer/RAF; only FLY owns a FLY clock/world, and only SOURCE owns its
+  existing cannon world.
+- `ResourceScope` records listeners, timers and DOM cleanup. FLY additionally disposes world chunk
+  geometry/materials, sky/cloud/tree resources, balloon geometry/materials, audio nodes/context,
+  clock/action queue, guide/controls, renderer, and `__FLY__`. The selector disposes both miniature
+  trees and its renderer. SOURCE remains behind an idempotent adapter.
+- Successful desktop browser sequence ended with counts
+  `created={SITE_SELECT:3,SOURCE:2,FLY:1}` and
+  `disposed={SITE_SELECT:3,SOURCE:1,FLY:1}` while the second SOURCE was the sole active scene.
+  After the first SOURCE return, SOURCE state and `__SOURCE_PLANT__` were absent before selector
+  creation continued.
+- First SOURCE interaction still selected `AUTO`, unlocked both accepted audio chains, preserved
+  21 intact cubes / 0 fragments / durability 1.0, and reported one SOURCE world/RAF. The second
+  SOURCE was a new `NONE / INTERLOCKED_RESET / unlocked:false` session with the same intact glass
+  inventory. The existing 338 SOURCE logic checks remained green.
 
-- `CAM_INPUT.orbitSpeed = 0.0018 rad/px`, applied identically to yaw and pitch.
-- Pitch stays bounded at `±88°`; yaw is unbounded and continuous (no `±π` wrap logic,
-  so no jump).
+## 3. Physical clock, world coordinates and atmosphere
 
-### CAM-001 centre marker
+- Authoritative step: `0.008333333333333333 s`; maximum catch-up: 12 substeps. Excess wall time is
+  counted as `droppedTime`, not replayed after a hidden tab. Guide and hidden-state pauses clear
+  continuous inputs and reset the accumulator on resume.
+- World state uses double-precision logical `x/y/z`. Render and camera positions subtract the current
+  origin. A shift snaps horizontal origin to the 128 m chunk grid and records its event without
+  changing logical position, velocity, temperature, fuel, wind phase, control owner or trajectory.
+- Active terrain is a `5 × 5 = 25` chunk window. Each chunk is 128 m and uses a 12 × 12 visible mesh;
+  stale chunks are disposed. Landing-region metadata uses deterministic 160 m cells so a normally
+  drifting balloon has a physically useful contact window. The canonical 70 m launch area is a
+  safe FIELD, matching the task's specified departure condition.
+- Standard-atmosphere cross-checks:
 
-- `.physical-focus-marker`: 10 px ring, `box-shadow 0 0 0 1px rgba(90,170,255,.55)`,
-  `pointer-events: none`, `aria-hidden`, no text. Appears on right-press and fades
-  itself out after `FOCUS_MARKER_MS = 1200` (literal reading of "短暂"), and is hidden
-  immediately on release, `pointercancel`, `lostpointercapture` and blur.
-- Because `apply()` ends with `camera.lookAt(pivot)` every frame, the locked focus
-  projects to the exact screen centre, so the marker is statically centred by CSS and
-  needs no per-frame reprojection.
-- `prefers-reduced-motion: reduce` disables its transition.
+  | Altitude | Temperature | Pressure | Density |
+  | --- | ---: | ---: | ---: |
+  | 0 m | 288.15 K | 101325 Pa | 1.225000 kg/m³ |
+  | 1000 m | 281.65 K | 89874.56 Pa | 1.111643 kg/m³ |
+  | 5000 m | 255.65 K | 54019.89 Pa | 0.736116 kg/m³ |
+  | 11000 m | 216.65 K | 22632.04 Pa | 0.363918 kg/m³ |
 
-### CAM-001A wheel dolly
+- At the browser's pre-AUTO 78.35 m sample, wind was
+  `(5.194, -0.002, 1.858) m/s`; changing altitude changes both direction and speed. All drag uses
+  `v_body - v_wind`; the zero-relative-speed automated check is within floating-point zero.
 
-- `physicalScene.onWheel` normalises `WheelEvent.deltaMode` first:
-  `0 → ×1`, `1 → ×16 px/line`, `2 → ×canvas.clientHeight`.
-- `cam.zoom()` clamps a single event to `±wheelMaxDelta = 120` px-equivalent, then sets
-  **only** `rig.targetDistance`. FOV is never touched.
-- `tick(dt)` converges `rig.distance → rig.targetDistance` with `1 - e^(-14·dt)`:
-  frame-rate independent and structurally incapable of overshoot.
-- **Defect found and fixed in this slice.** The step was originally purely geometric
-  (`target *= exp(d·zoomSpeed)`). Once `targetDistance` sat at `minDistance = 0.08`,
-  one wheel notch produced ≈ 6 mm of forward travel, so the browser evidence pass showed
-  the camera stalling at `y ≈ 2.5` — the underground plant was effectively unreachable
-  and backing out was equally stuck. The step now uses a floored length scale:
-  `step = (exp(d·zoomSpeed) − 1) · max(targetDistance, dollyFloor)` with
-  `dollyFloor = 6 m`. Far away this is the familiar proportional zoom (canonical framing
-  still 6.195 %/notch, inside the ≤ 8 % bound); close in it floors at ≈ 0.37 m/notch, in
-  both directions. Three node checks and a browser dive/back-out series guard it.
-- Past `minDistance` the residue accumulates into `rig.pushBudget`, which `tick()`
-  spends as continuous `pivot += forward · move` — camera and focus advance together,
-  no discontinuous pivot teleport.
+## 4. C-100 sources, mass manifest, geometry and state links
 
-### CAM-001A arrow-key screen pan
+### Source labels
 
-- `panKeys(dt, {up,down,left,right})` moves the pivot along the **current screen basis**
-  (`right = forward × worldUp`, `up = right × forward`), not fixed world X/Z; `apply()`
-  then carries the camera with it.
-- Time-integrated, diagonals normalised to unit length, returns `false` when no key is held.
-- `Home` and `F` both call `goHome()`, restoring the exact `layout()` framing.
+- `PRIMARY_SOURCE`: Cameron C-Type gives 16 gores, 100,000 ft³, 65 ft, 57 ft, 2,000 lb certified
+  weight, 218 lb standard envelope weight, Nomex lower panels, parachute/deflation line and load-tape
+  topology. Cameron burners/tanks pages support the product-family twin-burner/tank form. FAA Balloon
+  Flying Handbook supports open-mouth pressure approximation, burner/vent operation, wind-layer
+  navigation, landing and recovery structure. U.S. Standard Atmosphere 1976/NASA constants support
+  the atmosphere formulas.
+- `DERIVED`: `2,831.684659 m³`, `19.812 m`, `17.3736 m`, `907.18474 kg` certified limit, and
+  `98.883137 kg` envelope mass are direct SI conversions of those source values.
+- `FLY_REFERENCE_CONFIGURATION`: the Cameron C-100 envelope plus same-family lower system. It is not
+  claimed to be a certified serial-number aircraft or a verified type-compatible assembly.
 
-### CAM-002 / CAM-003 reachability and optics
+### Mass inventory
 
-- `CAM_LIMITS` keeps only a world bounding box (`±40` horizontal, `y ∈ [-11.5, 15.6]`),
-  `near = 0.04`, `far = 320`. The world clamp is applied to the **camera**, then the
-  pivot is re-derived along the view axis, so rig state and the real pose stay consistent.
-- The camera writes only `camera.position`/`quaternion`; it creates no rigid body, so it
-  cannot push glass, equipment or water.
-- Water-surface crossing, the AUTO/MANUAL owner, the reactor session, glass durability
-  and audio are untouched by camera code.
+| Mass | Value | Label |
+| --- | ---: | --- |
+| Standard envelope | 98.883 kg | `DERIVED` Cameron 218 lb |
+| Basket | 145 kg | `ENGINEERING_PROXY` |
+| Frame + twin burners | 58 kg | `ENGINEERING_PROXY` |
+| Two empty tanks | 52 kg | `ENGINEERING_PROXY` |
+| Initial fuel | 76 kg | `ENGINEERING_PROXY` |
+| Pilot | 82 kg | `ENGINEERING_PROXY` |
+| Initial hardware/fuel/pilot subtotal | 511.883 kg | derived sum; distinct from certified limit |
+| Initial internal air | 3420.250 kg | state-derived `pV/(RT)` |
+| Initial full physical integration mass | 3932.134 kg | hardware + internal air; not mislabeled as certified gross weight |
 
-### Input ownership and focus-loss cleanup
+The certified 907.185 kg value is retained only as a separate reference-limit field. It is never used
+as envelope mass, actual hardware mass, or an artificial force.
 
-- Right/middle `pointerdown` and `wheel` return early while `grab.entry` is set: during a
-  glass grab the camera receives nothing (`GLA-CTRL-003`).
-- `W/S/A/D` are grab-only. They are no longer camera inputs; `Q/E`, `Shift` boost and the
-  whole `cam.fly()` path were deleted (no references remain anywhere in `src`, `tests`
-  or `README.md`).
-- Arrow keys are camera-only and `preventDefault()`ed so the page cannot scroll.
-- `onBlur()` (window `blur`, `visibilitychange → hidden`) clears the key set, releases the
-  console hotspot, releases pointer capture, hides the marker, releases the grab and
-  clears the pointer id. `pointercancel` and `lostpointercapture` route through the same
-  release path.
+### Thermal/force samples
 
-## 2. Verification
+| State | Internal T | Internal density | Buoyancy | Weight | Fuel | Height/vertical speed |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| first fixed step | 291.799 K | 1.20785 kg/m³ | 33.923 kN | 38.561 kN | 76.000 kg | ground contact |
+| 28 s main burner | 360.951 K | 0.97543 kg/m³ | 33.895 kN | 32.054 kN | 70.629 kg | 7.52 m / +2.34 m/s |
+| +18 s coast | 351.970 K | state-derived | state-derived | state-derived | 70.629 kg | 76.36 m; origin shift 1 |
+| +5 s vent | 344.422 K | 1.01144 kg/m³ | state-derived | state-derived | 70.629 kg | continuous upward inertia, but cooling trend established |
 
-### `./scripts/run-validation.sh` — Configured-check status: **PASS**
+This demonstrates the required causal order: burner consumption/energy precede density and net-force
+change, the basket leaves through solved force/contact state, fuel stops changing after release, and
+vent cools the air without writing vertical velocity.
 
-| Check | Status |
+Visible state links include burner flame ← `heatInputW/burnerValve`, envelope/basket transforms ←
+their independent interpolated bodies, load lines ← both attachment positions, basket tilt ← swing,
+recovered fabric unload ← `RECOVERED`, cloud opacity ← humidity, ground color/trees/safety/contact ←
+the same terrain query, and each sound voice ← its named real-time state.
+
+## 5. Manual journey and automatic recovery evidence
+
+The successful desktop Playwright route used real icon-button pointer holds, not a second control
+model. The debug `advance()` only repeats the same `1/120 s` authoritative step to avoid waiting
+minutes on SwiftShader.
+
+- Departure: `READY_ON_FIELD / MANUAL`, fuel 76 kg, burner/vent zero, audio unlocked only by the
+  actual guide confirmation gesture.
+- Burner: 28 s hold reached `FREE_FLIGHT`, 7.69 m AGL, +2.35 m/s, 361.09 K and 70.616 kg fuel;
+  release returned both holds to zero.
+- Manual drift: 18 s coast reached `(104.64, 80.64, 26.47) m`, 78.35 m AGL, sampled the higher wind
+  layer and completed origin shift 1 before AUTO was requested.
+- Vent: 5 s hold changed 352.11 K → 344.22 K without consuming fuel; release returned the vent to 0.
+- Camera changed PILOT → CHASE without any vehicle-state change. Reopened guide produced exactly
+  `0 s` simulation change over the real 260 ms pause and remained fully readable.
+- AUTO: the only selected candidate was a safe FIELD and every plan recorded `writesPose:false`.
+  It passed continuous samples at 30/60/90/120/150 s, entered `LANDING`, and at 162 s reached
+  `RECOVERED` on FIELD with contact true, 3.43 s stable contact, burner 0, and 63.930 kg fuel.
+- The trajectory contained 217 one-second samples. First/middle/last logical positions were
+  approximately `(0.00,0.68,0.00)`, `(408.01,77.79,149.57)`, and `(889.21,1.46,310.46) m`.
+  Maximum adjacent one-second world displacement was 7.37 m, not a teleport. Nine recorded origin
+  shifts preserved the same logical curve and the active chunk count stayed 25.
+- The final envelope/vent/load-tape group is scaled and laid beside the basket as an explicit
+  `ENGINEERING_PROXY` for unloaded recovered fabric; it is not called a cloth simulation.
+
+## 6. Audio and performance
+
+- Before departure FLY has no AudioContext. The confirmed gesture produced `running`, 4 continuous
+  voices. Burner, wind, fabric/swing and suspension gains update from state; contact impulses create
+  throttled one-shots. Dispose closes the context. SOURCE and FLY audio never existed together in the
+  lifecycle evidence.
+- FLY browser resource snapshot during the full journey: 1 RAF, 1 physics world/clock, 27 registered
+  cleanup entries, 4 audio voices and 25 chunks. Selector snapshot: 1 RAF, 0 physics worlds, 0 voices.
+- DPR is capped at 1.5. Terrain is bounded, forest uses instancing, cloud geometry/material is shared,
+  and far environment has no rigid-body allocation. Physical correctness remains `1/120 s`; visual
+  degradation is limited to shared low-resolution geometry and procedural density proxies.
+- Production build is static and has no image/video environment assets, backend, runtime keys or
+  network service. Vite reports the expected non-fatal chunk-size warning: the main JS is about
+  816.8 kB / 225.0 kB gzip. `FLY-GAP-005` records the initial-load optimization opportunity.
+
+## 7. Verification
+
+### Unified validation — PASS
+
+Final standalone command: `./scripts/run-validation.sh`
+
+| Check | Result |
 | --- | --- |
 | Dependency check | PASS |
-| Build (`npm run build`) | PASS |
-| Tests (`npm test`) | PASS — 338/338 |
-| Lint | **NOT CONFIGURED** |
-| Type check | **NOT CONFIGURED** |
-| Browser / visual | MANUAL REQUIRED → performed with Playwright MCP, below |
+| Build | PASS |
+| Tests | PASS — 372/372 |
+| Lint | NOT CONFIGURED |
+| Type check | NOT CONFIGURED |
+| Browser / visual | MANUAL REQUIRED by script; completed with Playwright MCP below |
 
-New/rewritten camera checks in `tests/run.mjs`: locked sensitivity and strict linearity
-with `orbitSpeed`; hit-point lock plus exact centre projection after dragging; no-hit
-fallback leaves pivot/distance untouched; over-range hit does not move the camera;
-single-notch target change ≤ 8 %; `distance` does not move until `tick()`; no overshoot
-outside `[target, start]`; observable intermediate states; 200-event monotonic descent;
-near-field step floor (0.372 m) and its symmetric back-out; `dollyFloor` does not change
-the canonical-framing ratio; arrow-key screen-horizontal purity (`Δy` exactly 0),
-screen-vertical sign, diagonal normalisation, frame-rate independence, and the idle
-`false` return.
+New Node coverage includes fixed-step/catch-up behavior, official atmosphere values/continuity,
+seeded weather, cross-altitude wind, chunk determinism/borders/bounds, origin migration, official
+C-100 conversions, certified/mass separation, zero relative-air drag, thermal/fuel/vent causality,
+30/60/120 Hz agreement over 120 s, planner pose immutability, unsafe-surface rejection and physical
+AUTO contact/recovery. The render-rate comparisons were equal below `1e-8`, well inside the 1% goal.
 
-### Playwright MCP browser evidence
+### Playwright MCP — PASS
 
-Built to `dist/`, served through `page.route('**/*')` at `http://source.local/index.html`
-with the route confined to `dist/` (path-traversal segments and missing files aborted,
-MIME from the file extension). No background server was started.
+Build output was served from `dist/` at `http://source.local/index.html` through
+`page.route('**/*')`; only that origin was accepted, decoded `.`/`..`/backslash/NUL segments were
+aborted, missing files were aborted, and MIME was preserved by asset extension. No background Vite,
+preview or HTTP server was used.
 
-**Three viewports — 390×844, 768×1024, 1440×900**
-
-| Item | 390×844 | 768×1024 | 1440×900 |
+| Evidence | 390×844 | 768×1024 | 1440×900 |
 | --- | --- | --- | --- |
 | Canvas | 390×844 | 768×1024 | 1440×900 |
-| Overflow X / Y | 0 / 0 | 0 / 0 | 0 / 0 |
-| Visible text length | 0 | 0 | 0 |
-| Canonical framing (`yaw`,`pitch`,`dist`) | 0, −0.6981, 16.957 | 0, −0.6981, 16.957 | 0, −0.6981, 16.563 |
-| Session on load | `INTERLOCKED_RESET`, owner `NONE`, `unlocked:false` | same | same |
-| Glass | 21 cubes, 0 fragments, `minDurability 1.0`, all `INTACT` | same | same |
-| Audio before gesture | `unlockedAll:false`, contexts `NONE` | same | same |
-| Console | 0 messages | 0 messages | 0 messages |
+| Page overflow X/Y | 0 / 0 | 0 / 0 | 0 / 0 |
+| Selector/config visible text | 0 / 0 | 0 / 0 | 0 / 0 |
+| Guide box | 370×582; all content fits | 680×417; all content fits | 680×478; all content fits |
+| Guide → departure | PASS | PASS | PASS |
+| Held burner / release | fuel fell; controls `0/0` | fuel fell; controls `0/0` | full liftoff sequence PASS |
+| Held vent / release | 294.29→293.77 K; `0/0` | 294.42→293.88 K; `0/0` | 352.11→344.22 K; `0/0` |
+| Recovery | stable FIELD / RECOVERED | stable FIELD / RECOVERED | 162 s trajectory / RECOVERED |
+| Console/page errors | 0 | 0 | 0 |
 
-**Desktop 1440×900 camera measurements (real mouse/keyboard/wheel events)**
+An additional 390×844 touch-typed PointerEvent check produced burner `1→0` through
+`pointerdown→pointercancel`, vent `1→0` through `pointerdown→pointerup`, and zero console errors.
+The desktop full sequence was
+`SITE_SELECT → SOURCE → SITE_SELECT → FLY_CONFIG → GUIDE → MANUAL → origin shift → AUTO →
+RECOVERED → SITE_SELECT → SOURCE`; lifecycle hooks and counts were inspected at each return.
 
-- Right-drag 300 CSS px horizontally → **`Δyaw = 0.540 rad`** (target 0.54, band 0.45–0.65).
-  Vertical 200 px → `Δpitch = 0.360 rad`.
-- Locked-focus screen error during the drag, 10 samples: **max `1.27e-13` px** (≤ 2 px).
-  Pivot drift during the drag: **0**.
-- Marker: active on press, self-cleared after 1.4 s, cleared on release and on
-  `pointercancel`.
-- Wheel, canonical framing, `deltaMode 0 / deltaY −100`: target change **6.195 %**;
-  `rig.distance` had not yet moved on the event itself; settle samples
-  `16.046 → 15.790 → 15.662 → 15.599 → 15.568 → 15.552` (continuous, no overshoot,
-  converged). `deltaMode 1 / −3` → **3.025 %**; `deltaMode 2 / −1` → **7.39 %**.
-- 12 consecutive same-direction notches: `16.046 … 8.027`, **strictly monotonic**, no jump
-  to either limit.
-- Arrow keys at `yaw −0.54 / pitch −0.482`: right `Δpivot (0.31, 0, 0.18)` with
-  **`Δy` exactly 0**; left the exact negation (right+left cancel to 0); up
-  `(0.08, 0.32, −0.14)`, down its negation; camera followed the pivot (0.35 vs 0.358).
-- Focus-loss: `ArrowRight` held → `window.blur` → **0 further pivot motion** over 400 ms.
-  Right-button held → `pointercancel` → 180 px of mouse motion → **`Δyaw = 0`**.
-- Grab exclusivity: grabbed a floor brick via the real pick table, then applied right-drag
-  + 4 wheel notches + `ArrowRight`. Camera `Δposition = 0`, `Δyaw = 0`, `Δdistance = 0`,
-  `ΔtargetDistance = 0`. After release, `ArrowRight` panned 0.46 m again.
-- Dive (pitch down, wheel): `y 14.21 → −11.50`, monotonic. Underwater engages at step 10
-  with a continuous optical transition — `submersion 0 → 0.979 → 1.0`,
-  `fogDensity 0 → 0.1371 → 0.1400`. Back-out series
-  `−10.78 → −9.53 → … → 13.94 → 15.60` in 12 wheel groups.
-- Invariance across the whole dive: owner stayed `AUTO`, phase advanced normally
-  (`INTERLOCKED_RESET → LOW_POWER_APPROACH`), glass stayed 21 / 0 fragments /
-  `minDurability 1.0` / 0 below deck; audio `unlockedAll:true`, both contexts `running`.
-- `Home` and `F` from orbited, zoomed, panned, underwater and underground poses all
-  returned to `yaw 0, pitch −0.6981, dist 16.563, pivot (0,0.3,0)`, `home:true`.
-- Console during the whole desktop pass: **0 errors**. 4 warnings, all the SwiftShader
-  driver notice `GPU stall due to ReadPixels` from the headless software renderer —
-  environment, not page code.
-- Screenshots kept in the ignored path `.agent/artifacts/camera-evidence/`
-  (`home-`, `underwater-`, `underground-1440x900.png`).
+Screenshots are in ignored artifacts:
 
-## 3. Component IDs, sources, proxies and abstractions
+- `.agent/artifacts/fly-evidence/mobile-390x844-guide.png`
+- `.agent/artifacts/fly-evidence/tablet-768x1024-guide.png`
+- `.agent/artifacts/fly-evidence/desktop-recovered.png`
+- `.agent/artifacts/fly-evidence/desktop-source-second.png`
 
-- Changed IDs: `CAM-001` (centre focus, sensitivity, marker), `CAM-001A` (dolly and
-  arrow-key pan), `CAM-002` (reachability, no rigid-body participation),
-  `CAM-003` (water crossing — behaviour unchanged, re-verified),
-  `GLA-CTRL-003` (input ownership now excludes the camera during a grab).
-- Unchanged this round: all `RP-*`, `LAB-*`, `WTR-*`, `CHR-*` (except `raycast` opt-out),
-  `GLA-001/002`, `CTL-*`. Reactor pool, laboratory, underground plant, water optics,
-  Cherenkov volume/particles, MANUAL/AUTO consoles, wall/ceiling/floor glass, grating
-  support, damage/fracture and audio activation carry the previous round's geometry,
-  state links and sources unmodified.
-- Source label for the camera itself remains `SOURCE_ART_DIRECTION`: a camera that can
-  cross water, floor and equipment is an owner-locked SOURCE direction, not a Pavia
-  operator viewpoint. It is not presented as reactor documentation.
-- Deliberate abstractions introduced this round:
-  - `dollyFloor = 6 m` is a **feel constant**, not a physical length. It exists so the
-    near-field wheel step stays usable; it is documented as such in `CAM_INPUT`.
-  - `FOCUS_MARKER_MS = 1200` is a presentation constant.
-  - `WHEEL_LINE_PX = 16` is the conventional line-height equivalent for `deltaMode 1`.
-- Performance: the centre-ray pick runs **once per right-press**, not per frame; the
-  marker is a static CSS element with no per-frame work; `tick()` adds one exponential
-  per frame. No new draw calls, geometry, materials or render targets.
+## 8. Failures fixed during this segment
 
-## 4. Failures, NOT CONFIGURED, unverified areas and risks
+- The first mobile evidence attempt exposed that the canonical launch coordinates inherited hashed
+  `FOREST` metadata. AUTO correctly refused to declare that position safe, proving the safety path,
+  but it violated the required launch-field premise. The world now reserves a deterministic 70 m
+  FIELD and uses 160 m landing cells; Node and all three browser viewports recover on safe FIELD.
+- The first recovered render scaled only the fabric mesh, leaving load tapes/vent standing at full
+  height. The entire envelope assembly now unloads together beside the basket and the CHASE target
+  follows that visual proxy. Final recovered browser recheck: `RECOVERED`, safe/contact true, zero
+  console errors.
+- Initial browser harness attempts used unavailable VM Node globals. The final route uses Playwright's
+  own `route.fulfill({path})` and the strict dist-only checks described above. This was an evidence
+  harness issue, never a page/runtime failure.
 
-- **Failures:** none outstanding. Two were found and fixed inside this round: the
-  near-field dolly stall described above, and a missing comma after `dollyFloor` that
-  broke module parsing (caught by `npm test`, fixed, 338/338 green afterwards).
-- **NOT CONFIGURED:** lint and type check — the project has neither configured; this is
-  reported, not silently skipped.
-- **Unverified in the browser (honest gaps):**
-  - `GAP-CAM-B1` — the "no centre-ray hit" fallback was only reachable in the node test
-    (`beginOrbit(null)`). Every browser attempt to aim at empty space still hit real
-    structure, because the hall is fully enclosed in glass. The fallback path is correct
-    but browser-unproven.
-  - `GAP-CAM-B2` — during the browser grab test the pick landed on a **floor brick**
-    while the sampled body was grating cube 0, so "W/S still lift and A/D still yaw the
-    grabbed glass" is *not* demonstrated by this round's browser data. Those code paths
-    were not modified this round (only the camera-side early-return was added) and the
-    node suite still covers the grab servo, but the browser leg is open.
-  - `GAP-CAM-B3` — arrow-key pan distance per wall-clock second is much smaller in the
-    headless SwiftShader browser than on a real GPU, because `frameDelta` clamps to
-    0.05 s/frame and the software renderer produces very few frames. The node suite
-    proves frame-rate independence of `panKeys` itself (60×1/60 s ≡ 1×1 s); the absolute
-    on-screen speed on the owner's machine is **not** verified and may need retuning of
-    `panKeySpeed = 5.5` after the owner tries it.
-  - `GAP-CAM-B4` — the 390×844 and 768×1024 viewports were verified for load, framing,
-    layout, session state and console only. Touch/pointer camera interaction was not
-    exercised there; multi-touch camera gestures are an explicit non-goal.
-  - `GAP-CAM-B5` — no pulse, MANUAL console chain, glass fracture or water-response run
-    was replayed this round. Those flows are outside the camera scope and were verified
-    in the previous task; this round only confirms the camera does not disturb the
-    session, glass or audio state.
-- **Risks:**
-  - `dollyFloor = 6` is a hand-picked feel constant. It satisfies every quantitative
-    acceptance number, but "0.37 m per notch near the core" is a judgement call the owner
-    may want faster or slower.
-  - `pushBudget` is only spent by `tick()`, which is skipped while a grab is active. A
-    wheel input queued immediately before a grab therefore resumes on release rather than
-    being discarded. This is deliberate (camera input is *paused*, not cancelled), but a
-    reviewer may prefer it cleared.
-  - Disabling `raycast` on the optical proxies is the right call for focus picking, but it
-    is a global opt-out on those objects — any future feature that wants to ray-test them
-    must re-enable it explicitly.
+There are no outstanding configured-check failures.
 
-## 5. Explicitly NOT claimed
+## 9. Deliberate abstractions and open gaps
 
-The laboratory, reactor pool, underground plant, water optics, Cherenkov appearance and
-glass architecture have **not** been reviewed or accepted for visual quality. This round
-did not touch them and makes no claim about them. There is no external campus, terrain,
-sky or cloud work, and none was started. The owner has not yet inspected the laboratory
-through the new camera; that inspection is the point of stopping here.
+- `FLY-GAP-001` — **lower-system source coverage**: basket/frame/burner/tank/fuel/pilot masses,
+  burner power/efficiency, heat-transfer coefficients, drag areas/Cd, suspension stiffness/damping
+  and maximum-temperature value are dimensioned `ENGINEERING_PROXY` values. The result must remain
+  `FLY_REFERENCE_CONFIGURATION`, not a certified C-100 assembly or flight trainer.
+- `FLY-GAP-002` — **thermal/structure fidelity**: internal air is one uniform temperature node;
+  suspension is a tension spring/damper rather than individual cable/cloth FEA; envelope unload is a
+  geometry proxy. There is no fabric tear, fire, cable failure, heat stratification or occupant injury.
+- `FLY-GAP-003` — **obstacle/contact fidelity**: terrain height and basket contact/friction are
+  authoritative analytic collision proxies, and AUTO uses the same terrain safety metadata. Forest
+  instances currently supply visual scale and landing exclusion, but individual tree/building/power
+  line rigid colliders and full basket edge/tipping contacts are not yet instantiated. Review whether
+  this gap is acceptable for round 1; it is the clearest next physics expansion.
+- `FLY-GAP-004` — **weather/optics fidelity**: clear-air gust/thermal fields are deterministic
+  engineering fields, not CFD. Clouds are humidity-linked 3D sphere-density clusters, not ray-marched
+  microphysics. Terrain is a seeded world proxy, not a real place or spherical Earth.
+- `FLY-GAP-005` — **initial bundle/performance**: scenes are construction-lazy but statically imported,
+  so the selector downloads the combined ~225 kB gzip module even though it creates neither business
+  world. Dynamic code splitting is a future optimization; runtime worlds/resources are already single
+  and bounded.
+- `FLY-GAP-006` — **audio listening**: node/context creation, voice count, state gains, pause and dispose
+  were verified, but actual spatial timbre/loudness on the owner's speakers is unverified.
+- `FLY-GAP-007` — **deep SOURCE browser regression**: the complete existing SOURCE Node suite passes and
+  browser lifecycle/reset/glass/audio/AUTO first interaction pass. The full MANUAL control chain,
+  pulse, glass fracture, underwater camera and underground traversal were not replayed in this FLY
+  browser pass because their accepted business code was not changed.
 
-## 6. Handoff focus for the next REVIEWER
+## 10. Exact handoff focus for the next REVIEWER
 
-Review range: `b6b9caddd6eedee39fc90ed85daab268309ac4c6` → final implementation commit
-(this covers recovery checkpoints `0ae673d`, `435d7bc`, `b600f20`, `7d1e285`, `781883d`,
-`43bd7f4` and the final one, so no business change is skipped).
+Review range: `a0f0907b0d42e6bfaed74811457c65a3bc8388ac` → final implementation checkpoint
+created by the neutral wrapper.
 
-Please concentrate on:
-
-1. `freeCamera.js zoom()` — the `max(targetDistance, dollyFloor)` step scale. Confirm it
-   keeps ≤ 8 % at the canonical framing, stays strictly monotonic, never overshoots, and
-   that `dollyFloor = 6` is an acceptable feel constant rather than a hidden limit change.
-2. `beginOrbit()` rebuilding the pivot along the view axis instead of copying the hit
-   point — verify the in-range case is exactly the hit point and the over-range case
-   really cannot move the camera.
-3. The `raycast = () => {}` opt-outs in `cherenkov.js` and `waterSystem.js` — confirm they
-   only affect picking and do not alter any visual or physical behaviour.
-4. Input ownership: that the camera truly receives nothing during a grab, that arrow keys
-   are camera-only, that `W/S/A/D` are grab-only, and that every focus-loss path
-   (`blur`, `visibilitychange`, `pointercancel`, `lostpointercapture`) zeroes continuous input.
-5. The five open gaps `GAP-CAM-B1…B5` above — particularly `GAP-CAM-B2` (browser proof
-   that `W/S/A/D` still drive the grabbed glass) and `GAP-CAM-B3` (real-GPU arrow-key
-   pan speed), which are the two most worth closing with browser evidence.
-6. That nothing outside the camera scope regressed: session reset on load, first-interaction
-   AUTO/MANUAL split, water-surface optical continuity, glass durability, and audio unlock.
+1. Treat `SITE-HOST-001` as the primary regression boundary: repeat SOURCE → FLY → SOURCE, confirm
+   only one renderer/RAF/world/audio scope and verify every old debug hook disappears on dispose.
+2. Audit `hotAirBalloon.js` force/mass bookkeeping, especially why certified gross/reference weight,
+   hardware subtotal and internal-air physical mass are distinct; confirm burner/vent never write
+   velocity and horizontal force only comes from relative-air drag/suspension/contact.
+3. Audit floating-origin semantics: logical positions and wind phase must not change; only render/local
+   coordinates shift. Check previous/current snapshot interpolation across the first event at ~45 s.
+4. Re-run the desktop timeline and inspect the sole recovery plan, continuous trajectory, nine origin
+   events, candidate safety, burner/vent ownership, actual contact and 3 s stability gate. Confirm there
+   is no planner pose write or return-to-start assumption.
+5. Inspect the real C-100 geometry hierarchy and recovered unload proxy: 16 gores, tapes, vent/line,
+   suspension, frame, burners, tanks/hoses, basket thickness and independent envelope/basket transforms.
+6. Decide severity/next action for `FLY-GAP-003` (individual near-field obstacle colliders and fuller
+   basket tipping). This is the most important disclosed acceptance gap, not a hidden claim.
+7. Check responsive guide/controls and the touch `pointercancel` path, plus keyboard blur/hidden cleanup,
+   guide pause, camera independence and return confirmation.
+8. Confirm `SOURCE-LIFE-001` is only an adapter/cleanup and that no protected SOURCE business behavior
+   changed. `FLY-GAP-007` lists the deep browser flows not replayed here.
 
 ## Automation wrapper result
 
-- Process base commit: `43bd7f40d93d5937df4c0880e2f9cbc4b2d6acc1`
-- Round review base commit: `b6b9caddd6eedee39fc90ed85daab268309ac4c6`
-- Implementer runtime: `claude / opus / high`
+- Process base commit: `a4785e6f40c0a91d7f454c9f1d49c5cc4f40edcb`
+- Round review base commit: `a0f0907b0d42e6bfaed74811457c65a3bc8388ac`
+- Implementer runtime: `codex / gpt-5.6-sol / xhigh`
 - Agent process: PASS (exit 0)
 - Unified validation: PASS (exit 0)
-- Checkpoint: created by `scripts/run-implementation.sh` after this report
+- Checkpoint: reconstructed by the attached GENERAL after isolating the protected README update
