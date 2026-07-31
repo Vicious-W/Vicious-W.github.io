@@ -578,30 +578,87 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   assert(cam.rig.pitch <= -CAM_LIMITS.maxPitch + 1e-6,
     `俯仰可到接近正俯视: ${cam.rig.pitch.toFixed(3)}`);
   cam.goHome();
-  cam.orbit(0, -600);                        // 反向 → 机位降到 pivot 之下仰视，旧 rig 在 22° 仰角就被挡住
+  cam.orbit(0, -1300);                       // 反向 → 机位降到 pivot 之下仰视，旧 rig 在 22° 仰角就被挡住
   assert(cam.rig.pitch >= CAM_LIMITS.maxPitch - 1e-6,
     `不再有 22° 最低仰角限位: ${cam.rig.pitch.toFixed(3)}`);
 
+  // 所有者锁定灵敏度：300 CSS px 横向拖动 → yaw 变化落在 0.45–0.65 rad（目标 0.54）
   cam.goHome();
-  for (let i = 0; i < 40; i++) cam.zoom(-400);
-  assert(cam.rig.distance <= CAM_LIMITS.minDistance + 1e-9,
-    "连续缩放可以顶到最近距离（不再有 fit*0.32 的下限）");
-  assert(Math.hypot(camera.position.x, camera.position.z) < 6.5,
-    `顶到最近后机位已进到池口以内: r=${Math.hypot(camera.position.x, camera.position.z).toFixed(2)}`);
+  cam.orbit(300, 0);
+  const yawDelta = Math.abs(cam.rig.yaw - 0);
+  assert(yawDelta > 0.45 && yawDelta < 0.65,
+    `300px 横向拖动的 yaw 变化在锁定区间内: ${yawDelta.toFixed(4)} rad (目标 ~0.54)`);
+  assert(Math.abs(yawDelta - 300 * CAM_INPUT.orbitSpeed) < 1e-9,
+    "yaw 变化与 orbitSpeed 常量严格线性一致");
 
-  // 进入水下与地下：飞行必须能穿过名义水面和地板标高
+  // beginOrbit：命中点锁定为本次拖动的固定焦点，拖动期间 pivot 投影恒在画面中心
+  cam.goHome();
+  const hitPoint = new THREE.Vector3(1.2, 0.3, 3.4);
+  cam.beginOrbit(hitPoint);
+  assert(cam.pivot.distanceTo(hitPoint) < 1e-6, "命中点直接成为锁定焦点");
+  const distAfterLock = cam.rig.distance;
+  cam.orbit(140, -70);
+  assert(Math.abs(cam.rig.distance - distAfterLock) < 1e-6,
+    "拖动期间锁定的 pivot/distance 不因旋转而漂移");
+  camera.updateMatrixWorld(true);   // project() 依赖 matrixWorld；渲染循环里由 renderer 隐式完成，这里手动补一次
+  const proj = cam.pivot.clone().project(camera);
+  assert(Math.hypot(proj.x, proj.y) < 1e-6, "锁定焦点在拖动后仍精确投影到画面中心（camera.lookAt(pivot)）");
+
+  // beginOrbit 无命中：保留当前 pivot/distance 作为稳定回退焦点，不跳变
+  cam.goHome();
+  const pivotBefore = cam.pivot.clone();
+  const distBefore = cam.rig.distance;
+  cam.beginOrbit(null);
+  assert(cam.pivot.distanceTo(pivotBefore) < 1e-9 && Math.abs(cam.rig.distance - distBefore) < 1e-9,
+    "无命中时沿视线保留既有焦距的稳定虚拟焦点，不重新拾取");
+
+  // 滚轮归一化 + 阻尼：单次普通事件的目标距离变化 ≤ 8%，且 tick() 逐帧平滑收敛
+  cam.goHome();
+  const zoomHome = cam.rig.distance;
+  cam.zoom(-100);
+  const targetChange = Math.abs(cam.rig.targetDistance - zoomHome) / zoomHome;
+  assert(targetChange <= 0.08, `单次滚轮目标距离变化 ≤ 8%: ${(targetChange * 100).toFixed(2)}%`);
+  assert(Math.abs(cam.rig.distance - zoomHome) < 1e-9,
+    "目标距离先变化，实际 rig.distance 要等 tick() 才移动（无过冲、有中间态）");
+  let sawIntermediate = false;
+  let overshot = false;
+  for (let i = 0; i < 30; i++) {
+    cam.tick(1 / 60);
+    // 合法区间是 [targetDistance, zoomHome]；跌出这个区间才算过冲
+    if (cam.rig.distance < cam.rig.targetDistance - 1e-6 || cam.rig.distance > zoomHome + 1e-6) overshot = true;
+    if (cam.rig.distance < zoomHome - 1e-9 && cam.rig.distance > cam.rig.targetDistance + 1e-9) sawIntermediate = true;
+  }
+  assert(!overshot, "阻尼收敛全程停留在 [targetDistance, zoomHome] 区间内，不过冲");
+  assert(sawIntermediate, "阻尼收敛过程中产生可观察的连续中间状态");
+  assert(Math.abs(cam.rig.distance - cam.rig.targetDistance) < 1e-3, "阻尼最终收敛到目标距离");
+
+  // 连续同向滚动：距离严格单调、不在两端之间跳变
+  cam.goHome();
+  let prevDist = cam.rig.distance;
+  let monotonic = true;
+  for (let i = 0; i < 60; i++) {
+    cam.zoom(-100);
+    for (let f = 0; f < 4; f++) cam.tick(1 / 60);
+    if (cam.rig.distance > prevDist + 1e-9) monotonic = false;
+    prevDist = cam.rig.distance;
+  }
+  assert(monotonic, "连续同向滚轮下距离严格单调递减，不跳变");
+  assert(cam.rig.distance <= CAM_LIMITS.minDistance + 1e-6,
+    "连续缩放可以顶到最近距离（不再有 fit*0.32 的下限）");
+
+  // 顶到最近距离后继续推进：差额转入 pushBudget，tick() 逐帧把它变成 pivot 的连续
+  // 前移（替代旧的自由飞行），足以穿过名义水面进入水下、再进入地下设备层
   cam.goHome();
   cam.rig.pitch = -Math.PI / 2 + 0.02; cam.apply();   // 朝下
-  cam.fly(1, new Set(["w"]), true);
-  cam.fly(1, new Set(["w"]), true);
+  for (let i = 0; i < 400; i++) { cam.zoom(-100); cam.tick(1 / 30); }
   assert(camera.position.y < reactor.poolBounds.surfaceY,
-    `自由飞行可以下到名义水面之下: y=${camera.position.y.toFixed(2)} < ${reactor.poolBounds.surfaceY}`);
-  for (let i = 0; i < 6; i++) cam.fly(1, new Set(["w"]), true);
+    `顶到最近距离后继续滚轮推进可以下到名义水面之下: y=${camera.position.y.toFixed(2)} < ${reactor.poolBounds.surfaceY}`);
+  for (let i = 0; i < 400; i++) { cam.zoom(-100); cam.tick(1 / 30); }
   assert(camera.position.y < UNDERGROUND_BOUNDS.ceilingY,
-    `自由飞行可以下到地下设备层: y=${camera.position.y.toFixed(2)} < ${UNDERGROUND_BOUNDS.ceilingY}`);
+    `继续推进可以下到地下设备层: y=${camera.position.y.toFixed(2)} < ${UNDERGROUND_BOUNDS.ceilingY}`);
   assert(camera.position.y >= CAM_LIMITS.minY - 1e-6, "但仍被世界包围盒兜住，不会飞到无穷远");
 
-  // 平移（中键）与飞行都改 pivot，不改 distance
+  // 平移（中键）只改 pivot，不改 distance
   cam.goHome();
   const d0 = cam.rig.distance;
   cam.pan(120, 60, 900);
@@ -610,16 +667,40 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   cam.goHome();
   assert(cam.isHome(), "任意漫游后都能回到规范初始取景");
 
-  // Shift 只是速度倍率
+  // 方向键平移：沿当前画面 up/right（不是固定世界 X/Z），按 dt 积分，帧率无关
   cam.goHome();
-  const p1 = cam.pivot.clone();
-  cam.fly(1, new Set(["w"]), false);
-  const slow = cam.pivot.distanceTo(p1);
+  cam.orbit(500, -200);                      // 转到一个非轴对齐的 yaw/pitch
+  const pivotBeforePan = cam.pivot.clone();
+  cam.panKeys(1, { right: true });
+  const movedRight = cam.pivot.clone().sub(pivotBeforePan);
+  assert(movedRight.length() > 1e-6, "方向键在非轴对齐取景下仍产生位移");
+  assert(Math.abs(movedRight.y) < 1e-6,
+    "纯左右方向键只沿画面水平移动，不改变世界高度（screen-right 水平分量）");
   cam.goHome();
-  cam.fly(1, new Set(["w"]), true);
-  const fast = cam.pivot.distanceTo(p1);
-  assert(Math.abs(fast / slow - CAM_INPUT.flyBoost) < 1e-6,
-    `Shift 是纯速度倍率: ${(fast / slow).toFixed(3)} == ${CAM_INPUT.flyBoost}`);
+  cam.orbit(500, -200);
+  const pivotBeforeUp = cam.pivot.clone();
+  cam.panKeys(1, { up: true });
+  const movedUp = cam.pivot.clone().sub(pivotBeforeUp);
+  assert(movedUp.y > 1e-6, "方向键上移沿画面竖直方向产生正的世界高度分量");
+
+  // 帧率无关：60 步 * 1/60s 与 1 步 * 1s 的总位移一致
+  cam.goHome();
+  const pA = cam.pivot.clone();
+  for (let i = 0; i < 60; i++) cam.panKeys(1 / 60, { right: true });
+  const totalFine = cam.pivot.distanceTo(pA);
+  cam.goHome();
+  const pB = cam.pivot.clone();
+  cam.panKeys(1, { right: true });
+  const totalCoarse = cam.pivot.distanceTo(pB);
+  assert(Math.abs(totalFine - totalCoarse) < 1e-6,
+    `方向键位移不因帧率改变总量: ${totalFine.toFixed(4)} == ${totalCoarse.toFixed(4)}`);
+
+  // 松开方向键（无按住方向）：panKeys 返回 false，不产生位移
+  cam.goHome();
+  const pivotIdle = cam.pivot.clone();
+  const moved = cam.panKeys(1, { up: false, down: false, left: false, right: false });
+  assert(moved === false && cam.pivot.distanceTo(pivotIdle) < 1e-9,
+    "没有方向键按住时 panKeys 不移动、返回 false（失焦清理后的稳定状态）");
 }
 
 {

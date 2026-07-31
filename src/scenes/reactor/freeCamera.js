@@ -215,7 +215,9 @@ export function createFreeCamera({ camera }) {
       if (rig.pushBudget > 1e-6) {
         const move = rig.pushBudget * t;
         basis();
-        pivot.addScaledVector(forward, -move);
+        // camera.position = pivot - forward*distance；distance 顶在 minDistance 不变，
+        // 所以要让相机沿视线继续前移，必须把 pivot 也沿 +forward 推进同样的量。
+        pivot.addScaledVector(forward, move);
         rig.pushBudget -= move;
         if (rig.pushBudget < 1e-5) rig.pushBudget = 0;
       }
