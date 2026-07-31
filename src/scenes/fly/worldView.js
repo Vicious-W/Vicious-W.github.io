@@ -72,11 +72,16 @@ export function createWorldView({ scene, world, atmosphere }) {
   });
   group.add(cloudGroup);
 
-  let trees = null;
+  let obstacleVisuals = null;
   const treeTrunkGeometry = new THREE.CylinderGeometry(0.32, 0.48, 4.5, 7);
   const treeCrownGeometry = new THREE.ConeGeometry(2.4, 6.5, 9);
   const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x54371f, roughness: 1 });
   const crownMaterial = new THREE.MeshStandardMaterial({ color: 0x1e532e, roughness: 0.98 });
+  const buildingGeometry = new THREE.BoxGeometry(1, 1, 1);
+  const buildingMaterial = new THREE.MeshStandardMaterial({ color: 0xb7aa91, roughness: 0.88 });
+  const poleGeometry = new THREE.CylinderGeometry(0.18, 0.25, 1, 8);
+  const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x4b3828, roughness: 0.92 });
+  const wireMaterial = new THREE.LineBasicMaterial({ color: 0x262d32 });
 
   const createChunkMesh = chunk => {
     const resolution = 12;
@@ -102,33 +107,65 @@ export function createWorldView({ scene, world, atmosphere }) {
     chunkMeshes.set(chunk.key, mesh);
   };
 
-  const rebuildTrees = () => {
-    if (trees) {
-      group.remove(trees.group);
-      trees = null;
+  const rebuildObstacles = () => {
+    if (obstacleVisuals) {
+      group.remove(obstacleVisuals.group);
+      obstacleVisuals.wireGeometry?.dispose();
+      obstacleVisuals = null;
     }
-    const placements = [];
+    const treePlacements = [], poles = [], buildings = [], lines = [];
     for (const chunk of world.chunks.values()) {
-      for (let i = 0; i < 8; i++) {
-        const fx = ((i * 0.618033 + chunk.generation) % 1 - 0.5) * CHUNK_SIZE_M;
-        const fz = ((i * 0.381966 + chunk.generation * 1.7) % 1 - 0.5) * CHUNK_SIZE_M;
-        const x = chunk.centerX + fx, z = chunk.centerZ + fz;
-        const terrain = world.terrainAt(x, z);
-        if (terrain.surface === "FOREST") placements.push({ x, y: terrain.height, z, scale: 0.75 + (i % 4) * 0.12 });
+      for (const obstacle of chunk.obstacles) {
+        if (obstacle.type === "TREE") treePlacements.push(obstacle);
+        else if (obstacle.type === "POWER_POLE") poles.push(obstacle);
+        else if (obstacle.type === "BUILDING") buildings.push(obstacle);
+        else if (obstacle.type === "POWER_LINE") lines.push(obstacle);
       }
     }
-    const trunks = new THREE.InstancedMesh(treeTrunkGeometry, trunkMaterial, placements.length);
-    const crowns = new THREE.InstancedMesh(treeCrownGeometry, crownMaterial, placements.length);
+    const trunks = new THREE.InstancedMesh(treeTrunkGeometry, trunkMaterial, treePlacements.length);
+    const crowns = new THREE.InstancedMesh(treeCrownGeometry, crownMaterial, treePlacements.length);
     const dummy = new THREE.Object3D();
-    placements.forEach((tree, index) => {
-      dummy.position.set(tree.x - world.origin.x, tree.y + 2.25, tree.z - world.origin.z);
+    treePlacements.forEach((tree, index) => {
+      dummy.position.set(tree.x - world.origin.x, tree.baseY + 2.25, tree.z - world.origin.z);
       dummy.scale.setScalar(tree.scale);
       dummy.updateMatrix(); trunks.setMatrixAt(index, dummy.matrix);
-      dummy.position.y = tree.y + 6.3;
+      dummy.position.y = tree.baseY + 6.3;
       dummy.updateMatrix(); crowns.setMatrixAt(index, dummy.matrix);
     });
-    const treeGroup = new THREE.Group(); treeGroup.add(trunks, crowns); group.add(treeGroup);
-    trees = { group: treeGroup, count: placements.length };
+    const poleInstances = new THREE.InstancedMesh(poleGeometry, poleMaterial, poles.length);
+    poles.forEach((pole, index) => {
+      dummy.position.set(pole.x - world.origin.x, pole.baseY + pole.height * 0.5, pole.z - world.origin.z);
+      dummy.scale.set(1, pole.height, 1);
+      dummy.updateMatrix(); poleInstances.setMatrixAt(index, dummy.matrix);
+    });
+    const visualGroup = new THREE.Group();
+    visualGroup.add(trunks, crowns, poleInstances);
+    for (const building of buildings) {
+      const mesh = new THREE.Mesh(buildingGeometry, buildingMaterial);
+      mesh.position.set(building.x - world.origin.x, building.baseY + building.height * 0.5, building.z - world.origin.z);
+      mesh.scale.set(building.halfX * 2, building.height, building.halfZ * 2);
+      visualGroup.add(mesh);
+    }
+    let wireGeometry = null;
+    if (lines.length) {
+      const points = [];
+      for (const line of lines) points.push(
+        line.ax - world.origin.x, line.ay, line.az - world.origin.z,
+        line.bx - world.origin.x, line.by, line.bz - world.origin.z
+      );
+      wireGeometry = new THREE.BufferGeometry();
+      wireGeometry.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
+      visualGroup.add(new THREE.LineSegments(wireGeometry, wireMaterial));
+    }
+    group.add(visualGroup);
+    obstacleVisuals = {
+      group: visualGroup,
+      wireGeometry,
+      trees: treePlacements.length,
+      buildings: buildings.length,
+      poles: poles.length,
+      lines: lines.length
+    };
   };
 
   const sync = (simTime = 0) => {
@@ -140,14 +177,14 @@ export function createWorldView({ scene, world, atmosphere }) {
       }
       for (const chunk of world.chunks.values()) if (!chunkMeshes.has(chunk.key)) createChunkMesh(chunk);
       chunkSignature = nextChunkSignature;
-      rebuildTrees();
+      rebuildObstacles();
     }
     if (nextOriginSignature !== originSignature) {
       for (const chunk of world.chunks.values()) {
         const mesh = chunkMeshes.get(chunk.key);
         if (mesh) mesh.position.set(chunk.centerX - world.origin.x, -world.origin.y, chunk.centerZ - world.origin.z);
       }
-      rebuildTrees();
+      rebuildObstacles();
       originSignature = nextOriginSignature;
     }
     cloudGroup.position.set(-world.origin.x, -world.origin.y, -world.origin.z);
@@ -170,13 +207,26 @@ export function createWorldView({ scene, world, atmosphere }) {
   return {
     group,
     sync,
-    snapshot() { return { chunks: chunkMeshes.size, trees: trees?.count || 0, clouds: cloudGroup.children.length, drawMeshes: chunkMeshes.size + 4 }; },
+    snapshot() {
+      return {
+        chunks: chunkMeshes.size,
+        trees: obstacleVisuals?.trees || 0,
+        buildings: obstacleVisuals?.buildings || 0,
+        powerPoles: obstacleVisuals?.poles || 0,
+        powerLines: obstacleVisuals?.lines || 0,
+        clouds: cloudGroup.children.length,
+        drawMeshes: chunkMeshes.size + 8
+      };
+    },
     dispose() {
       for (const mesh of chunkMeshes.values()) mesh.geometry.dispose();
       chunkMeshes.clear();
       terrainMaterial.dispose();
       treeTrunkGeometry.dispose(); treeCrownGeometry.dispose();
       trunkMaterial.dispose(); crownMaterial.dispose();
+      buildingGeometry.dispose(); buildingMaterial.dispose();
+      poleGeometry.dispose(); poleMaterial.dispose();
+      wireMaterial.dispose(); obstacleVisuals?.wireGeometry?.dispose();
       cloudGeo.dispose(); cloudMaterial.dispose();
       sky.geometry.dispose(); sky.material.dispose();
       scene.remove(group, sky, sun);

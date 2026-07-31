@@ -1,11 +1,13 @@
 import { C100_MANIFEST } from "./vehicles/c100Manifest.js";
 import { createHotAirBalloon } from "./vehicles/hotAirBalloon.js";
 import { createClearWeather } from "./weather/clearWeather.js";
+import { createC100ConfigPreview, createClearWeatherConfigPreview } from "./configPreview.js";
 
 export const vehicleRegistry = Object.freeze({
   hotAirBalloonC100: Object.freeze({
     id: "hotAirBalloonC100",
     manifest: C100_MANIFEST,
+    previewFactory: createC100ConfigPreview,
     compatibleWeather: ["clear"],
     vehicleFactory: createHotAirBalloon,
     controlSchema: Object.freeze({ burner: "hold", vent: "hold", recovery: "request" }),
@@ -27,6 +29,7 @@ export const vehicleRegistry = Object.freeze({
 export const weatherRegistry = Object.freeze({
   clear: Object.freeze({
     id: "clear",
+    previewFactory: createClearWeatherConfigPreview,
     weatherFactory: createClearWeather,
     compatibleVehicles: ["hotAirBalloonC100"],
     sourceManifest: Object.freeze({ baseline: "U.S. Standard Atmosphere 1976", localField: "ENGINEERING_PROXY" })

@@ -1,7 +1,7 @@
 import { createSimulationClock } from "../../core/simulationClock.js";
 import { createProceduralWorld } from "./world/proceduralWorld.js";
 import { vehicleRegistry, weatherRegistry, DEFAULT_FLY_SELECTION } from "./registry.js";
-import { planBalloonRecovery, recoveryControls } from "./recovery/recoveryPlanner.js";
+import { assessRecoveryPlan, planBalloonRecovery, recoveryControls } from "./recovery/recoveryPlanner.js";
 
 export const FLY_CONTROL_OWNERS = Object.freeze(["NONE", "MANUAL", "AUTO_RECOVERY", "RECOVERED"]);
 
@@ -21,8 +21,11 @@ export function createFlySession({ seed = 0xc1002026, selection = DEFAULT_FLY_SE
     appliedControls: { burner: 0, vent: 0 },
     recoveryPlan: null,
     recoveryPlans: [],
+    recoveryDiagnostics: null,
+    recoveryDeadline: null,
     trajectory: [],
     originEvents: [],
+    unsafeContactEvents: [],
     lastPlanTime: -Infinity,
     lastTrajectoryTime: -Infinity,
     pausedReason: null,
@@ -48,16 +51,109 @@ export function createFlySession({ seed = 0xc1002026, selection = DEFAULT_FLY_SE
           height: state.recoveryPlan.selected.height,
           surface: state.recoveryPlan.selected.terrain.surface,
           safe: state.recoveryPlan.selected.terrain.safe,
-          score: state.recoveryPlan.selected.score
+          score: state.recoveryPlan.selected.score,
+          landingRegionId: state.recoveryPlan.selected.landingRegionId,
+          eta: state.recoveryPlan.selected.eta,
+          cruiseAgl: state.recoveryPlan.selected.cruiseAgl,
+          arrivalToleranceM: state.recoveryPlan.selected.arrivalToleranceM,
+          predictedLanding: { ...state.recoveryPlan.selected.predictedLanding }
         } : null,
         evaluated: state.recoveryPlan.evaluated,
         rejectedUnsafe: state.recoveryPlan.rejectedUnsafe,
         writesPose: state.recoveryPlan.writesPose,
-        plannedAt: state.recoveryPlan.plannedAt
+        plannedAt: state.recoveryPlan.plannedAt,
+        diagnostics: state.recoveryDiagnostics ? { ...state.recoveryDiagnostics } : null
       } : null,
       trajectorySamples: state.trajectory.length,
+      unsafeContactCount: state.unsafeContactEvents.length,
       failed: state.failed
     };
+  };
+
+  const installRecoveryPlan = (simTime, reason, preserveDeadline = true) => {
+    const timeBudget = preserveDeadline && Number.isFinite(state.recoveryDeadline)
+      ? Math.max(12, state.recoveryDeadline - simTime)
+      : null;
+    state.recoveryPlan = planBalloonRecovery({ vehicle, world, atmosphere, simTime, timeBudget });
+    if (state.recoveryPlan.selected && !state.recoveryPlan.selected.reachable) {
+      const extendedBudget = Math.max(46, (timeBudget || 24) + 34);
+      state.recoveryPlan = planBalloonRecovery({ vehicle, world, atmosphere, simTime, timeBudget: extendedBudget });
+      state.recoveryDeadline = simTime + (state.recoveryPlan.selected?.eta || extendedBudget);
+    }
+    if (!Number.isFinite(state.recoveryDeadline)) {
+      state.recoveryDeadline = simTime + (state.recoveryPlan.selected?.eta || 120);
+    }
+    state.lastPlanTime = simTime;
+    state.recoveryDiagnostics = null;
+    const selected = state.recoveryPlan.selected;
+    state.recoveryPlans.push({
+      simTime,
+      reason,
+      selected: selected ? {
+        x: selected.x,
+        z: selected.z,
+        safe: selected.zone.safe,
+        landingRegionId: selected.landingRegionId,
+        eta: selected.eta,
+        cruiseAgl: selected.cruiseAgl,
+        arrivalToleranceM: selected.arrivalToleranceM,
+        predictedLanding: { ...selected.predictedLanding }
+      } : null,
+      evaluated: state.recoveryPlan.evaluated,
+      rejectedUnsafe: state.recoveryPlan.rejectedUnsafe,
+      forecastModel: state.recoveryPlan.forecastModel,
+      writesPose: state.recoveryPlan.writesPose
+    });
+    if (state.recoveryPlans.length > 64) state.recoveryPlans.shift();
+  };
+
+  const lockRecoveryToSafeContact = (simTime, current, zone) => {
+    const selected = {
+      x: current.basket.position.x,
+      z: current.basket.position.z,
+      height: current.terrain.height,
+      terrain: current.terrain,
+      zone,
+      landingRegionId: current.terrain.landingRegionId,
+      eta: 0,
+      cruiseAgl: 0,
+      predictedLanding: { x: current.basket.position.x, z: current.basket.position.z },
+      predictionErrorM: 0,
+      arrivalToleranceM: zone.radius,
+      reachable: true,
+      score: 0
+    };
+    state.recoveryPlan = {
+      selected,
+      evaluated: 1,
+      rejectedUnsafe: 0,
+      writesPose: false,
+      sampledWind: { ...atmosphere.sample(current.envelope.position, simTime).windVelocityMps },
+      predictedPeakAgl: current.heightAgl,
+      alongDistance: 0,
+      plannedAt: simTime,
+      forecastModel: "safe-contact-lock-v1"
+    };
+    state.lastPlanTime = simTime;
+    state.recoveryPlans.push({
+      simTime,
+      reason: "SAFE_CONTACT_LOCK",
+      selected: {
+        x: selected.x,
+        z: selected.z,
+        safe: true,
+        landingRegionId: selected.landingRegionId,
+        eta: 0,
+        cruiseAgl: 0,
+        arrivalToleranceM: selected.arrivalToleranceM,
+        predictedLanding: { ...selected.predictedLanding }
+      },
+      evaluated: 1,
+      rejectedUnsafe: 0,
+      forecastModel: state.recoveryPlan.forecastModel,
+      writesPose: false
+    });
+    if (state.recoveryPlans.length > 64) state.recoveryPlans.shift();
   };
 
   let clock;
@@ -67,35 +163,75 @@ export function createFlySession({ seed = 0xc1002026, selection = DEFAULT_FLY_SE
       if (state.controlOwner === "AUTO_RECOVERY") {
         const selected = state.recoveryPlan?.selected;
         const current = vehicle.snapshot();
-        const targetDistance = selected ? Math.hypot(selected.x - current.basket.position.x, selected.z - current.basket.position.z) : Infinity;
         const terrainBelow = current.terrain;
-        if (!selected || targetDistance > 1300 || !selected.terrain.safe
-          || (simTime - state.lastPlanTime >= 4 && current.heightAgl < 12 && !terrainBelow.safe)) {
-          state.recoveryPlan = planBalloonRecovery({ vehicle, world, atmosphere, simTime });
-          state.recoveryPlans.push({
-            simTime,
-            selected: state.recoveryPlan.selected ? { x: state.recoveryPlan.selected.x, z: state.recoveryPlan.selected.z, safe: state.recoveryPlan.selected.terrain.safe } : null,
-            writesPose: state.recoveryPlan.writesPose
-          });
-          if (state.recoveryPlans.length > 64) state.recoveryPlans.shift();
-          state.lastPlanTime = simTime;
+        if (!selected) installRecoveryPlan(simTime, "NO_CANDIDATE");
+        else if (simTime - state.lastPlanTime >= 8) {
+          const assessment = assessRecoveryPlan({ vehicle, plan: state.recoveryPlan, world, atmosphere, simTime });
+          state.recoveryDiagnostics = {
+            reason: assessment.reason,
+            predictionErrorM: assessment.predictionErrorM,
+            targetDistanceM: assessment.targetDistanceM,
+            remainingEta: assessment.remainingEta,
+            zoneSafe: assessment.zoneSafe
+          };
+          const lowUnsafe = current.heightAgl < 70 && !terrainBelow.safe;
+          if (assessment.needsReplan || lowUnsafe) {
+            if (lowUnsafe && state.recoveryDeadline - simTime < 24) state.recoveryDeadline = simTime + 34;
+            installRecoveryPlan(simTime, lowUnsafe ? "LOW_UNSAFE" : assessment.reason);
+          }
         }
-        controls = recoveryControls({ vehicle, plan: state.recoveryPlan, world });
+        controls = recoveryControls({ vehicle, plan: state.recoveryPlan, world, atmosphere, simTime });
       } else if (state.controlOwner === "RECOVERED") {
         controls = { burner: 0, vent: 1 };
       }
       state.appliedControls = { burner: controls.burner, vent: controls.vent };
       const current = vehicle.step(dt, simTime, state.appliedControls);
+      if (current.contact && !current.terrain.safe) {
+        const previousUnsafe = state.unsafeContactEvents[state.unsafeContactEvents.length - 1];
+        if (!previousUnsafe || simTime - previousUnsafe.simTime > 0.5) {
+          state.unsafeContactEvents.push({
+            simTime,
+            x: current.basket.position.x,
+            z: current.basket.position.z,
+            surface: current.terrain.surface,
+            obstacleId: current.terrain.nearestObstacleId
+          });
+          if (state.unsafeContactEvents.length > 64) state.unsafeContactEvents.shift();
+        }
+      }
       state.stage = current.stage;
       if (state.controlOwner === "AUTO_RECOVERY") {
         state.stage = current.heightAgl < 7 && current.basket.velocity.y < 0.5
           ? "LANDING" : "AUTO_RECOVERY";
-        if (current.contact && current.terrain.safe && current.stableContactSeconds >= 3) {
+        let selected = state.recoveryPlan?.selected;
+        let landingErrorM = selected
+          ? Math.hypot(selected.x - current.basket.position.x, selected.z - current.basket.position.z)
+          : Infinity;
+        let matchesPlan = !!selected && (current.terrain.landingRegionId === selected.landingRegionId
+          || landingErrorM <= selected.arrivalToleranceM);
+        if (current.contact && current.terrain.safe && current.stableContactSeconds >= 3 && !matchesPlan) {
+          const contactZone = world.landingZoneAt(current.basket.position.x, current.basket.position.z, 16);
+          if (contactZone.safe) {
+            lockRecoveryToSafeContact(simTime, current, contactZone);
+            selected = state.recoveryPlan.selected;
+            landingErrorM = 0;
+            matchesPlan = true;
+          }
+        }
+        if (current.contact && current.terrain.safe && current.stableContactSeconds >= 3 && matchesPlan) {
           state.controlOwner = "RECOVERED";
           state.stage = "RECOVERED";
           vehicle.state.stage = "RECOVERED";
           state.manualControls.burner = 0;
           state.manualControls.vent = 0;
+          const history = state.recoveryPlans[state.recoveryPlans.length - 1];
+          if (history) history.actualLanding = {
+            x: current.basket.position.x,
+            z: current.basket.position.z,
+            landingRegionId: current.terrain.landingRegionId,
+            errorM: landingErrorM,
+            landedAt: simTime
+          };
         }
       }
       world.updateChunks(current.basket.position);
@@ -147,13 +283,8 @@ export function createFlySession({ seed = 0xc1002026, selection = DEFAULT_FLY_SE
     clearControls();
     state.controlOwner = "AUTO_RECOVERY";
     state.stage = "AUTO_RECOVERY";
-    state.recoveryPlan = planBalloonRecovery({ vehicle, world, atmosphere, simTime: clock.simTime });
-    state.lastPlanTime = clock.simTime;
-    state.recoveryPlans.push({
-      simTime: clock.simTime,
-      selected: state.recoveryPlan.selected ? { x: state.recoveryPlan.selected.x, z: state.recoveryPlan.selected.z, safe: state.recoveryPlan.selected.terrain.safe } : null,
-      writesPose: state.recoveryPlan.writesPose
-    });
+    state.recoveryDeadline = null;
+    installRecoveryPlan(clock.simTime, "USER_REQUEST", false);
     return true;
   };
 

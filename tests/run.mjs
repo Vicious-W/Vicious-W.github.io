@@ -41,7 +41,9 @@ import { createProceduralWorld, CHUNK_SIZE_M } from "../src/scenes/fly/world/pro
 import { C100_MANIFEST } from "../src/scenes/fly/vehicles/c100Manifest.js";
 import { aerodynamicDragForce } from "../src/scenes/fly/vehicles/hotAirBalloon.js";
 import { createFlySession } from "../src/scenes/fly/flySession.js";
-import { planBalloonRecovery } from "../src/scenes/fly/recovery/recoveryPlanner.js";
+import { planBalloonRecovery, recoveryControls } from "../src/scenes/fly/recovery/recoveryPlanner.js";
+import { applyOriginShiftToObserver } from "../src/scenes/fly/flyScene.js";
+import { vehicleRegistry, weatherRegistry } from "../src/scenes/fly/registry.js";
 import { readFileSync } from "node:fs";
 import * as THREE from "three";
 
@@ -1318,6 +1320,38 @@ section("FLY fixed clock / atmosphere / deterministic world");
   const shift = worldA.maybeShiftOrigin({ x: 5000, y: 20, z: -3500 }, 12);
   assert(shift && worldA.originShiftCount === 1 && beforeOrigin.seed === worldA.seed,
     "跨阈值只迁移局部原点，世界种子与逻辑坐标不变");
+
+  const obstacleTypes = new Map();
+  for (let cz = -5; cz <= 5; cz++) {
+    for (let cx = -5; cx <= 5; cx++) {
+      for (const obstacle of worldA.obstaclesForChunk(cx, cz)) {
+        if (!obstacleTypes.has(obstacle.type)) obstacleTypes.set(obstacle.type, obstacle);
+      }
+    }
+  }
+  assert(["TREE", "BUILDING", "POWER_POLE", "POWER_LINE"].every(type => obstacleTypes.has(type)),
+    "确定性近场数据生成树木、建筑、电杆和电线四类可碰撞障碍");
+  for (const obstacle of obstacleTypes.values()) {
+    const position = obstacle.type === "POWER_LINE"
+      ? { x: (obstacle.ax + obstacle.bx) * 0.5, y: (obstacle.ay + obstacle.by) * 0.5, z: (obstacle.az + obstacle.bz) * 0.5 }
+      : { x: obstacle.x, y: obstacle.baseY + Math.min(1, obstacle.height * 0.5), z: obstacle.z };
+    const contacts = worldA.obstacleContacts({ position, radius: 1.1, halfHeight: 0.68 });
+    assert(contacts.some(contact => contact.obstacleId === obstacle.id),
+      `${obstacle.type} 的安全身份与实际碰撞查询共用同一 obstacle id`);
+  }
+  assert(worldA.snapshot().obstacleCacheCount <= 192,
+    `长距离候选查询后的确定性障碍缓存仍有界: ${worldA.snapshot().obstacleCacheCount}`);
+
+  const observer = {
+    cameraPosition: new THREE.Vector3(17, 8, -11),
+    desiredCamera: new THREE.Vector3(21, 9, -7),
+    desiredTarget: new THREE.Vector3(25, 5, -3)
+  };
+  const anchorBefore = new THREE.Vector3(30, 6, 4).sub(observer.cameraPosition).project(new THREE.PerspectiveCamera(56, 1.6, 0.1, 1000));
+  applyOriginShiftToObserver(observer, { delta: { x: 128, y: 0, z: -128 } });
+  const anchorAfter = new THREE.Vector3(30 - 128, 6, 4 + 128).sub(observer.cameraPosition).project(new THREE.PerspectiveCamera(56, 1.6, 0.1, 1000));
+  assert(anchorBefore.distanceTo(anchorAfter) < 1e-12,
+    "浮动原点事件对相机/目标应用同一平移，固定世界锚点的相对投影严格连续");
 }
 
 section("FLY C-100 manifest / relative air / thermal causality");
@@ -1331,6 +1365,10 @@ section("FLY C-100 manifest / relative air / thermal causality");
   assert(C100_MANIFEST.certifiedWeight.role === "limit-not-takeoff-mass"
     && C100_MANIFEST.masses.envelope.value < C100_MANIFEST.certifiedWeight.value,
     "certified weight、包络自重和实际质量字段没有混用");
+  assert(typeof vehicleRegistry.hotAirBalloonC100.previewFactory === "function"
+    && typeof weatherRegistry.clear.previewFactory === "function"
+    && weatherRegistry.clear.compatibleVehicles.includes("hotAirBalloonC100"),
+    "FLY_CONFIG 的气象/飞行器预览与兼容性来自注册表，不写死在主循环");
 
   const still = aerodynamicDragForce({ x: 4, y: -1, z: 2 }, { x: 4, y: -1, z: 2 }, 1.2, 0.5, 20);
   assert(Math.hypot(still.x, still.y, still.z) < 1e-12,
@@ -1362,6 +1400,86 @@ section("FLY C-100 manifest / relative air / thermal causality");
   fly.advance(2);
   assert(fly.snapshot().vehicle.fuelKg === fuelAfterVent, "燃烧器关闭后燃料严格不变且从不增加");
   fly.dispose();
+
+  const collision = createFlySession({ seed: 991 });
+  let building = null;
+  for (let cz = -5; cz <= 5 && !building; cz++) {
+    for (let cx = -5; cx <= 5 && !building; cx++) {
+      building = collision.world.obstaclesForChunk(cx, cz).find(obstacle => obstacle.type === "BUILDING") || null;
+    }
+  }
+  const vehicle = collision.vehicle;
+  const dx = building.x - building.halfX - vehicle.constants.basketCollisionRadiusM + 0.12 - vehicle.basket.position.x;
+  const dz = building.z - vehicle.basket.position.z;
+  const dy = building.baseY + vehicle.constants.basketHalfHeightM - vehicle.basket.position.y;
+  for (const body of [vehicle.basket, vehicle.envelope]) {
+    body.position.x += dx; body.position.y += dy; body.position.z += dz; body.velocity.x = 6;
+  }
+  const obstacleImpact = vehicle.step(1 / 120, 0, { burner: 0, vent: 0 });
+  vehicle.step(1 / 120, 1 / 120, { burner: 0, vent: 0 });
+  assert(obstacleImpact.obstacleContacts.some(contact => contact.id === building.id)
+    && obstacleImpact.basket.velocity.x < 0,
+    "篮筐碰撞形状不能穿过同一 BUILDING 代理，接触法向真实改变速度");
+  assert(Math.abs(vehicle.basket.angularVelocity.z) > 0.1 && Math.abs(vehicle.basket.tilt.z) > 0,
+    "偏心障碍碰撞通过惯量产生角速度和可观察倾倒姿态");
+  collision.dispose();
+
+  for (const type of ["TREE", "POWER_POLE", "POWER_LINE"]) {
+    const proxyCollision = createFlySession({ seed: 991 });
+    let obstacle = null;
+    for (let cz = -5; cz <= 5 && !obstacle; cz++) {
+      for (let cx = -5; cx <= 5 && !obstacle; cx++) {
+        obstacle = proxyCollision.world.obstaclesForChunk(cx, cz).find(candidate => candidate.type === type) || null;
+      }
+    }
+    const proxyVehicle = proxyCollision.vehicle;
+    let target;
+    let approach;
+    if (type === "POWER_LINE") {
+      const lineDx = obstacle.bx - obstacle.ax, lineDz = obstacle.bz - obstacle.az;
+      const lineLength = Math.hypot(lineDx, lineDz);
+      const normal = { x: -lineDz / lineLength, z: lineDx / lineLength };
+      const offset = proxyVehicle.constants.basketCollisionRadiusM + obstacle.radius - 0.12;
+      target = {
+        x: (obstacle.ax + obstacle.bx) * 0.5 + normal.x * offset,
+        y: (obstacle.ay + obstacle.by) * 0.5,
+        z: (obstacle.az + obstacle.bz) * 0.5 + normal.z * offset
+      };
+      approach = { x: -normal.x * 6, z: -normal.z * 6 };
+    } else {
+      target = {
+        x: obstacle.x - obstacle.radius - proxyVehicle.constants.basketCollisionRadiusM + 0.12,
+        y: obstacle.baseY + Math.min(2, obstacle.height * 0.5),
+        z: obstacle.z
+      };
+      approach = { x: 6, z: 0 };
+    }
+    const offset = {
+      x: target.x - proxyVehicle.basket.position.x,
+      y: target.y - proxyVehicle.basket.position.y,
+      z: target.z - proxyVehicle.basket.position.z
+    };
+    for (const body of [proxyVehicle.basket, proxyVehicle.envelope]) {
+      body.position.x += offset.x; body.position.y += offset.y; body.position.z += offset.z;
+      body.velocity.x = approach.x; body.velocity.z = approach.z;
+    }
+    const proxyImpact = proxyVehicle.step(1 / 120, 0, { burner: 0, vent: 0 });
+    assert(proxyImpact.obstacleContacts.some(contact => contact.id === obstacle.id),
+      `篮筐刚体实际消费与安全查询同源的 ${type} 碰撞代理`);
+    proxyCollision.dispose();
+  }
+
+  const dragging = createFlySession({ seed: 991 });
+  dragging.vehicle.basket.velocity.x = 6;
+  const dragContact = dragging.vehicle.step(1 / 120, 0, { burner: 0, vent: 0 });
+  const dragNext = dragging.vehicle.step(1 / 120, 1 / 120, { burner: 0, vent: 0 });
+  assert(dragContact.groundContactPoints >= 2 && dragContact.dragging
+    && dragNext.basket.velocity.x < dragContact.basket.velocity.x,
+    "四角地形接触在高速着陆时形成多点法向、拖曳和摩擦减速");
+  assert(dragNext.basket.inertiaKgM2.x > 0 && dragNext.basket.inertiaKgM2.z > 0
+    && Math.hypot(dragNext.basket.angularVelocity.x, dragNext.basket.angularVelocity.z) > 0,
+    "篮筐快照暴露正惯量、角速度和接触力矩，不再用纯视觉 tilt 跟随");
+  dragging.dispose();
 }
 
 section("FLY render-rate determinism / origin / recovery");
@@ -1402,6 +1520,16 @@ section("FLY render-rate determinism / origin / recovery");
     "AUTO_RECOVERY 规划只评估地形/风并输出控制目标，从不写篮筐或包络位姿");
   assert(plan.selected?.terrain.safe && !["WATER", "FOREST", "ROAD"].includes(plan.selected.terrain.surface),
     `规划器拒绝水面、树林和道路，选择安全地表: ${plan.selected?.terrain.surface}`);
+  const planControls = recoveryControls({
+    vehicle: recovery.vehicle,
+    plan,
+    world: recovery.world,
+    atmosphere: recovery.atmosphere,
+    simTime: recovery.clock.simTime
+  });
+  assert(Number.isFinite(planControls.targetDistanceM) && Number.isFinite(planControls.desiredLayerAgl)
+    && planControls.landingRegionId === plan.selected.landingRegionId,
+    "AUTO 控制律实际读取候选坐标、ETA、巡航风层和安全区域，而非只看正下方 AGL");
   recovery.requestRecovery();
   let recoverySeconds = 0;
   while (recovery.state.controlOwner !== "RECOVERED" && recoverySeconds < 420) {
@@ -1414,7 +1542,56 @@ section("FLY render-rate determinism / origin / recovery");
     "RECOVERED 只在安全地表接触稳定且燃烧器关闭后成立");
   assert(recovery.state.recoveryPlans.every(entry => entry.writesPose === false),
     "整个自动回收重规划历史均未获得位姿写权限");
+  const finalPlan = recovery.state.recoveryPlans.at(-1);
+  assert(recovery.state.recoveryPlans.length > 1
+    && recovery.state.recoveryPlans.some(entry => entry.reason === "FORECAST_DIVERGED" || entry.reason === "LOW_UNSAFE"),
+    `预测失配/地表变化会产生有原因的重规划历史: ${recovery.state.recoveryPlans.length} plans`);
+  assert(finalPlan.actualLanding
+    && (finalPlan.actualLanding.landingRegionId === finalPlan.selected.landingRegionId
+      || finalPlan.actualLanding.errorM <= finalPlan.selected.arrivalToleranceM),
+    `实际接地点受最后计划区域/容差约束: ${finalPlan.actualLanding?.errorM.toFixed(2)} m`);
+  assert(landed.unsafeContactCount === 0,
+    "AUTO_RECOVERY 全时步历史没有接触 WATER / FOREST / ROAD / 障碍不安全地表");
   recovery.dispose();
+
+  for (const seed of [0x1234, 0x7788]) {
+    const alternate = createFlySession({ seed });
+    alternate.resume();
+    alternate.setControl("burner", true); alternate.advance(28); alternate.setControl("burner", false);
+    alternate.requestRecovery();
+    let seconds = 0;
+    while (alternate.state.controlOwner !== "RECOVERED" && seconds < 420) {
+      alternate.advance(2); seconds += 2;
+    }
+    const result = alternate.snapshot();
+    const lastPlan = alternate.state.recoveryPlans.at(-1);
+    assert(result.controlOwner === "RECOVERED" && result.vehicle.terrain.safe
+      && result.unsafeContactCount === 0 && lastPlan.actualLanding,
+      `固定种子 ${seed} 穿过混合地表后仍按当前计划安全回收: ${seconds}s / ${lastPlan.actualLanding?.errorM.toFixed(1)}m`);
+    alternate.dispose();
+  }
+
+  const longJourney = createFlySession({ seed: 0x5eedc0de });
+  longJourney.resume();
+  longJourney.setControl("burner", true); longJourney.advance(28); longJourney.setControl("burner", false);
+  while (longJourney.snapshot().world.originShiftCount < 3 && longJourney.clock.simTime < 180) {
+    longJourney.advance(0.5);
+  }
+  longJourney.setControl("vent", true); longJourney.advance(5); longJourney.setControl("vent", false);
+  longJourney.requestRecovery();
+  let longRecoverySeconds = 0;
+  while (longJourney.state.controlOwner !== "RECOVERED" && longRecoverySeconds < 420) {
+    longJourney.advance(2); longRecoverySeconds += 2;
+  }
+  const longResult = longJourney.snapshot();
+  const longFinalPlan = longJourney.state.recoveryPlans.at(-1);
+  assert(longResult.controlOwner === "RECOVERED" && longResult.world.originShiftCount >= 3
+    && longResult.vehicle.terrain.safe && longResult.unsafeContactCount === 0
+    && longFinalPlan.actualLanding
+    && (longFinalPlan.actualLanding.landingRegionId === longFinalPlan.selected.landingRegionId
+      || longFinalPlan.actualLanding.errorM <= longFinalPlan.selected.arrivalToleranceM),
+  `高空、三次浮动原点迁移后的同一路径仍按最后计划安全回收: ${longRecoverySeconds}s / ${longFinalPlan.actualLanding?.errorM.toFixed(1)}m`);
+  longJourney.dispose();
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

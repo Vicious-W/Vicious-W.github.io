@@ -1,312 +1,247 @@
 # Agent Implementation Report
 
 IMPLEMENTATION_STATUS: COMPLETE
-VERDICT_ADDRESSED: none — `.agent/latest-review.md` is `NOT_RUN / NOT_REVIEWED` for the
-previous task and contains no Blocker or Major for this task.
+
+VERDICT_ADDRESSED: CHANGES_REQUIRED — all valid findings `R-001` through `R-006` are addressed.
 
 ## Metadata
 
 - Task: `fly-foundation-hot-air-balloon-v1-2026-07-31`
-- Implementation round: 1 (absolute target for this parent run: 2)
+- Implementation round: 2 (absolute target for this parent run: 2)
 - Implementation segment: 1
-- Round review base commit: `a0f0907b0d42e6bfaed74811457c65a3bc8388ac`
-- Process base commit / current HEAD: `a4785e6f40c0a91d7f454c9f1d49c5cc4f40edcb`
+- Base commit / current HEAD: `a740d543075fc21c0ef9b15a5a111ddb4dc379ca`
+- Round review base commit: `59328387f34ecec820f80553c4b6865d11e0692f`
 - Implementer runtime: codex / gpt-5.6-sol / xhigh
-- Session generation: 1 (new role session; run manifest
-  `.agent/artifacts/runs/implementation-r1-s1-20260731T180311Z-14431.env`)
-- Scope: the first complete FLY `clear + hotAirBalloonC100` vertical slice, the shared
-  multi-scene host, and only the minimum SOURCE lifecycle adapter/cleanup required by that host.
-- Git: no stage, commit, push, deploy, reset, clean, rebase, branch switch or Git-history write was
-  performed. The neutral wrapper still owns the checkpoint.
+- Role session: `019fb958-2e1c-7352-8877-d4fa6a352693` (resumed, generation 1)
+- Run manifest: `.agent/artifacts/runs/implementation-r2-s1-20260731T191100Z-27936.env`
+- Scope: review-required corrections to the accepted first FLY slice only. SOURCE business logic,
+  completed scenes, protected specifications, and validation control scripts were preserved.
+- Git ownership: no stage, commit, push, deploy, reset, clean, rebase, branch switch, or history write
+  was performed. The neutral wrapper owns the checkpoint.
 
-## 1. Outcome and changed components
+## 1. Outcome and review findings
 
-The site now opens in a textless real-time three-dimensional selector rather than directly creating
-SOURCE. One canvas and one host generation own exactly one of `SITE_SELECT`, `SOURCE`, or `FLY`.
-The FLY route supports the registered clear-weather/C-100 configuration, its vehicle-specific guide,
-explicit departure, manual burner and vent controls, three cameras, a deterministic journey with
-floating-origin shifts, and a physical automatic safe landing that ends only after stable contact.
+The FLY slice now has a real registry-driven 3D configuration state, independent multi-pointer
+continuous controls, camera-continuous floating-origin shifts, deterministic visible/collidable
+near-field obstacles, a rotational multi-point basket contact model, and candidate-driven wind-layer
+recovery with recorded replans and safe-contact completion. The guide is a real modal focus boundary.
 
-| Component ID | Files | Implemented result |
+| Review ID | Result | Acceptance evidence |
 | --- | --- | --- |
-| `SITE-HOST-001` | `src/core/sceneHost.js`, `resourceScope.js`, `src/main.js` | Single active scene generation; explicit create/dispose ownership; visibility/resize/Escape routing; test-only direct URL support; resource counters. |
-| `SITE-SELECT-001` | `src/scenes/selector/selectorScene.js` | Textless pickable SOURCE reactor-pool miniature and FLY 16-gore balloon miniature; pointer and keyboard activation; portrait framing. It never creates either business physics world. |
-| `SOURCE-LIFE-001` | `src/scenes/reactor/sourceScene.js`, one cleanup line in `physicalScene.js` | Idempotent SOURCE adapter around the accepted factory. Existing SOURCE owns its established visibility behavior. Dispose now also removes the previously omitted `__SOURCE_PLANT__` hook. No reactor, lab, water, glass, camera, console, or audio business behavior was rewritten. |
-| `FLY-REG-001` | `src/scenes/fly/registry.js` | Data-driven registries contain exactly `clear` and `hotAirBalloonC100`; compatibility, guide, control schema, recovery strategy, and source manifest are vehicle/weather data. |
-| `FLY-CLK-001` | `src/core/simulationClock.js`, `flySession.js` | `1/120 s` authoritative fixed step, timestamped action queue, 12-substep cap, explicit dropped backlog, pause/resume, previous/current snapshots, and render-only interpolation. |
-| `FLY-ATM-001` | `atmosphere/standardAtmosphere.js`, `weather/clearWeather.js` | U.S. Standard Atmosphere troposphere/lower-stratosphere baseline plus one coherent moist density, layered wind, continuous deterministic gusts, thermal columns/downwash, and near-ground mechanical turbulence; precipitation/cloud water/electric field remain zero for clear weather. |
-| `FLY-WORLD-001` | `world/proceduralWorld.js`, `worldView.js` | Seeded analytic terrain shared by render, ground contact, and landing safety; FIELD/FOREST/ROAD/WATER metadata; 25 bounded active chunks; continuous borders; instanced forest proxies; procedural sky/sun/fog; thermal-site 3D cloud clusters whose opacity reads atmospheric humidity; 96 m floating-origin threshold. |
-| `FLY-C100-GEO-001` | `vehicles/c100Manifest.js`, `balloonModel.js` | 16 separately grouped longitudinal gores, 24 vertical envelope rings, longitudinal/horizontal load tapes, Nomex mouth, top parachute vent, deflation line, four load lines, frame, twin burners/valves/flames, two tanks/valves/hoses, four-wall wicker basket with thickness/ribs/floor/rim, and physical burner/vent handles. |
-| `FLY-C100-THERM-001` | `vehicles/hotAirBalloon.js` | Fuel mass flow → thermal power → lumped internal energy → temperature/density/internal-air mass → displaced-air buoyancy. Heat transfer, mouth exchange, vent enthalpy loss, fuel exhaustion and maximum-temperature interlock are continuous states, not velocity commands. |
-| `FLY-C100-DYN-001` | `vehicles/hotAirBalloon.js` | Independent envelope and basket positions/velocities, tension-only spring/damper suspension, distinct relative-wind drag, gravity, terrain contact/friction, visible swing/line load, liftoff/landing stages, and a recovered envelope-unload visual proxy. There is no horizontal user force. |
-| `FLY-CTRL-001` | `flyScene.js`, `main.css` | Guide focus boundary, `Space`/burner, `V`/vent, `R`/recovery, `C`/camera, pointer-held physical handles, icon-only mobile controls, touch pointer cancellation, focus-loss zeroing, and icon-only abandon confirmation. Guide pause zeroes holds and does not accrue missed physics. |
-| `FLY-REC-001` | `recovery/recoveryPlanner.js`, `flySession.js` | Candidate scoring rejects WATER/FOREST/ROAD, slope, and dense obstacles; planner records `writesPose:false`; AUTO owns only burner/vent, replans near unsafe terrain, follows real wind/contact, and requires 3 s stable safe-field contact before `RECOVERED`. |
-| `FLY-CAM-001` | `flyScene.js` | PILOT (basket eye), CHASE, and ORBIT views read interpolated vehicle state only; camera switches do not write physics. |
-| `FLY-AUD-001` | `audio/flyAudio.js` | AudioContext is created only by departure gesture. Independent burner, relative-wind, fabric/swing, suspension-load and contact-impact voices read authoritative state; pause/dispose suspends or closes all nodes. |
+| `R-001` Major | RESOLVED | Recovery controls read target coordinates, ETA, target distance, cruise AGL, current/forecast winds, and layered wind scores. `ZONE_UNSAFE`, `TARGET_PASSED`, `FORECAST_DIVERGED`, `LOW_UNSAFE`, and terminal `SAFE_CONTACT_LOCK` replans are recorded. Four fixed journeys recover on safe FIELD with zero unsafe contacts; every plan has `writesPose:false`; actual contact is in the last region or declared tolerance. |
+| `R-002` Major | RESOLVED | Pointer ownership is `pointerId → action` plus a set of owners per action. `pointerup`, `pointercancel`, `lostpointercapture`, blur, hidden, and orientation change release only the appropriate owners or clear all. Mobile/tablet evidence covers both acquisition orders and cancellation paths; controls/classes end at `0/0` and fuel only falls while burner is held. |
+| `R-003` Major | RESOLVED | Every newly consumed origin event translates camera position, desired camera, and desired target by `-shift.delta` before normal damping. PILOT, CHASE, and ORBIT browser corrections each report `translationErrorM:0`; logic projection error is below `1e-12`. |
+| `R-004` Major | RESOLVED | Basket state now includes dimensions, collision radius, roll/pitch, angular velocity/acceleration, positive inertias, four rotated bottom contacts, terrain normals, penalty/damping/friction loads, contact torques, dragging and tipped states. TREE, BUILDING, POWER_POLE, and POWER_LINE render/safety/collision paths consume the same deterministic obstacle IDs and geometry. Fixed tests exercise the basket against every type plus high-speed ground drag and angular response. |
+| `R-005` Major | RESOLVED | `weatherId`, `vehicleId`, and `confirmed` begin null/null/false. Blank canvas hits do nothing. Registry preview factories provide the clear-weather and C-100 3D objects; only their raycast hits and the 3D confirm pad advance state. Compatibility is checked registry-to-registry and the confirmed IDs construct the session. |
+| `R-006` Minor | RESOLVED | Guide open sets canvas/flight controls inert, focuses the single action, traps Tab/Shift+Tab, restores the opener in flight, and uses stage-correct labels. A real 300 ms browser wait changed simulation time by exactly `0 s`; closing the guide resumed it. |
 
-`PROJECT.md` and `README.md` were updated from the now-false “FLY not implemented” fact to the
-present first-slice status. `tests/run.mjs` grew from 338 to 372 checks.
+## 2. Changed component IDs and files
 
-## 2. Resource ownership and SOURCE protection
+| Component ID | Files | Round-two change |
+| --- | --- | --- |
+| `FLY-CONFIG-001` | `src/scenes/fly/configPreview.js`, `flyScene.js`, `registry.js` | Registry-owned C-100 and clear-weather previews, weather-state wind beads, selected halos, true 3D raycast targets, compatibility gate, confirmation state, confirmed session IDs, portrait/non-portrait placement, and blank-hit rejection. |
+| `FLY-CTRL-001` | `flyScene.js` | Independent pointer/action ownership, simultaneous burner+vent, complete release/cancel/lost-capture/global cleanup, synchronized active classes, and retained keyboard owners. |
+| `FLY-GUIDE-001` | `flyScene.js` | Modal inert boundary, focus trap, stage-specific accessible action, opener restoration, deterministic guide pause/resume. |
+| `FLY-CAM-001` | `flyScene.js` | `applyOriginShiftToObserver()` and per-event evidence for camera/desired-camera/desired-target translation in PILOT, CHASE, and ORBIT. |
+| `FLY-WORLD-001` | `world/proceduralWorld.js`, `worldView.js` | Deterministic obstacle arrays, same-identity safety/contact queries, visible instanced/rendered proxies, bounded LRU cache, terrain normals and landing-zone probes. |
+| `FLY-C100-DYN-001` | `vehicles/hotAirBalloon.js` | Four-point rotated basket footprint; roll/pitch inertia and dynamics; suspension, ground, friction and obstacle torques; collision stabilization; dragging/tipped/stable state. |
+| `FLY-REC-001` | `recovery/recoveryPlanner.js`, `flySession.js` | Layered-wind forward forecast, candidate reach/tolerance metadata, target-aware vertical control, thermal-lag unsafe-path guard, deadline-preserving replans, safe-contact terminal candidate, recovery/unsafe history, and strict physical completion predicate. |
+| `FLY-TEST-001` | `tests/run.mjs` | Registry, origin projection, shared obstacle identity, all obstacle collision types, multipoint/drag/angular contact, candidate-control, replanning, final-plan relation, three ordinary seeds and one high/three-origin journey. Total is now 394 checks. |
+| `PROJECT-FACT-001` | `PROJECT.md` | Current fact updated from “awaiting initial formal review” to round-two corrections complete and awaiting final review. No specification or protocol was changed. |
 
-- `SceneHost` tears down the current scene before incrementing the generation and constructing the
-  next. Each scene owns one renderer/RAF; only FLY owns a FLY clock/world, and only SOURCE owns its
-  existing cannon world.
-- `ResourceScope` records listeners, timers and DOM cleanup. FLY additionally disposes world chunk
-  geometry/materials, sky/cloud/tree resources, balloon geometry/materials, audio nodes/context,
-  clock/action queue, guide/controls, renderer, and `__FLY__`. The selector disposes both miniature
-  trees and its renderer. SOURCE remains behind an idempotent adapter.
-- Successful desktop browser sequence ended with counts
-  `created={SITE_SELECT:3,SOURCE:2,FLY:1}` and
-  `disposed={SITE_SELECT:3,SOURCE:1,FLY:1}` while the second SOURCE was the sole active scene.
-  After the first SOURCE return, SOURCE state and `__SOURCE_PLANT__` were absent before selector
-  creation continued.
-- First SOURCE interaction still selected `AUTO`, unlocked both accepted audio chains, preserved
-  21 intact cubes / 0 fragments / durability 1.0, and reported one SOURCE world/RAF. The second
-  SOURCE was a new `NONE / INTERLOCKED_RESET / unlocked:false` session with the same intact glass
-  inventory. The existing 338 SOURCE logic checks remained green.
+## 3. Sources, geometry, identity, and proxy labels
 
-## 3. Physical clock, world coordinates and atmosphere
+No new factual product claim was introduced in this round. Existing primary sources remain:
 
-- Authoritative step: `0.008333333333333333 s`; maximum catch-up: 12 substeps. Excess wall time is
-  counted as `droppedTime`, not replayed after a hidden tab. Guide and hidden-state pauses clear
-  continuous inputs and reset the accumulator on resume.
-- World state uses double-precision logical `x/y/z`. Render and camera positions subtract the current
-  origin. A shift snaps horizontal origin to the 128 m chunk grid and records its event without
-  changing logical position, velocity, temperature, fuel, wind phase, control owner or trajectory.
-- Active terrain is a `5 × 5 = 25` chunk window. Each chunk is 128 m and uses a 12 × 12 visible mesh;
-  stale chunks are disposed. Landing-region metadata uses deterministic 160 m cells so a normally
-  drifting balloon has a physically useful contact window. The canonical 70 m launch area is a
-  safe FIELD, matching the task's specified departure condition.
-- Standard-atmosphere cross-checks:
+- Cameron C-Type official data for 16 gores, 100,000 ft³, 65 ft, 57 ft, 2,000 lb certified
+  limit, and 218 lb standard envelope weight (`PRIMARY_SOURCE` / direct `DERIVED` SI conversions).
+- Cameron same-product-family burner/tank pages and the FAA Balloon Flying Handbook for the first
+  reference configuration and operational relationships.
+- U.S. Standard Atmosphere 1976 for the clear-weather atmospheric baseline.
 
-  | Altitude | Temperature | Pressure | Density |
-  | --- | ---: | ---: | ---: |
-  | 0 m | 288.15 K | 101325 Pa | 1.225000 kg/m³ |
-  | 1000 m | 281.65 K | 89874.56 Pa | 1.111643 kg/m³ |
-  | 5000 m | 255.65 K | 54019.89 Pa | 0.736116 kg/m³ |
-  | 11000 m | 216.65 K | 22632.04 Pa | 0.363918 kg/m³ |
+Source and abstraction labels are preserved:
 
-- At the browser's pre-AUTO 78.35 m sample, wind was
-  `(5.194, -0.002, 1.858) m/s`; changing altitude changes both direction and speed. All drag uses
-  `v_body - v_wind`; the zero-relative-speed automated check is within floating-point zero.
+- `FLY_REFERENCE_CONFIGURATION`: C-100 envelope plus same-manufacturer-family lower assembly; not a
+  serial-number aircraft or asserted certified assembly.
+- `DERIVED`: direct unit conversions and values calculated from sourced quantities.
+- `ENGINEERING_PROXY`: lower-system masses, burner/thermal coefficients, suspension coefficients,
+  basket dimensions/contact, procedural obstacle geometry, weather field and recovery forecast.
+- `SOURCE_VERIFIED` / `SOURCE_ART_DIRECTION`: existing SOURCE labels were not altered.
 
-## 4. C-100 sources, mass manifest, geometry and state links
+Round-two geometry and shared identity:
 
-### Source labels
+| Geometry | Dimensions / representation | Shared consumers |
+| --- | --- | --- |
+| Basket contact body | `1.75 × 1.35 × 1.36 m`; horizontal radius `hypot(0.875,0.675) m`; four rotated bottom corners | Ground contact, angular torque, obstacle contact, render tilt, audio contact state, recovery stable-contact gate |
+| TREE | Deterministic cylinder, radius `0.62 × scale`, height `9.4 × scale`, scale `0.75…1.11` | `obstaclesForChunk`, rendered instances, clearance/safety, basket collision; identical `TREE:cx:cz:index` ID |
+| BUILDING | Deterministic box, `10.4 × 8.2 × 6.2 m` | Render mesh, clearance/safety, basket collision; identical `BUILDING:cx:cz` ID |
+| POWER_POLE | Deterministic cylinder, radius `0.34 m`, height `10.5 m` | Render instances, clearance/safety, basket collision; identical pole ID |
+| POWER_LINE | Deterministic 3D segment, radius `0.13 m` | Render line, clearance/safety, closest-segment collision; identical line ID |
+| Landing safety | 160 m deterministic surface cells; 13 probes per requested radius; FIELD/slope/obstacle clearance gates | Planner candidates, replan assessment, terminal safe-contact lock, recovery completion evidence |
+| World bounds | 128 m chunks; fixed 5×5 active window; origin threshold 96 m; obstacle LRU ≤192 chunks | Render, physics queries, planner, floating-origin evidence |
 
-- `PRIMARY_SOURCE`: Cameron C-Type gives 16 gores, 100,000 ft³, 65 ft, 57 ft, 2,000 lb certified
-  weight, 218 lb standard envelope weight, Nomex lower panels, parachute/deflation line and load-tape
-  topology. Cameron burners/tanks pages support the product-family twin-burner/tank form. FAA Balloon
-  Flying Handbook supports open-mouth pressure approximation, burner/vent operation, wind-layer
-  navigation, landing and recovery structure. U.S. Standard Atmosphere 1976/NASA constants support
-  the atmosphere formulas.
-- `DERIVED`: `2,831.684659 m³`, `19.812 m`, `17.3736 m`, `907.18474 kg` certified limit, and
-  `98.883137 kg` envelope mass are direct SI conversions of those source values.
-- `FLY_REFERENCE_CONFIGURATION`: the Cameron C-100 envelope plus same-family lower system. It is not
-  claimed to be a certified serial-number aircraft or a verified type-compatible assembly.
+Obstacle instances are deterministic analytic `ENGINEERING_PROXY` geometry, not geospatial real-world
+objects. Their value is causal agreement: a visible proxy, landing clearance, and collision response
+all resolve from the same immutable obstacle record.
 
-### Mass inventory
+## 4. State and causality links
 
-| Mass | Value | Label |
-| --- | ---: | --- |
-| Standard envelope | 98.883 kg | `DERIVED` Cameron 218 lb |
-| Basket | 145 kg | `ENGINEERING_PROXY` |
-| Frame + twin burners | 58 kg | `ENGINEERING_PROXY` |
-| Two empty tanks | 52 kg | `ENGINEERING_PROXY` |
-| Initial fuel | 76 kg | `ENGINEERING_PROXY` |
-| Pilot | 82 kg | `ENGINEERING_PROXY` |
-| Initial hardware/fuel/pilot subtotal | 511.883 kg | derived sum; distinct from certified limit |
-| Initial internal air | 3420.250 kg | state-derived `pV/(RT)` |
-| Initial full physical integration mass | 3932.134 kg | hardware + internal air; not mislabeled as certified gross weight |
+- Configuration preview selection is registry state, not a fixed debug/default alias. Clear-weather
+  wind beads sample the weather factory; selected visuals read `weatherId`/`vehicleId`; session
+  construction reads only confirmed IDs.
+- Burner/vent values are the union of their active keyboard and pointer owners. Fuel/heat/vent loss
+  continue through the existing authoritative thermal chain; CSS active state reads the same union.
+- Basket orientation integrates contact and suspension torques through explicit `inertiaKgM2`;
+  `groundContactPoints`, `obstacleContacts`, `dragging`, `tipped`, angular states, and stable-contact
+  time are snapshot outputs, not visual-only flags.
+- World render uses each active chunk's exact obstacle array. `terrainAt`, `landingZoneAt`, and
+  `obstacleContacts` query the same object records/IDs.
+- Recovery candidates record target, predicted landing, ETA, cruise AGL, landing region, arrival
+  tolerance, score and reachability. Controls read target vector and layered wind; assessment records
+  prediction error, remaining ETA, zone state and replan reason. Planning never writes body pose,
+  velocity, wind, or collision state.
+- `unsafeContactEvents` samples actual physical ground contact on unsafe terrain. `RECOVERED` requires
+  safe physical contact, ≥3 s stable contact, no dangerous drag/tip/obstacle state, burner closed,
+  and last-plan region/tolerance agreement.
+- Origin events retain logical body/wind/plan coordinates. Camera-local observer state receives the
+  same negative delta before damping; evidence retains mode, delta and translation error.
+- Guide inert/focus state and clock pause share the same open/close transition. Closing in flight
+  restores focus to the help opener and resets the clock accumulator.
 
-The certified 907.185 kg value is retained only as a separate reference-limit field. It is never used
-as envelope mass, actual hardware mass, or an artificial force.
+## 5. Deliberate abstractions and open gaps
 
-### Thermal/force samples
+All items below are non-blocking first-slice boundaries, not hidden claims of physical completeness:
 
-| State | Internal T | Internal density | Buoyancy | Weight | Fuel | Height/vertical speed |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| first fixed step | 291.799 K | 1.20785 kg/m³ | 33.923 kN | 38.561 kN | 76.000 kg | ground contact |
-| 28 s main burner | 360.951 K | 0.97543 kg/m³ | 33.895 kN | 32.054 kN | 70.629 kg | 7.52 m / +2.34 m/s |
-| +18 s coast | 351.970 K | state-derived | state-derived | state-derived | 70.629 kg | 76.36 m; origin shift 1 |
-| +5 s vent | 344.422 K | 1.01144 kg/m³ | state-derived | state-derived | 70.629 kg | continuous upward inertia, but cooling trend established |
+- `FLY-GAP-001` — Public product pages do not provide a complete serial configuration/mass/inertia
+  schedule for the chosen lower system. Manifest proxy values remain explicitly labeled.
+- `FLY-GAP-002` — Internal air is lumped and the suspension/basket use bounded low-DOF dynamics;
+  there is no CFD, rope FEM, wicker deformation or full fabric FEM.
+- `FLY-GAP-003` — Near-field obstacles use deterministic analytic primitives and the basket consumes
+  them as a bounded collision body. There is no global rigid-body allocation, canopy-to-obstacle
+  distributed contact, geospatial fidelity or destructive obstacle response. Full envelope/terrain
+  cloth contact remains the existing recovered unload/deflation presentation proxy.
+- `FLY-GAP-004` — Clear-weather sky, clouds, sun and haze are art-direction/atmospheric proxies, not
+  spectral or mesoscale weather simulation.
+- `FLY-GAP-005` — The single production JS bundle is `837.89 kB / 232.20 kB gzip`; Vite reports its
+  non-fatal >500 kB warning. Code splitting remains an optimization opportunity.
+- `FLY-GAP-006` — WebAudio node creation, state, voice bounds and lifecycle are verified, but actual
+  speaker listening/mix quality is unverified.
+- `FLY-GAP-007` — A full browser WebGL context-loss/restoration journey was not replayed this round.
 
-This demonstrates the required causal order: burner consumption/energy precede density and net-force
-change, the basket leaves through solved force/contact state, fuel stops changing after release, and
-vent cools the air without writing vertical velocity.
+The earlier report's “no individual obstacle collision / no basket edge or angular contact” gap is
+closed for the stated tree/building/pole/line and bounded basket proxy scope.
 
-Visible state links include burner flame ← `heatInputW/burnerValve`, envelope/basket transforms ←
-their independent interpolated bodies, load lines ← both attachment positions, basket tilt ← swing,
-recovered fabric unload ← `RECOVERED`, cloud opacity ← humidity, ground color/trees/safety/contact ←
-the same terrain query, and each sound voice ← its named real-time state.
+## 6. Performance and lifecycle
 
-## 5. Manual journey and automatic recovery evidence
-
-The successful desktop Playwright route used real icon-button pointer holds, not a second control
-model. The debug `advance()` only repeats the same `1/120 s` authoritative step to avoid waiting
-minutes on SwiftShader.
-
-- Departure: `READY_ON_FIELD / MANUAL`, fuel 76 kg, burner/vent zero, audio unlocked only by the
-  actual guide confirmation gesture.
-- Burner: 28 s hold reached `FREE_FLIGHT`, 7.69 m AGL, +2.35 m/s, 361.09 K and 70.616 kg fuel;
-  release returned both holds to zero.
-- Manual drift: 18 s coast reached `(104.64, 80.64, 26.47) m`, 78.35 m AGL, sampled the higher wind
-  layer and completed origin shift 1 before AUTO was requested.
-- Vent: 5 s hold changed 352.11 K → 344.22 K without consuming fuel; release returned the vent to 0.
-- Camera changed PILOT → CHASE without any vehicle-state change. Reopened guide produced exactly
-  `0 s` simulation change over the real 260 ms pause and remained fully readable.
-- AUTO: the only selected candidate was a safe FIELD and every plan recorded `writesPose:false`.
-  It passed continuous samples at 30/60/90/120/150 s, entered `LANDING`, and at 162 s reached
-  `RECOVERED` on FIELD with contact true, 3.43 s stable contact, burner 0, and 63.930 kg fuel.
-- The trajectory contained 217 one-second samples. First/middle/last logical positions were
-  approximately `(0.00,0.68,0.00)`, `(408.01,77.79,149.57)`, and `(889.21,1.46,310.46) m`.
-  Maximum adjacent one-second world displacement was 7.37 m, not a teleport. Nine recorded origin
-  shifts preserved the same logical curve and the active chunk count stayed 25.
-- The final envelope/vent/load-tape group is scaled and laid beside the basket as an explicit
-  `ENGINEERING_PROXY` for unloaded recovered fabric; it is not called a cloth simulation.
-
-## 6. Audio and performance
-
-- Before departure FLY has no AudioContext. The confirmed gesture produced `running`, 4 continuous
-  voices. Burner, wind, fabric/swing and suspension gains update from state; contact impulses create
-  throttled one-shots. Dispose closes the context. SOURCE and FLY audio never existed together in the
-  lifecycle evidence.
-- FLY browser resource snapshot during the full journey: 1 RAF, 1 physics world/clock, 27 registered
-  cleanup entries, 4 audio voices and 25 chunks. Selector snapshot: 1 RAF, 0 physics worlds, 0 voices.
-- DPR is capped at 1.5. Terrain is bounded, forest uses instancing, cloud geometry/material is shared,
-  and far environment has no rigid-body allocation. Physical correctness remains `1/120 s`; visual
-  degradation is limited to shared low-resolution geometry and procedural density proxies.
-- Production build is static and has no image/video environment assets, backend, runtime keys or
-  network service. Vite reports the expected non-fatal chunk-size warning: the main JS is about
-  816.8 kB / 225.0 kB gzip. `FLY-GAP-005` records the initial-load optimization opportunity.
+- Fixed physical step remains `1/120 s`; FLY has one authoritative clock/world. Rendering and debug
+  acceleration call the same physical step.
+- Browser recovered snapshot: 1 RAF, 1 physics world, 30 scoped listeners, 4 audio voices, 25 active
+  chunks, 192-entry maximum obstacle cache, 554 one-second trajectory samples.
+- The accelerated desktop journey used 25 origin shifts and 32 recovery plans. Maximum adjacent
+  one-second logical trajectory displacement was `8.206 m`; there was no pose teleport.
+- Tree and pole visuals are instanced; buildings and lines are bounded to the 25 active chunks.
+  Safety/planning cache is LRU-bounded at 192 even after long-range candidate queries.
+- Final lifecycle ended with a new FLY config and counts
+  `created={SITE_SELECT:2,SOURCE:1,FLY:2}` /
+  `disposed={SITE_SELECT:2,SOURCE:1,FLY:1}`. SOURCE debug hooks were gone, the new FLY had null
+  selection and no session, and only that FLY was active.
 
 ## 7. Verification
 
-### Unified validation — PASS
+### Standalone validation — PASS
 
 Final standalone command: `./scripts/run-validation.sh`
 
 | Check | Result |
 | --- | --- |
 | Dependency check | PASS |
-| Build | PASS |
-| Tests | PASS — 372/372 |
+| Build | PASS — Vite `837.89 kB / 232.20 kB gzip`; non-blocking chunk warning |
+| Tests | PASS — 394/394 |
 | Lint | NOT CONFIGURED |
 | Type check | NOT CONFIGURED |
-| Browser / visual | MANUAL REQUIRED by script; completed with Playwright MCP below |
+| Browser / visual in script | MANUAL REQUIRED; completed with Playwright MCP below |
 
-New Node coverage includes fixed-step/catch-up behavior, official atmosphere values/continuity,
-seeded weather, cross-altitude wind, chunk determinism/borders/bounds, origin migration, official
-C-100 conversions, certified/mass separation, zero relative-air drag, thermal/fuel/vent causality,
-30/60/120 Hz agreement over 120 s, planner pose immutability, unsafe-surface rejection and physical
-AUTO contact/recovery. The render-rate comparisons were equal below `1e-8`, well inside the 1% goal.
+`git diff --check` is PASS. Logic coverage includes registry factories/compatibility, blank config
+state, standard atmosphere and wind, 30/60/120 Hz determinism, origin projection, obstacle identity
+and bounded cache, actual basket collision with all four obstacle types, multipoint/angular/dragging
+contact, plan pose immutability, target/wind-layer control, replan history, actual-final plan relation,
+and zero unsafe contact for four deterministic journeys. Recovery times after request were 204 s,
+96 s, 334 s and 330 s for the automated cases.
 
-### Playwright MCP — PASS
+### Consolidated Playwright MCP pass — PASS
 
-Build output was served from `dist/` at `http://source.local/index.html` through
-`page.route('**/*')`; only that origin was accepted, decoded `.`/`..`/backslash/NUL segments were
-aborted, missing files were aborted, and MIME was preserved by asset extension. No background Vite,
-preview or HTTP server was used.
+The final built `dist/` was served at `http://source.local/index.html` only through
+`page.route('**/*')`. The route accepted only the synthetic origin, decoded and rejected empty,
+`.`/`..`, backslash and NUL path segments, preserved MIME by extension, aborted missing files, and
+never started Vite/preview/HTTP child processes.
 
-| Evidence | 390×844 | 768×1024 | 1440×900 |
-| --- | --- | --- | --- |
-| Canvas | 390×844 | 768×1024 | 1440×900 |
-| Page overflow X/Y | 0 / 0 | 0 / 0 | 0 / 0 |
-| Selector/config visible text | 0 / 0 | 0 / 0 | 0 / 0 |
-| Guide box | 370×582; all content fits | 680×417; all content fits | 680×478; all content fits |
-| Guide → departure | PASS | PASS | PASS |
-| Held burner / release | fuel fell; controls `0/0` | fuel fell; controls `0/0` | full liftoff sequence PASS |
-| Held vent / release | 294.29→293.77 K; `0/0` | 294.42→293.88 K; `0/0` | 352.11→344.22 K; `0/0` |
-| Recovery | stable FIELD / RECOVERED | stable FIELD / RECOVERED | 162 s trajectory / RECOVERED |
-| Console/page errors | 0 | 0 | 0 |
+| Evidence | Result |
+| --- | --- |
+| Responsive | `390×844`, `768×1024`, `1440×900` canvas exactly matched viewport; X/Y overflow `0/0`; guide boxes `370×581.531`, `680×417.156`, `680×478.125` and fit their viewports. |
+| 3D configuration | Each viewport began null/null/false; blank click stayed null/null/false; actual projected weather, vehicle and confirm hits produced `clear / hotAirBalloonC100 / true`; session used that state. |
+| First gesture/audio | Before departure: no AudioContext, 0 voices. Confirm gesture: context `running`, 4 voices. |
+| Multi-touch | Both acquisition orders passed. Cancelling burner retained vent only; lost vent capture retained burner only; release/blur ended at `0/0` with neither class active. Three-second burner hold changed fuel `76 → 75.42455 kg`. |
+| Guide/accessibility | Initial focus, Tab and Shift+Tab stayed on the sole modal action; canvas/controls inert. Preflight label confirmed selection/departure; in-flight label closed/resumed. A real 300 ms open interval had exactly `0 s` simulation delta; time advanced after close. |
+| Floating origin | PILOT at 46.067 s: `(128,0,0)`, CHASE at 66.525 s: `(128,0,128)`, ORBIT at 97.400 s: `(128,0,0)`; all camera translation errors `0 m`. |
+| Manual causality | Five-second vent changed `331.400 → 326.452 K` with fuel exactly unchanged and release at `0/0`. |
+| Recovery | High journey requested at 106.525 s; physical AUTO reached `RECOVERED` after 451 s with contact true, 3.275 s stable, safe FIELD region `16,6`, 0 unsafe contacts, 32 recorded plans, and last `SAFE_CONTACT_LOCK` actual error `0 m`; all plans `writesPose:false`. |
+| SOURCE regression | Fresh SOURCE began `NONE / INTERLOCKED_RESET / unlocked:false`, 21 glass cubes, two heat exchangers and no missing loop nodes. First interaction unlocked both audio chains and AUTO reached `FULL_POWER_EQUILIBRIUM`, `pulseId:1`; glass stayed 21. Dispose removed SOURCE hooks and new FLY reset its config/session. |
+| Browser console | PASS — 0 console errors, 0 page errors, 0 warnings in the final run. |
 
-An additional 390×844 touch-typed PointerEvent check produced burner `1→0` through
-`pointerdown→pointercancel`, vent `1→0` through `pointerdown→pointerup`, and zero console errors.
-The desktop full sequence was
-`SITE_SELECT → SOURCE → SITE_SELECT → FLY_CONFIG → GUIDE → MANUAL → origin shift → AUTO →
-RECOVERED → SITE_SELECT → SOURCE`; lifecycle hooks and counts were inspected at each return.
+Evidence screenshots are preserved in ignored artifacts:
 
-Screenshots are in ignored artifacts:
+- `.agent/artifacts/fly-evidence/r2-mobile-flight.png`
+- `.agent/artifacts/fly-evidence/r2-desktop-guide.png`
+- `.agent/artifacts/fly-evidence/r2-desktop-recovered.png`
 
-- `.agent/artifacts/fly-evidence/mobile-390x844-guide.png`
-- `.agent/artifacts/fly-evidence/tablet-768x1024-guide.png`
-- `.agent/artifacts/fly-evidence/desktop-recovered.png`
-- `.agent/artifacts/fly-evidence/desktop-source-second.png`
+Pre-final diagnostic attempts and their disposition:
 
-## 8. Failures fixed during this segment
+- A Playwright VM dynamic-import attempt failed before navigation; replaced with Playwright's direct
+  `route.fulfill({path})` file support.
+- The first strict-route parser used unavailable VM `URL`; replaced by explicit synthetic-origin
+  prefix parsing.
+- One diagnostic run exercised a stale pre-tuning `dist` bundle and timed out after reaching stable
+  safe contact; rebuilding the final sources fixed the evidence mismatch. The successful final pass
+  above has no browser failures.
 
-- The first mobile evidence attempt exposed that the canonical launch coordinates inherited hashed
-  `FOREST` metadata. AUTO correctly refused to declare that position safe, proving the safety path,
-  but it violated the required launch-field premise. The world now reserves a deterministic 70 m
-  FIELD and uses 160 m landing cells; Node and all three browser viewports recover on safe FIELD.
-- The first recovered render scaled only the fabric mesh, leaving load tapes/vent standing at full
-  height. The entire envelope assembly now unloads together beside the basket and the CHASE target
-  follows that visual proxy. Final recovered browser recheck: `RECOVERED`, safe/contact true, zero
-  console errors.
-- Initial browser harness attempts used unavailable VM Node globals. The final route uses Playwright's
-  own `route.fulfill({path})` and the strict dist-only checks described above. This was an evidence
-  harness issue, never a page/runtime failure.
+## 8. Unverified areas and remaining risks
 
-There are no outstanding configured-check failures.
+- Actual loudspeaker spatial timbre, loudness and mix quality remain unverified (`FLY-GAP-006`).
+- Full WebGL context loss/restoration remains unverified (`FLY-GAP-007`).
+- SOURCE deep MANUAL commands, intentional glass fracture/debris, and underwater/underground free
+  camera were not replayed; the protected SOURCE logic suite remains green and the lifecycle/AUTO
+  regression passed in the real page.
+- The long desktop recovery is physically accelerated for evidence and took 451 simulated seconds.
+  It is safe and deterministic but may merit future experience tuning; no acceptance rule sets a
+  shorter limit.
+- The bundle-size warning and bounded analytic physical abstractions remain the explicit gaps above.
 
-## 9. Deliberate abstractions and open gaps
+## 9. Exact handoff focus for the next REVIEWER
 
-- `FLY-GAP-001` — **lower-system source coverage**: basket/frame/burner/tank/fuel/pilot masses,
-  burner power/efficiency, heat-transfer coefficients, drag areas/Cd, suspension stiffness/damping
-  and maximum-temperature value are dimensioned `ENGINEERING_PROXY` values. The result must remain
-  `FLY_REFERENCE_CONFIGURATION`, not a certified C-100 assembly or flight trainer.
-- `FLY-GAP-002` — **thermal/structure fidelity**: internal air is one uniform temperature node;
-  suspension is a tension spring/damper rather than individual cable/cloth FEA; envelope unload is a
-  geometry proxy. There is no fabric tear, fire, cable failure, heat stratification or occupant injury.
-- `FLY-GAP-003` — **obstacle/contact fidelity**: terrain height and basket contact/friction are
-  authoritative analytic collision proxies, and AUTO uses the same terrain safety metadata. Forest
-  instances currently supply visual scale and landing exclusion, but individual tree/building/power
-  line rigid colliders and full basket edge/tipping contacts are not yet instantiated. Review whether
-  this gap is acceptable for round 1; it is the clearest next physics expansion.
-- `FLY-GAP-004` — **weather/optics fidelity**: clear-air gust/thermal fields are deterministic
-  engineering fields, not CFD. Clouds are humidity-linked 3D sphere-density clusters, not ray-marched
-  microphysics. Terrain is a seeded world proxy, not a real place or spherical Earth.
-- `FLY-GAP-005` — **initial bundle/performance**: scenes are construction-lazy but statically imported,
-  so the selector downloads the combined ~225 kB gzip module even though it creates neither business
-  world. Dynamic code splitting is a future optimization; runtime worlds/resources are already single
-  and bounded.
-- `FLY-GAP-006` — **audio listening**: node/context creation, voice count, state gains, pause and dispose
-  were verified, but actual spatial timbre/loudness on the owner's speakers is unverified.
-- `FLY-GAP-007` — **deep SOURCE browser regression**: the complete existing SOURCE Node suite passes and
-  browser lifecycle/reset/glass/audio/AUTO first interaction pass. The full MANUAL control chain,
-  pulse, glass fracture, underwater camera and underground traversal were not replayed in this FLY
-  browser pass because their accepted business code was not changed.
+Review against `R-001…R-006` before exploring non-blocking future scope:
 
-## 10. Exact handoff focus for the next REVIEWER
+1. Reproduce null config, blank-hit rejection, actual weather/vehicle/confirm raycasts, compatibility,
+   and session IDs at all three viewports.
+2. Re-run both multi-pointer acquisition orders with `pointercancel`, `lostpointercapture`, release,
+   blur and hidden cleanup; verify controls, classes and fuel causality.
+3. Inspect every origin event consumption and independently confirm PILOT/CHASE/ORBIT observer
+   translation before damping.
+4. Trace TREE/BUILDING/POWER_POLE/POWER_LINE from immutable generation record to render, safety and
+   basket contact; inspect four-point ground contact, angular states, dragging/tipped and stable gate.
+5. For fixed recovery seeds and the high three-origin journey, verify controls consume target/ETA/wind
+   layers, replans have reasons, no plan writes pose, unsafe history stays empty, and actual contact
+   satisfies the final region/tolerance.
+6. Verify preflight/in-flight guide labels, focus trap/inert state, real-time pause and focus restore;
+   then confirm SOURCE disposal/reset protection and the final zero-error browser console.
 
-Review range: `a0f0907b0d42e6bfaed74811457c65a3bc8388ac` → final implementation checkpoint
-created by the neutral wrapper.
-
-1. Treat `SITE-HOST-001` as the primary regression boundary: repeat SOURCE → FLY → SOURCE, confirm
-   only one renderer/RAF/world/audio scope and verify every old debug hook disappears on dispose.
-2. Audit `hotAirBalloon.js` force/mass bookkeeping, especially why certified gross/reference weight,
-   hardware subtotal and internal-air physical mass are distinct; confirm burner/vent never write
-   velocity and horizontal force only comes from relative-air drag/suspension/contact.
-3. Audit floating-origin semantics: logical positions and wind phase must not change; only render/local
-   coordinates shift. Check previous/current snapshot interpolation across the first event at ~45 s.
-4. Re-run the desktop timeline and inspect the sole recovery plan, continuous trajectory, nine origin
-   events, candidate safety, burner/vent ownership, actual contact and 3 s stability gate. Confirm there
-   is no planner pose write or return-to-start assumption.
-5. Inspect the real C-100 geometry hierarchy and recovered unload proxy: 16 gores, tapes, vent/line,
-   suspension, frame, burners, tanks/hoses, basket thickness and independent envelope/basket transforms.
-6. Decide severity/next action for `FLY-GAP-003` (individual near-field obstacle colliders and fuller
-   basket tipping). This is the most important disclosed acceptance gap, not a hidden claim.
-7. Check responsive guide/controls and the touch `pointercancel` path, plus keyboard blur/hidden cleanup,
-   guide pause, camera independence and return confirmation.
-8. Confirm `SOURCE-LIFE-001` is only an adapter/cleanup and that no protected SOURCE business behavior
-   changed. `FLY-GAP-007` lists the deep browser flows not replayed here.
+Treat `FLY-GAP-001…007` only as the explicitly bounded future risks described above; do not mistake
+them for claims that full CFD/FEM/geospatial/weather/audio production scope was implemented.
 
 ## Automation wrapper result
 
-- Process base commit: `a4785e6f40c0a91d7f454c9f1d49c5cc4f40edcb`
-- Round review base commit: `a0f0907b0d42e6bfaed74811457c65a3bc8388ac`
+- Process base commit: `a740d543075fc21c0ef9b15a5a111ddb4dc379ca`
+- Round review base commit: `59328387f34ecec820f80553c4b6865d11e0692f`
 - Implementer runtime: `codex / gpt-5.6-sol / xhigh`
 - Agent process: PASS (exit 0)
 - Unified validation: PASS (exit 0)
-- Checkpoint: reconstructed by the attached GENERAL after isolating the protected README update
+- Checkpoint: created by `scripts/run-implementation.sh` after this report

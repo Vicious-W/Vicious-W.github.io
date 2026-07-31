@@ -53,6 +53,16 @@ function interpolateVehicle(previous, current, alpha) {
   };
 }
 
+export function applyOriginShiftToObserver(observer, shift) {
+  for (const vector of [observer.cameraPosition, observer.desiredCamera, observer.desiredTarget]) {
+    if (!vector) continue;
+    vector.x -= shift.delta.x;
+    vector.y -= shift.delta.y;
+    vector.z -= shift.delta.z;
+  }
+  return observer;
+}
+
 export function createFlyScene({ section, canvas, reduceMotion, requestSelector }) {
   const scope = createResourceScope("fly-scene");
   let renderer;
@@ -71,8 +81,11 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
   let session = null;
   let worldView = null;
   let balloonModel = null;
-  let previewModel = null;
+  let vehiclePreview = null;
+  let weatherPreview = null;
   let previewGround = null;
+  let configConfirm = null;
+  let configSelectables = [];
   let running = false;
   let disposed = false;
   let raf = 0;
@@ -84,8 +97,12 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
   let lookYaw = 0;
   let lookPitch = -0.08;
   let lookPointer = null;
-  let activeControlPointer = null;
-  let activeControlAction = null;
+  const pointerControlActions = new Map();
+  const controlOwners = { burner: new Set(), vent: new Set() };
+  const configSelection = { weatherId: null, vehicleId: null, confirmed: false };
+  let handledOriginEvents = 0;
+  const originCameraCorrections = [];
+  let lastGuideFocus = null;
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   const desiredCamera = new THREE.Vector3();
@@ -138,25 +155,48 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
   overlay.appendChild(returnConfirm);
 
   const buildPreview = () => {
-    previewModel = createBalloonModel();
-    previewModel.group.rotation.y = -0.35;
-    scene.add(previewModel.group);
-    const fake = {
-      envelope: { position: { x: 0, y: 5, z: 0 } },
-      basket: { position: { x: 0, y: -7.1, z: 0 }, tilt: { x: 0, y: 0, z: 0 } },
-      stage: "PREVIEW", heatInputW: 0, burnerValve: 0
-    };
-    previewModel.update(fake);
+    const vehicleDefinition = vehicleRegistry[DEFAULT_FLY_SELECTION.vehicleId];
+    const weatherDefinition = weatherRegistry[DEFAULT_FLY_SELECTION.weatherId];
+    vehiclePreview = vehicleDefinition.previewFactory({ id: vehicleDefinition.id });
+    weatherPreview = weatherDefinition.previewFactory({
+      id: weatherDefinition.id,
+      weather: weatherDefinition.weatherFactory(0xc1002026)
+    });
+    scene.add(vehiclePreview.group, weatherPreview.group);
+    configSelectables.push(...vehiclePreview.selectables, ...weatherPreview.selectables);
     previewGround = new THREE.Mesh(new THREE.CircleGeometry(55, 64), new THREE.MeshStandardMaterial({ color: 0x456f32, roughness: 0.92 }));
     previewGround.rotation.x = -Math.PI / 2;
     previewGround.position.y = -7.82;
     scene.add(previewGround);
+
+    configConfirm = new THREE.Group();
+    configConfirm.name = "FLY-config-confirm";
+    configConfirm.position.set(12, -6.7, 0);
+    const ringMaterial = new THREE.MeshStandardMaterial({ color: 0x355268, emissive: 0x06121b, metalness: 0.35, roughness: 0.4 });
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(2.2, 0.22, 10, 48), ringMaterial);
+    ring.rotation.x = Math.PI / 2;
+    const pad = new THREE.Mesh(new THREE.CylinderGeometry(1.72, 1.92, 0.18, 32), ringMaterial);
+    const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.7, 2.4, 5), ringMaterial);
+    arrow.rotation.z = -Math.PI / 2;
+    arrow.position.y = 0.55;
+    configConfirm.add(ring, pad, arrow);
+    configConfirm.traverse(object => {
+      if (!object.isMesh) return;
+      object.userData.configKind = "confirm";
+      object.userData.configId = "confirmedSelection";
+      configSelectables.push(object);
+    });
+    configConfirm.userData.material = ringMaterial;
+    scene.add(configConfirm);
     camera.position.set(24, 6, 31);
     camera.lookAt(0, 2, 0);
   };
 
   const disposePreview = () => {
-    if (previewModel) { scene.remove(previewModel.group); previewModel.dispose(); previewModel = null; }
+    if (vehiclePreview) { scene.remove(vehiclePreview.group); vehiclePreview.dispose(); vehiclePreview = null; }
+    if (weatherPreview) { scene.remove(weatherPreview.group); weatherPreview.dispose(); weatherPreview = null; }
+    if (configConfirm) { scene.remove(configConfirm); disposeObject(configConfirm); configConfirm = null; }
+    configSelectables = [];
     if (previewGround) { scene.remove(previewGround); disposeObject(previewGround); previewGround = null; }
   };
 
@@ -167,23 +207,68 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     if (!session) {
+      if (weatherPreview) weatherPreview.group.position.x = camera.aspect < 0.72 ? -12.5 : -18;
       camera.position.set(camera.aspect < 0.72 ? 27 : 24, camera.aspect < 0.72 ? 8 : 6, camera.aspect < 0.72 ? 52 : 31);
       camera.lookAt(0, 2, 0);
     }
   };
 
+  const syncConfigVisuals = () => {
+    vehiclePreview?.setSelected(configSelection.vehicleId === vehiclePreview.id);
+    weatherPreview?.setSelected(configSelection.weatherId === weatherPreview.id);
+    const ready = !!configSelection.vehicleId && !!configSelection.weatherId;
+    if (configConfirm) {
+      configConfirm.userData.material.color.setHex(ready ? 0x42bdf0 : 0x355268);
+      configConfirm.userData.material.emissive.setHex(ready ? 0x0a6d99 : 0x06121b);
+      configConfirm.scale.setScalar(ready ? 1.08 : 0.82);
+    }
+  };
+
+  const selectConfig = (kind, id) => {
+    if (session || configSelection.confirmed) return false;
+    if (kind === "weather") {
+      const definition = weatherRegistry[id];
+      if (!definition) return false;
+      if (configSelection.vehicleId && !definition.compatibleVehicles.includes(configSelection.vehicleId)) return false;
+      configSelection.weatherId = id;
+    } else if (kind === "vehicle") {
+      const definition = vehicleRegistry[id];
+      if (!definition) return false;
+      if (configSelection.weatherId && !definition.compatibleWeather.includes(configSelection.weatherId)) return false;
+      configSelection.vehicleId = id;
+    } else return false;
+    syncConfigVisuals();
+    return true;
+  };
+
+  const confirmConfig = () => {
+    if (session) return false;
+    if (configSelection.confirmed) { openGuide(); return true; }
+    if (!configSelection.weatherId || !configSelection.vehicleId) return false;
+    const weather = weatherRegistry[configSelection.weatherId];
+    const vehicle = vehicleRegistry[configSelection.vehicleId];
+    if (!weather?.compatibleVehicles.includes(vehicle.id) || !vehicle.compatibleWeather.includes(weather.id)) return false;
+    configSelection.confirmed = true;
+    openGuide();
+    return true;
+  };
+
   const clearContinuousControls = () => {
     session?.clearControls();
-    activeControlPointer = null;
-    activeControlAction = null;
+    pointerControlActions.clear();
+    controlOwners.burner.clear();
+    controlOwners.vent.clear();
     burnerButton.classList.remove("is-active");
     ventButton.classList.remove("is-active");
   };
 
   const startFlight = () => {
-    if (session) return;
+    if (session || !configSelection.confirmed) return false;
     disposePreview();
-    session = createFlySession({ seed: 0xc1002026, selection: DEFAULT_FLY_SELECTION });
+    session = createFlySession({
+      seed: 0xc1002026,
+      selection: { weatherId: configSelection.weatherId, vehicleId: configSelection.vehicleId }
+    });
     worldView = createWorldView({ scene, world: session.world, atmosphere: session.atmosphere });
     balloonModel = createBalloonModel();
     scene.add(balloonModel.group);
@@ -191,10 +276,11 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     audio.unlock();
     flightControls.hidden = false;
     phase = "READY_ON_FIELD";
+    return true;
   };
 
   const populateGuide = () => {
-    const definition = vehicleRegistry[DEFAULT_FLY_SELECTION.vehicleId].guideDefinition;
+    const definition = vehicleRegistry[configSelection.vehicleId].guideDefinition;
     guideTitle.textContent = definition.title;
     guideList.replaceChildren();
     definition.controls.forEach(([term, description]) => {
@@ -208,26 +294,41 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
   const openGuide = () => {
     if (guide.hidden === false || returnConfirming) return;
     guideWasFlight = !!session;
+    lastGuideFocus = document.activeElement instanceof HTMLElement ? document.activeElement : canvas;
     clearContinuousControls();
     if (session) session.pause("guide");
     audio.suspend();
     populateGuide();
     guide.hidden = false;
+    canvas.inert = true;
+    flightControls.inert = true;
+    guideLaunch.setAttribute("aria-label", guideWasFlight ? "Close guide and resume flight" : "Confirm selection and begin flight");
     phase = "FLY_GUIDE";
     guideLaunch.focus();
+    queueMicrotask(() => { if (!guide.hidden) guideLaunch.focus({ preventScroll: true }); });
   };
 
   const closeGuide = ({ depart = false } = {}) => {
     if (guide.hidden) return;
     guide.hidden = true;
+    canvas.inert = false;
+    flightControls.inert = false;
     if (!session && depart) startFlight();
     else if (session) {
       session.resume();
       audio.resume();
       phase = session.state.stage;
     } else phase = "FLY_CONFIG";
-    canvas.focus({ preventScroll: true });
+    const restore = guideWasFlight && lastGuideFocus?.isConnected ? lastGuideFocus : canvas;
+    restore.focus({ preventScroll: true });
+    lastGuideFocus = null;
   };
+
+  scope.listen(guide, "keydown", event => {
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    guideLaunch.focus();
+  });
 
   const cycleCamera = () => { cameraModeIndex = (cameraModeIndex + 1) % CAMERA_MODES.length; };
 
@@ -257,19 +358,47 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     return accepted;
   };
 
+  const syncOwnedControl = action => {
+    const active = controlOwners[action].size > 0;
+    setControl(action, active);
+  };
+
+  const claimControl = (action, owner) => {
+    if (!session || !setControl(action, true)) return false;
+    controlOwners[action].add(owner);
+    (action === "burner" ? burnerButton : ventButton).classList.add("is-active");
+    return true;
+  };
+
+  const releaseControl = (action, owner) => {
+    if (!controlOwners[action]?.delete(owner)) return false;
+    syncOwnedControl(action);
+    return true;
+  };
+
+  const claimPointerControl = (pointerId, action) => {
+    const owner = `pointer:${pointerId}`;
+    const previous = pointerControlActions.get(pointerId);
+    if (previous && previous !== action) releaseControl(previous, owner);
+    if (!claimControl(action, owner)) return false;
+    pointerControlActions.set(pointerId, action);
+    return true;
+  };
+
+  const releasePointerControl = pointerId => {
+    const action = pointerControlActions.get(pointerId);
+    if (!action) return false;
+    pointerControlActions.delete(pointerId);
+    return releaseControl(action, `pointer:${pointerId}`);
+  };
+
   const bindHoldButton = (button, action) => {
     scope.listen(button, "pointerdown", event => {
-      if (!setControl(action, true)) return;
-      activeControlPointer = event.pointerId;
-      activeControlAction = action;
+      if (!claimPointerControl(event.pointerId, action)) return;
       try { button.setPointerCapture(event.pointerId); } catch (error) { /* synthetic pointer */ }
       event.preventDefault();
     });
-    const release = event => {
-      if (activeControlAction !== action || (event && activeControlPointer !== event.pointerId)) return;
-      setControl(action, false);
-      activeControlPointer = null; activeControlAction = null;
-    };
+    const release = event => releasePointerControl(event.pointerId);
     scope.listen(button, "pointerup", release);
     scope.listen(button, "pointercancel", release);
     scope.listen(button, "lostpointercapture", release);
@@ -290,14 +419,26 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
   };
   const onPointerDown = event => {
-    if (!session) { openGuide(); return; }
+    if (!session) {
+      if (!guide.hidden) return;
+      canvasPoint(event);
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster.intersectObjects(configSelectables, false)[0];
+      const kind = hit?.object.userData.configKind;
+      const id = hit?.object.userData.configId;
+      if (kind === "confirm") { event.preventDefault(); confirmConfig(); }
+      else if (kind && id) selectConfig(kind, id);
+      else {
+        lookPointer = { id: event.pointerId, x: event.clientX, y: event.clientY, config: true };
+        try { canvas.setPointerCapture(event.pointerId); } catch (error) { /* synthetic pointer */ }
+      }
+      return;
+    }
     if (!guide.hidden || returnConfirming) return;
     canvasPoint(event);
     raycaster.setFromCamera(pointer, camera);
     const hit = balloonModel ? raycaster.intersectObjects(balloonModel.controlMeshes, false)[0] : null;
-    if (hit?.object.userData.action && setControl(hit.object.userData.action, true)) {
-      activeControlPointer = event.pointerId;
-      activeControlAction = hit.object.userData.action;
+    if (hit?.object.userData.action && claimPointerControl(event.pointerId, hit.object.userData.action)) {
       try { canvas.setPointerCapture(event.pointerId); } catch (error) { /* synthetic pointer */ }
       event.preventDefault();
       return;
@@ -309,14 +450,15 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     if (!lookPointer || event.pointerId !== lookPointer.id) return;
     const dx = event.clientX - lookPointer.x, dy = event.clientY - lookPointer.y;
     lookPointer.x = event.clientX; lookPointer.y = event.clientY;
+    if (lookPointer.config) {
+      if (vehiclePreview) vehiclePreview.group.rotation.y += dx * 0.006;
+      return;
+    }
     lookYaw -= dx * 0.003;
     lookPitch = clamp(lookPitch - dy * 0.0025, -1.1, 0.85);
   };
   const onPointerEnd = event => {
-    if (activeControlPointer === event.pointerId) {
-      setControl(activeControlAction, false);
-      activeControlPointer = null; activeControlAction = null;
-    }
+    releasePointerControl(event.pointerId);
     if (lookPointer?.id === event.pointerId) lookPointer = null;
   };
   scope.listen(canvas, "pointerdown", onPointerDown);
@@ -329,21 +471,32 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
   const onKeyDown = event => {
     if (event.repeat && ["r", "c", "h"].includes(event.key.toLowerCase())) return;
     const key = event.key.toLowerCase();
-    if (key === " " || key === "spacebar") { setControl("burner", true); event.preventDefault(); }
-    else if (key === "v") { setControl("vent", true); event.preventDefault(); }
+    if (!session && guide.hidden) {
+      if (key === "enter" || key === " " || key === "spacebar") {
+        if (!configSelection.weatherId) selectConfig("weather", Object.keys(weatherRegistry)[0]);
+        else if (!configSelection.vehicleId) selectConfig("vehicle", Object.keys(vehicleRegistry)[0]);
+        else confirmConfig();
+        event.preventDefault();
+      }
+      return;
+    }
+    if (key === " " || key === "spacebar") { claimControl("burner", "keyboard:burner"); event.preventDefault(); }
+    else if (key === "v") { claimControl("vent", "keyboard:vent"); event.preventDefault(); }
     else if (key === "r") { clearContinuousControls(); session?.requestRecovery(); }
     else if (key === "c") cycleCamera();
     else if (key === "h" && guide.hidden) openGuide();
   };
   const onKeyUp = event => {
     const key = event.key.toLowerCase();
-    if (key === " " || key === "spacebar") setControl("burner", false);
-    else if (key === "v") setControl("vent", false);
+    if (key === " " || key === "spacebar") releaseControl("burner", "keyboard:burner");
+    else if (key === "v") releaseControl("vent", "keyboard:vent");
   };
   const onBlur = () => { clearContinuousControls(); lookPointer = null; };
   scope.listen(window, "keydown", onKeyDown);
   scope.listen(window, "keyup", onKeyUp);
   scope.listen(window, "blur", onBlur);
+  scope.listen(window, "orientationchange", onBlur);
+  scope.listen(document, "visibilitychange", () => { if (document.hidden) onBlur(); });
 
   const updateCamera = (snapshot, dt) => {
     const basket = session.world.localOf(snapshot.vehicle.basket.position);
@@ -377,7 +530,8 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
     last = now;
     if (!session) {
-      if (previewModel && !reduceMotion) previewModel.group.rotation.y += dt * 0.1;
+      vehiclePreview?.update(now / 1000, reduceMotion);
+      weatherPreview?.update(now / 1000, reduceMotion);
     } else {
       if (guide.hidden && !returnConfirming) session.update(dt);
       const snapshot = session.snapshot();
@@ -386,6 +540,28 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
         session.clock.currentSnapshot?.vehicle || snapshot.vehicle,
         session.clock.alpha
       );
+      while (handledOriginEvents < session.state.originEvents.length) {
+        const event = session.state.originEvents[handledOriginEvents++];
+        const before = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
+        applyOriginShiftToObserver({
+          cameraPosition: camera.position,
+          desiredCamera,
+          desiredTarget
+        }, event);
+        originCameraCorrections.push({
+          simTime: event.simTime,
+          cameraMode: CAMERA_MODES[cameraModeIndex],
+          delta: { ...event.delta },
+          before,
+          after: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+          translationErrorM: Math.hypot(
+            camera.position.x - (before.x - event.delta.x),
+            camera.position.y - (before.y - event.delta.y),
+            camera.position.z - (before.z - event.delta.z)
+          )
+        });
+        if (originCameraCorrections.length > 64) originCameraCorrections.shift();
+      }
       phase = guide.hidden ? snapshot.stage : "FLY_GUIDE";
       balloonModel.update(renderVehicle, session.world.origin);
       worldView.sync(snapshot.simTime);
@@ -393,6 +569,26 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
       audio.update(snapshot);
     }
     renderer.render(scene, camera);
+  };
+
+  const configTargetPixels = () => {
+    const rect = canvas.getBoundingClientRect();
+    const project = (object, offsetY = 0) => {
+      if (!object) return null;
+      const position = new THREE.Vector3();
+      object.getWorldPosition(position);
+      position.y += offsetY;
+      position.project(camera);
+      return {
+        x: rect.left + (position.x + 1) * rect.width * 0.5,
+        y: rect.top + (1 - position.y) * rect.height * 0.5
+      };
+    };
+    return {
+      weather: project(weatherPreview?.group),
+      vehicle: project(vehiclePreview?.group, 4),
+      confirm: project(configConfirm)
+    };
   };
 
   scope.listen(canvas, "webglcontextlost", event => {
@@ -415,8 +611,24 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     get activeChunkCount() { return session?.world.chunks.size || 0; },
     get audio() { return audio.status(); },
     get cameras() { return { active: CAMERA_MODES[cameraModeIndex], modes: CAMERA_MODES.slice(), yaw: lookYaw, pitch: lookPitch }; },
-    get registries() { return { vehicles: Object.keys(vehicleRegistry), weather: Object.keys(weatherRegistry), selected: { ...DEFAULT_FLY_SELECTION } }; },
-    depart: () => { startFlight(); guide.hidden = true; return session?.snapshot(); },
+    get registries() {
+      return {
+        vehicles: Object.keys(vehicleRegistry),
+        weather: Object.keys(weatherRegistry),
+        selected: { ...configSelection }
+      };
+    },
+    get configTargets() { return configTargetPixels(); },
+    selectConfig,
+    confirmConfig,
+    depart: () => {
+      if (!configSelection.confirmed) return null;
+      guide.hidden = true;
+      canvas.inert = false;
+      flightControls.inert = false;
+      startFlight();
+      return session?.snapshot() || null;
+    },
     openGuide,
     closeGuide: () => closeGuide({ depart: false }),
     control: (name, active) => setControl(name, active),
@@ -426,7 +638,9 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     evidence: () => session ? {
       trajectory: session.state.trajectory.slice(),
       recoveryPlans: session.state.recoveryPlans.slice(),
-      originEvents: session.state.originEvents.slice()
+      originEvents: session.state.originEvents.slice(),
+      unsafeContactEvents: session.state.unsafeContactEvents.slice(),
+      originCameraCorrections: originCameraCorrections.slice()
     } : null,
     resources: () => ({ rafLoops: running ? 1 : 0, physicsWorlds: session ? 1 : 0, listeners: scope.count, audioVoices: audio.status().voices, chunks: session?.world.chunks.size || 0 })
   };
@@ -437,6 +651,7 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
       canvas.setAttribute("aria-label", "FLY three-dimensional configuration and flight scene");
       canvas.tabIndex = 0;
       buildPreview();
+      syncConfigVisuals();
       resize();
       window.__FLY__ = debugApi;
     },

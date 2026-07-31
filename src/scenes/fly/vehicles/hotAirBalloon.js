@@ -23,6 +23,9 @@ export function createHotAirBalloon({ atmosphere, world }) {
   const envelopeArea = Math.PI * Math.pow(manifest.geometry.diameter.value * 0.5, 2);
   const restLength = manifest.dynamics.suspensionRestLengthM.value;
   const basketHalfHeightM = 0.68;
+  const basketHalfWidthM = 0.875;
+  const basketHalfDepthM = 0.675;
+  const basketCollisionRadiusM = Math.hypot(basketHalfWidthM, basketHalfDepthM);
   const initialTerrain = world.terrainAt(0, 0);
   const outside = atmosphere.sample({ x: 0, y: initialTerrain.height + 12, z: 0 }, 0);
   const nonEnvelopeMass = manifest.masses.basket.value
@@ -49,6 +52,11 @@ export function createHotAirBalloon({ atmosphere, world }) {
     stableContactSeconds: 0,
     suspensionTensionN: 0,
     swingRadians: { x: 0, z: 0 },
+    angularAcceleration: { x: 0, z: 0 },
+    groundContactPoints: 0,
+    obstacleContacts: [],
+    dragging: false,
+    tipped: false,
     stage: "READY_ON_FIELD",
     maxHeightAgl: 0,
     distanceTravelledM: 0,
@@ -63,7 +71,31 @@ export function createHotAirBalloon({ atmosphere, world }) {
     position: vec(0, initialTerrain.height + basketHalfHeightM, 0),
     velocity: vec(),
     acceleration: vec(),
-    tilt: vec()
+    tilt: vec(),
+    angularVelocity: vec()
+  };
+
+  const basketGroundContacts = () => {
+    const contacts = [];
+    for (const x of [-basketHalfWidthM, basketHalfWidthM]) {
+      for (const z of [-basketHalfDepthM, basketHalfDepthM]) {
+        const offset = rotateBasketOffset({ x, y: -basketHalfHeightM, z }, basket.tilt);
+        const point = {
+          x: basket.position.x + offset.x,
+          y: basket.position.y + offset.y,
+          z: basket.position.z + offset.z
+        };
+        const terrain = world.terrainAt(point.x, point.z);
+        const penetration = terrain.height - point.y;
+        const pointVelocity = {
+          x: basket.velocity.x - basket.angularVelocity.z * offset.y,
+          y: basket.velocity.y + basket.angularVelocity.z * offset.x - basket.angularVelocity.x * offset.z,
+          z: basket.velocity.z + basket.angularVelocity.x * offset.y
+        };
+        contacts.push({ offset, point, terrain, penetration, pointVelocity });
+      }
+    }
+    return contacts;
   };
 
   const updateAirState = outsideAir => {
@@ -121,6 +153,45 @@ export function createHotAirBalloon({ atmosphere, world }) {
       + manifest.dynamics.suspensionDampingNsM.value * relativeSpeed);
     addScaled(fEnvelope, direction, -state.suspensionTensionN);
     addScaled(fBasket, direction, state.suspensionTensionN);
+    const inertiaX = basketMass * (Math.pow(basketHalfHeightM * 2, 2) + Math.pow(basketHalfDepthM * 2, 2)) / 12;
+    const inertiaZ = basketMass * (Math.pow(basketHalfHeightM * 2, 2) + Math.pow(basketHalfWidthM * 2, 2)) / 12;
+    const torque = { x: 0, z: 0 };
+    const preContacts = basketGroundContacts();
+    let activeGroundContacts = 0;
+    for (const contact of preContacts) {
+      if (contact.penetration < -0.025) continue;
+      const normalSpeed = contact.pointVelocity.x * contact.terrain.normal.x
+        + contact.pointVelocity.y * contact.terrain.normal.y
+        + contact.pointVelocity.z * contact.terrain.normal.z;
+      const normalForce = Math.max(0, 78000 * Math.max(0, contact.penetration + 0.006) - 14800 * Math.min(0, normalSpeed));
+      if (normalForce <= 0) continue;
+      activeGroundContacts++;
+      const normal = contact.terrain.normal;
+      const normalVector = { x: normal.x * normalForce, y: normal.y * normalForce, z: normal.z * normalForce };
+      addScaled(fBasket, normalVector, 1);
+      torque.x += contact.offset.y * normalVector.z - contact.offset.z * normalVector.y;
+      torque.z += contact.offset.x * normalVector.y - contact.offset.y * normalVector.x;
+
+      const tangentX = contact.pointVelocity.x - normal.x * normalSpeed;
+      const tangentZ = contact.pointVelocity.z - normal.z * normalSpeed;
+      const tangentSpeed = Math.hypot(tangentX, tangentZ);
+      if (tangentSpeed > 1e-6) {
+        const frictionCoefficient = contact.terrain.surface === "FIELD" ? 0.68 : 0.42;
+        const frictionMagnitude = Math.min(frictionCoefficient * normalForce, tangentSpeed * basketMass * 3.2);
+        const friction = { x: -tangentX / tangentSpeed * frictionMagnitude, y: 0, z: -tangentZ / tangentSpeed * frictionMagnitude };
+        addScaled(fBasket, friction, 1);
+        torque.x += contact.offset.y * friction.z;
+        torque.z -= contact.offset.y * friction.x;
+      }
+    }
+    // The suspension load is applied above the basket centre, so horizontal load creates a
+    // measurable roll/pitch moment. A dimensioned torsional spring represents the four load lines.
+    torque.x += 0.82 * state.suspensionTensionN * direction.z;
+    torque.z -= 0.82 * state.suspensionTensionN * direction.x;
+    const angularStiffnessNmRad = 1850;
+    const angularDampingNmsRad = 920;
+    torque.x += (state.swingRadians.x - basket.tilt.x) * angularStiffnessNmRad - basket.angularVelocity.x * angularDampingNmsRad;
+    torque.z += (state.swingRadians.z - basket.tilt.z) * angularStiffnessNmRad - basket.angularVelocity.z * angularDampingNmsRad;
     state.netVerticalForceN = fEnvelope.y + fBasket.y;
 
     envelope.acceleration = vec(fEnvelope.x / envelopeMass, fEnvelope.y / envelopeMass, fEnvelope.z / envelopeMass);
@@ -130,24 +201,68 @@ export function createHotAirBalloon({ atmosphere, world }) {
     addScaled(envelope.position, envelope.velocity, dt);
     addScaled(basket.position, basket.velocity, dt);
 
+    state.angularAcceleration.x = torque.x / inertiaX;
+    state.angularAcceleration.z = torque.z / inertiaZ;
+    basket.angularVelocity.x += state.angularAcceleration.x * dt;
+    basket.angularVelocity.z += state.angularAcceleration.z * dt;
+    basket.tilt.x = clamp(basket.tilt.x + basket.angularVelocity.x * dt, -1.35, 1.35);
+    basket.tilt.z = clamp(basket.tilt.z + basket.angularVelocity.z * dt, -1.35, 1.35);
+
     const terrain = world.terrainAt(basket.position.x, basket.position.z);
-    const floorY = terrain.height + basketHalfHeightM;
     state.contactImpulseNs = 0;
-    if (basket.position.y < floorY) {
-      const impactSpeed = Math.max(0, -basket.velocity.y);
-      basket.position.y = floorY;
-      if (basket.velocity.y < 0) basket.velocity.y *= -0.08;
-      const groundGrip = Math.exp(-dt * (terrain.surface === "FIELD" ? 3.8 : 1.8));
-      basket.velocity.x *= groundGrip;
-      basket.velocity.z *= groundGrip;
-      state.contactImpulseNs = impactSpeed * basketMass;
-      state.contact = true;
-      const safeAndSlow = terrain.safe && Math.hypot(basket.velocity.x, basket.velocity.z) < 1.6 && Math.abs(basket.velocity.y) < 0.45;
-      state.stableContactSeconds = safeAndSlow ? state.stableContactSeconds + dt : 0;
-    } else {
-      state.contact = false;
-      state.stableContactSeconds = 0;
+    const postContacts = basketGroundContacts();
+    const deepestPenetration = Math.max(0, ...postContacts.map(contact => contact.penetration));
+    const touchingContacts = postContacts.filter(contact => contact.penetration >= -0.018);
+    if (deepestPenetration > 0) basket.position.y += deepestPenetration * 0.82;
+    if (touchingContacts.length && basket.velocity.y < 0) {
+      const impactSpeed = -basket.velocity.y;
+      basket.velocity.y *= -0.08;
+      state.contactImpulseNs += impactSpeed * basketMass;
     }
+    if (touchingContacts.length) {
+      // Dynamic ground friction is integrated as a contact impulse after positional stabilization;
+      // this prevents alternating penalty-contact frames from leaving a residual wind-driven slide.
+      const contactDamping = Math.exp(-dt * (terrain.surface === "FIELD" ? 8.5 : 3.2));
+      basket.velocity.x *= contactDamping;
+      basket.velocity.z *= contactDamping;
+    }
+
+    const obstacleContacts = world.obstacleContacts({
+      position: basket.position,
+      radius: basketCollisionRadiusM,
+      halfHeight: basketHalfHeightM
+    });
+    for (const contact of obstacleContacts) {
+      basket.position.x += contact.normal.x * contact.penetration;
+      basket.position.y += contact.normal.y * contact.penetration;
+      basket.position.z += contact.normal.z * contact.penetration;
+      const closingSpeed = basket.velocity.x * contact.normal.x
+        + basket.velocity.y * contact.normal.y
+        + basket.velocity.z * contact.normal.z;
+      if (closingSpeed < 0) {
+        const impulseSpeed = -(1.12 * closingSpeed);
+        basket.velocity.x += contact.normal.x * impulseSpeed;
+        basket.velocity.y += contact.normal.y * impulseSpeed;
+        basket.velocity.z += contact.normal.z * impulseSpeed;
+        basket.angularVelocity.x += contact.normal.z * impulseSpeed * 0.28;
+        basket.angularVelocity.z -= contact.normal.x * impulseSpeed * 0.28;
+        state.contactImpulseNs += -closingSpeed * basketMass;
+      }
+    }
+    state.groundContactPoints = Math.max(activeGroundContacts, touchingContacts.length);
+    state.obstacleContacts = obstacleContacts.map(contact => ({
+      id: contact.obstacleId,
+      type: contact.obstacleType,
+      penetrationM: contact.penetration
+    }));
+    state.contact = touchingContacts.length > 0;
+    const horizontalSpeed = Math.hypot(basket.velocity.x, basket.velocity.z);
+    state.dragging = state.contact && horizontalSpeed >= 1.6;
+    state.tipped = Math.max(Math.abs(basket.tilt.x), Math.abs(basket.tilt.z)) > 0.62;
+    const safeAndSlow = state.contact && terrain.safe && !state.dragging && !state.tipped
+      && obstacleContacts.length === 0 && Math.abs(basket.velocity.y) < 0.45
+      && Math.hypot(basket.angularVelocity.x, basket.angularVelocity.z) < 0.22;
+    state.stableContactSeconds = safeAndSlow ? state.stableContactSeconds + dt : 0;
 
     const travel = Math.hypot(
       basket.position.x - state.previousBasketPosition.x,
@@ -159,8 +274,6 @@ export function createHotAirBalloon({ atmosphere, world }) {
     const horizontalOffsetZ = basket.position.z - envelope.position.z;
     state.swingRadians.x = Math.atan2(horizontalOffsetZ, Math.max(1, envelope.position.y - basket.position.y));
     state.swingRadians.z = -Math.atan2(horizontalOffsetX, Math.max(1, envelope.position.y - basket.position.y));
-    basket.tilt.x += (state.swingRadians.x - basket.tilt.x) * Math.min(1, dt * 5);
-    basket.tilt.z += (state.swingRadians.z - basket.tilt.z) * Math.min(1, dt * 5);
 
     const agl = basket.position.y - basketHalfHeightM - terrain.height;
     state.maxHeightAgl = Math.max(state.maxHeightAgl, agl);
@@ -173,14 +286,29 @@ export function createHotAirBalloon({ atmosphere, world }) {
   const snapshot = () => {
     const terrain = world.terrainAt(basket.position.x, basket.position.z);
     const hardwareMassKg = manifest.masses.envelope.value + nonEnvelopeMass + state.fuelKg;
+    const currentBasketMassKg = nonEnvelopeMass + state.fuelKg;
     return {
       id: manifest.id,
       configurationLabel: manifest.configurationLabel,
       envelope: { position: cloneVec(envelope.position), velocity: cloneVec(envelope.velocity), acceleration: cloneVec(envelope.acceleration) },
-      basket: { position: cloneVec(basket.position), velocity: cloneVec(basket.velocity), acceleration: cloneVec(basket.acceleration), tilt: cloneVec(basket.tilt) },
+      basket: {
+        position: cloneVec(basket.position),
+        velocity: cloneVec(basket.velocity),
+        acceleration: cloneVec(basket.acceleration),
+        tilt: cloneVec(basket.tilt),
+        orientation: { roll: basket.tilt.x, pitch: basket.tilt.z },
+        angularVelocity: cloneVec(basket.angularVelocity),
+        angularAcceleration: { ...state.angularAcceleration },
+        inertiaKgM2: { x: currentBasketMassKg * (Math.pow(basketHalfHeightM * 2, 2) + Math.pow(basketHalfDepthM * 2, 2)) / 12,
+          z: currentBasketMassKg * (Math.pow(basketHalfHeightM * 2, 2) + Math.pow(basketHalfWidthM * 2, 2)) / 12 }
+      },
       stage: state.stage,
       contact: state.contact,
       contactImpulseNs: state.contactImpulseNs,
+      groundContactPoints: state.groundContactPoints,
+      obstacleContacts: state.obstacleContacts.map(contact => ({ ...contact })),
+      dragging: state.dragging,
+      tipped: state.tipped,
       stableContactSeconds: state.stableContactSeconds,
       heightAgl: basket.position.y - basketHalfHeightM - terrain.height,
       terrain,
@@ -214,7 +342,27 @@ export function createHotAirBalloon({ atmosphere, world }) {
     basket,
     step,
     snapshot,
-    constants: { basketHalfHeightM, restLengthM: restLength, volumeM3: volume },
+    constants: {
+      basketHalfHeightM,
+      basketHalfWidthM,
+      basketHalfDepthM,
+      basketCollisionRadiusM,
+      restLengthM: restLength,
+      volumeM3: volume
+    },
     get heightAgl() { return snapshot().heightAgl; }
+  };
+}
+
+function rotateBasketOffset(offset, tilt) {
+  const cosX = Math.cos(tilt.x), sinX = Math.sin(tilt.x);
+  const cosZ = Math.cos(tilt.z), sinZ = Math.sin(tilt.z);
+  const x1 = offset.x;
+  const y1 = offset.y * cosX - offset.z * sinX;
+  const z1 = offset.y * sinX + offset.z * cosX;
+  return {
+    x: x1 * cosZ - y1 * sinZ,
+    y: x1 * sinZ + y1 * cosZ,
+    z: z1
   };
 }
