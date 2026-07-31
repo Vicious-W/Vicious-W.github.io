@@ -636,7 +636,7 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   cam.goHome();
   let prevDist = cam.rig.distance;
   let monotonic = true;
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 200; i++) {
     cam.zoom(-100);
     for (let f = 0; f < 4; f++) cam.tick(1 / 60);
     if (cam.rig.distance > prevDist + 1e-9) monotonic = false;
