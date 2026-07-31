@@ -18,6 +18,7 @@ SESSION_EVENTS="$TEST_DIR/session-events.json"
 SESSION_TEST_TASK="runtime-session-test-$(date +%s%N)-$$"
 QUOTA_SESSION_TEST_TASK="runtime-quota-session-test-$(date +%s%N)-$$"
 GENERAL_SESSION_TEST_TASK="runtime-general-session-test-$(date +%s%N)-$$"
+SUCCESSOR_SESSION_TEST_TASK="runtime-successor-session-test-$(date +%s%N)-$$"
 LEDGER_TEST="$TEST_DIR/usage-ledger.json"
 LEDGER_RUN_DIR="$TEST_DIR/ledger-runs"
 ROUND_BASE_TEST_DIR=""
@@ -280,6 +281,34 @@ if [[ "$AGENT_SESSION_ID" != "$first_session_id" ]]; then
   printf 'PASS  IMPLEMENTER and REVIEWER receive isolated session IDs\n'
 else
   printf 'FAIL  role isolation reused the IMPLEMENTER session for REVIEWER\n' >&2
+  failure_count=$((failure_count + 1))
+fi
+
+agent_prepare_role_session \
+  "$SUCCESSOR_SESSION_TEST_TASK" IMPLEMENTER claude opus high
+predecessor_session_id="$AGENT_SESSION_ID"
+printf '%s\n' \
+  "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$predecessor_session_id\",\"result\":\"predecessor\"}" \
+  >"$SESSION_EVENTS"
+agent_finalize_role_session claude "$SESSION_EVENTS" USAGE_OR_BILLING_LIMIT
+if agent_supersede_role_session \
+     "$SUCCESSOR_SESSION_TEST_TASK" IMPLEMENTER 'codex / gpt-5.6-sol / high' \
+     REAL_QUOTA_SUCCESSION; then
+  superseded_archive="$AGENT_SUPERSEDED_SESSION_ARCHIVE"
+  superseded_file="$AGENT_SESSION_FILE"
+  agent_prepare_role_session \
+    "$SUCCESSOR_SESSION_TEST_TASK" IMPLEMENTER codex gpt-5.6-sol high
+  if grep -Fqx 'STATUS=SUPERSEDED' "$ROOT_DIR/$superseded_archive" 2>/dev/null && \
+     [[ "$AGENT_SESSION_MODE" == "new" ]] && \
+     grep -Fqx 'EXECUTOR=codex' "$AGENT_SESSION_FILE" && \
+     [[ "$AGENT_SESSION_FILE" == "$superseded_file" ]]; then
+    printf 'PASS  quota successor archives and supersedes the predecessor role session\n'
+  else
+    printf 'FAIL  successor session reused or lost the predecessor audit record\n' >&2
+    failure_count=$((failure_count + 1))
+  fi
+else
+  printf 'FAIL  predecessor role session could not be superseded safely\n' >&2
   failure_count=$((failure_count + 1))
 fi
 

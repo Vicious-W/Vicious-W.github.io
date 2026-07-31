@@ -26,12 +26,18 @@ Usage: ./scripts/agent-supervisor.sh supervise [options]
 
 Runs one complete multi-window Agent run. The supervisor invokes the
 bounded parent cycle, saves safe recovery checkpoints on usage limits, waits
-without an AI process, and resumes at the interrupted role.
+without an AI process, and resumes at the interrupted role. When enabled, one
+real primary IMPLEMENTER quota stop is handed immediately and serially to a
+different successor executor inside the same logical implementation round.
 
 Role options:
   --implementer claude|codex
   --implementer-model MODEL
   --implementer-effort LEVEL
+  --successor-implementer claude|codex
+  --successor-implementer-model MODEL
+  --successor-implementer-effort LEVEL
+  --no-implementer-successor
   --reviewer claude|codex
   --reviewer-model MODEL
   --reviewer-effort LEVEL
@@ -43,7 +49,8 @@ Role options:
                          foreground process; persistent-cli: start/resume one
                          task-scoped read-only CLI GENERAL at event boundaries.
   --rounds N             Additional rounds requested now (default 1). One
-                         round is exactly one IMPLEMENTER invocation.
+                         round is one completed implementation deliverable and
+                         may contain strictly serial predecessor/successor segments.
   --max-rounds N         Deprecated alias for --rounds.
 
 Recovery options:
@@ -86,6 +93,17 @@ state_write() {
     printf 'LAST_EXIT_CODE=%s\n' "$last_exit"
     printf 'LAST_STOP_REASON=%s\n' "$last_reason"
     printf 'IMPLEMENTER=%s/%s/%s\n' "$implementer_agent" "$implementer_model" "$implementer_effort"
+    printf 'PRIMARY_IMPLEMENTER=%s/%s/%s\n' \
+      "$primary_implementer_agent" "$primary_implementer_model" "$primary_implementer_effort"
+    printf 'ACTIVE_IMPLEMENTER=%s/%s/%s\n' \
+      "$implementer_agent" "$implementer_model" "$implementer_effort"
+    printf 'IMPLEMENTER_SUCCESSOR_ENABLED=%s\n' "$successor_enabled"
+    printf 'IMPLEMENTER_SUCCESSOR=%s/%s/%s\n' \
+      "$successor_agent" "$successor_model" "$successor_effort"
+    printf 'IMPLEMENTER_SWITCHES=%s\n' "${implementer_switches:-0}"
+    printf 'IMPLEMENTER_SEGMENT=%s\n' "${implementer_segment:-1}"
+    printf 'IMPLEMENTER_HANDOFF=%s\n' "${successor_handoff_file:-}"
+    printf 'SUPERSEDED_SESSION_ARCHIVE=%s\n' "${superseded_session_archive:-}"
     printf 'REVIEWER=%s/%s/%s\n' "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
     printf 'GENERAL_SUPERVISOR=%s/%s/%s\n' "$monitor_agent" "$monitor_model" "$monitor_effort"
     printf 'SUPERVISION_MODE=%s\n' "$monitor_mode"
@@ -207,6 +225,94 @@ create_recovery_checkpoint() {
   event_record "created recovery checkpoint $(git -C "$ROOT_DIR" rev-parse --short=12 HEAD), validation=$validation_status"
   printf 'Recovery checkpoint created (validation %s): %s\n' \
     "$validation_status" "$(git -C "$ROOT_DIR" rev-parse HEAD)"
+}
+
+activate_implementer_successor() {
+  local stopped_attempt="$1"
+  local task_id active_round current_round_value round_base recovery_commit handoff_absolute
+  local predecessor_runtime successor_runtime changed_files recent_commits
+
+  task_id="$(sed -n 's/^ACTIVE_TASK_ID=//p' "$AGENT_DIR/state.env" | head -n 1)"
+  active_round="$(
+    sed -n 's/^ACTIVE_IMPLEMENTATION_ROUND=//p' "$AGENT_DIR/state.env" | head -n 1
+  )"
+  if [[ ! "$active_round" =~ ^[1-9][0-9]*$ ]]; then
+    current_round_value="$(
+      sed -n 's/^CURRENT_ROUND=//p' "$AGENT_DIR/state.env" | head -n 1
+    )"
+    [[ "$current_round_value" =~ ^[0-9]+$ ]] || current_round_value=0
+    active_round=$((current_round_value + 1))
+  fi
+  round_base="$(
+    sed -n 's/^ACTIVE_IMPLEMENTATION_REVIEW_BASE_COMMIT=//p' \
+      "$AGENT_DIR/state.env" | head -n 1
+  )"
+  if ! round_base="$(
+    git -C "$ROOT_DIR" rev-parse --verify "${round_base:-HEAD}^{commit}" 2>/dev/null
+  )"; then
+    printf 'Cannot create successor handoff: invalid round review base.\n' >&2
+    return 4
+  fi
+  recovery_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)" || return 4
+  predecessor_runtime="$implementer_agent / $implementer_model / $implementer_effort"
+  successor_runtime="$successor_agent / $successor_model / $successor_effort"
+
+  superseded_session_archive=""
+  if [[ "${AGENT_SUPERVISOR_SKIP_SESSION_SUPERSEDE:-0}" != "1" ]]; then
+    if ! agent_supersede_role_session \
+      "$task_id" IMPLEMENTER "$successor_runtime" REAL_QUOTA_SUCCESSION; then
+      printf 'Cannot safely supersede the predecessor IMPLEMENTER session.\n' >&2
+      return 4
+    fi
+    superseded_session_archive="$AGENT_SUPERSEDED_SESSION_ARCHIVE"
+  fi
+
+  successor_handoff_file="${AGENT_SUPERVISOR_HANDOFF_FILE:-.agent/artifacts/supervisor/implementer-handoff-round-${active_round}-attempt-${stopped_attempt}.md}"
+  case "$successor_handoff_file" in
+    .agent/artifacts/supervisor/*) ;;
+    *)
+      printf 'Successor handoff must remain under .agent/artifacts/supervisor/.\n' >&2
+      return 4
+      ;;
+  esac
+  handoff_absolute="$ROOT_DIR/$successor_handoff_file"
+  changed_files="$(git -C "$ROOT_DIR" diff --name-only "$round_base..$recovery_commit" || true)"
+  recent_commits="$(git -C "$ROOT_DIR" log --oneline --no-decorate "$round_base..$recovery_commit" || true)"
+  {
+    printf '# IMPLEMENTER successor handoff\n\n'
+    printf -- '- Task: `%s`\n' "$task_id"
+    printf -- '- Logical implementation round: `%s`\n' "$active_round"
+    printf -- '- Serial segment completed/stopped: `%s`\n' "$implementer_segment"
+    printf -- '- Stop reason: `USAGE_OR_BILLING_LIMIT`\n'
+    printf -- '- Predecessor runtime: `%s`\n' "$predecessor_runtime"
+    printf -- '- Successor runtime: `%s`\n' "$successor_runtime"
+    printf -- '- Original round review base: `%s`\n' "$round_base"
+    printf -- '- Recovery commit: `%s`\n' "$recovery_commit"
+    printf -- '- Predecessor run log: `%s`\n' "$(stop_value LOG_FILE)"
+    printf -- '- Predecessor usage telemetry: `%s`\n' "${last_usage_file:-}"
+    printf -- '- Recovery validation: `.agent/artifacts/validation/summary.md`\n'
+    printf -- '- Superseded session archive: `%s`\n' "${superseded_session_archive:-not available}"
+    printf -- '- Created at: `%s`\n\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+    printf '## Continuation contract\n\n'
+    printf '%s\n' 'Continue the same implementation round from the recovery commit. Do not restart completed work, resume the predecessor conversation, change the original review base, or switch back to the predecessor after writing. Read the active task, current implementation report and directly relevant specifications/code, then verify the checkpoint before editing.'
+    printf '\n## Changed paths since the original round base\n\n```text\n%s\n```\n' \
+      "${changed_files:-none}"
+    printf '\n## Checkpoints since the original round base\n\n```text\n%s\n```\n' \
+      "${recent_commits:-none}"
+  } >"$handoff_absolute"
+
+  implementer_agent="$successor_agent"
+  implementer_model="$successor_model"
+  implementer_effort="$successor_effort"
+  implementer_switches=1
+  implementer_segment=$((implementer_segment + 1))
+  slice_resumes=0
+  next_stage=implementer
+  review_base=""
+  event_record "IMPLEMENTER succession: $predecessor_runtime -> $successor_runtime; handoff=$successor_handoff_file"
+  printf 'Primary IMPLEMENTER quota exhausted; continuing serially with successor.\n'
+  printf '  %s -> %s\n' "$predecessor_runtime" "$successor_runtime"
+  printf '  Handoff: %s\n' "$successor_handoff_file"
 }
 
 wait_until_epoch() {
@@ -478,6 +584,18 @@ fi
 implementer_agent="$(agent_runtime_executor_config IMPLEMENTER_AGENT claude)" || exit 2
 implementer_model="$(agent_runtime_model_config IMPLEMENTER_MODEL sonnet)" || exit 2
 implementer_effort="$(agent_runtime_effort_config IMPLEMENTER_EFFORT high)" || exit 2
+successor_enabled="$(
+  agent_runtime_enum_config IMPLEMENTER_SUCCESSOR_ENABLED yes yes no
+)" || exit 2
+successor_agent="$(
+  agent_runtime_executor_config IMPLEMENTER_SUCCESSOR_AGENT codex
+)" || exit 2
+successor_model="$(
+  agent_runtime_model_config IMPLEMENTER_SUCCESSOR_MODEL gpt-5.6-sol
+)" || exit 2
+successor_effort="$(
+  agent_runtime_effort_config IMPLEMENTER_SUCCESSOR_EFFORT high
+)" || exit 2
 reviewer_agent="$(agent_runtime_executor_config REVIEWER_AGENT codex)" || exit 2
 reviewer_model="$(agent_runtime_model_config REVIEWER_MODEL gpt-5.6-sol)" || exit 2
 reviewer_effort="$(agent_runtime_effort_config REVIEWER_EFFORT high)" || exit 2
@@ -509,6 +627,13 @@ while (( $# > 0 )); do
     --implementer) implementer_agent="${2:-}"; shift 2 ;;
     --implementer-model) implementer_model="${2:-}"; shift 2 ;;
     --implementer-effort) implementer_effort="${2:-}"; shift 2 ;;
+    --successor-implementer)
+      successor_agent="${2:-}"; successor_enabled=yes; shift 2 ;;
+    --successor-implementer-model)
+      successor_model="${2:-}"; successor_enabled=yes; shift 2 ;;
+    --successor-implementer-effort)
+      successor_effort="${2:-}"; successor_enabled=yes; shift 2 ;;
+    --no-implementer-successor) successor_enabled=no; shift ;;
     --reviewer) reviewer_agent="${2:-}"; shift 2 ;;
     --reviewer-model) reviewer_model="${2:-}"; shift 2 ;;
     --reviewer-effort) reviewer_effort="${2:-}"; shift 2 ;;
@@ -532,6 +657,15 @@ done
 agent_validate_executor "$implementer_agent" || exit 2
 agent_validate_model "$implementer_model" || exit 2
 agent_validate_effort "$implementer_effort" || exit 2
+if [[ "$successor_enabled" == "yes" ]]; then
+  agent_validate_executor "$successor_agent" || exit 2
+  agent_validate_model "$successor_model" || exit 2
+  agent_validate_effort "$successor_effort" || exit 2
+  if [[ "$successor_agent" == "$implementer_agent" ]]; then
+    printf 'Enabled successor must use a different executor from IMPLEMENTER.\n' >&2
+    exit 2
+  fi
+fi
 agent_validate_executor "$reviewer_agent" || exit 2
 agent_validate_model "$reviewer_model" || exit 2
 agent_validate_effort "$reviewer_effort" || exit 2
@@ -558,6 +692,10 @@ if [[ -n "$review_base" ]]; then
     git -C "$ROOT_DIR" rev-parse --verify "$review_base^{commit}" 2>/dev/null
   )" || { printf 'Invalid --review-base commit.\n' >&2; exit 2; }
 fi
+
+primary_implementer_agent="$implementer_agent"
+primary_implementer_model="$implementer_model"
+primary_implementer_effort="$implementer_effort"
 
 first_resume_epoch=""
 start_epoch=""
@@ -619,26 +757,19 @@ if [[ "$monitor_mode" == "persistent-cli" && ! -x "$monitor_command" ]]; then
   printf 'Monitor command is not executable: %s\n' "$monitor_command" >&2
   exit 127
 fi
-cycle_args=(
-  cycle
-  --implementer "$implementer_agent"
-  --implementer-model "$implementer_model"
-  --implementer-effort "$implementer_effort"
-  --reviewer "$reviewer_agent"
-  --reviewer-model "$reviewer_model"
-  --reviewer-effort "$reviewer_effort"
-  --max-rounds "$max_rounds"
-)
 supervisor_start_round="$(
   sed -n 's/^CURRENT_ROUND=//p' "$AGENT_DIR/state.env" | head -n 1
 )"
 [[ "$supervisor_start_round" =~ ^[0-9]+$ ]] || supervisor_start_round=0
 target_round=$((supervisor_start_round + max_rounds))
-cycle_args+=(--target-round "$target_round")
 
 attempt=0
 quota_resumes=0
 slice_resumes=0
+implementer_switches=0
+implementer_segment=1
+successor_handoff_file=""
+superseded_session_archive=""
 pending_action_id=""
 last_monitor_action=""
 last_usage_file=""
@@ -675,7 +806,31 @@ while true; do
   printf '\n=== Supervisor attempt %s; start stage %s ===\n' "$attempt" "$next_stage"
 
   rm -f -- "$STOP_FILE"
-  cycle_attempt_args=("${cycle_args[@]}" --start-stage "$next_stage")
+  cycle_attempt_args=(
+    cycle
+    --implementer "$implementer_agent"
+    --implementer-model "$implementer_model"
+    --implementer-effort "$implementer_effort"
+    --reviewer "$reviewer_agent"
+    --reviewer-model "$reviewer_model"
+    --reviewer-effort "$reviewer_effort"
+    --max-rounds "$max_rounds"
+    --target-round "$target_round"
+    --start-stage "$next_stage"
+    --implementer-segment "$implementer_segment"
+  )
+  if [[ "$successor_enabled" == "yes" && "$implementer_switches" == "0" ]]; then
+    cycle_attempt_args+=(
+      --successor-implementer "$successor_agent"
+      --successor-implementer-model "$successor_model"
+      --successor-implementer-effort "$successor_effort"
+    )
+  else
+    cycle_attempt_args+=(--no-implementer-successor)
+  fi
+  if [[ -n "$successor_handoff_file" ]]; then
+    cycle_attempt_args+=(--implementer-handoff "$successor_handoff_file")
+  fi
   if [[ "$next_stage" == "reviewer" && -n "$review_base" ]]; then
     cycle_attempt_args+=(--review-base "$review_base")
   fi
@@ -710,6 +865,13 @@ while true; do
   stop_stage="$(stop_value STAGE)"
   [[ -n "$stop_stage" ]] || stop_stage="UNKNOWN"
   [[ -n "$stop_reason" ]] || stop_reason="UNCLASSIFIED"
+  if [[ "$stop_stage" == "IMPLEMENTER" ]]; then
+    stopped_segment="$(stop_value IMPLEMENTER_SEGMENT)"
+    if [[ "$stopped_segment" =~ ^[1-9][0-9]*$ ]]; then
+      implementer_segment="$stopped_segment"
+    fi
+    successor_handoff_file="$(stop_value SUCCESSOR_HANDOFF_FILE)"
+  fi
   event_record "attempt $attempt stopped: stage=$stop_stage reason=$stop_reason exit=$cycle_exit"
 
   if [[ "$stop_reason" == "USAGE_OR_BILLING_LIMIT" || \
@@ -744,6 +906,22 @@ while true; do
       fi
     else
       review_base=""
+    fi
+
+    if [[ "$stop_reason" == "USAGE_OR_BILLING_LIMIT" && \
+          "$stop_stage" == "IMPLEMENTER" && \
+          "$successor_enabled" == "yes" && \
+          "$implementer_switches" == "0" ]]; then
+      if ! activate_implementer_successor "$attempt"; then
+        state_write STOPPED "$stop_stage" "$attempt" "$quota_resumes" "" \
+          4 IMPLEMENTER_SUCCESSION_FAILED
+        refresh_cycle_summary 4
+        exit 4
+      fi
+      state_write HANDING_OFF IMPLEMENTER "$attempt" "$quota_resumes" "" \
+        0 IMPLEMENTER_SUCCESSION
+      refresh_cycle_summary 0
+      continue
     fi
 
     if [[ "$stop_reason" == "AUTONOMY_SLICE_LIMIT" ]]; then

@@ -20,8 +20,9 @@ Commands:
   preflight [options]    Verify configured executors, permissions and readiness;
                          never starts an Agent.
   cycle [options]        Run a bounded number of rounds. One round is one
-                         IMPLEMENTER invocation; reviews occur only between
-                         implementations. The final round stops after IMPLEMENTER.
+                         completed implementation deliverable; it may contain
+                         serial successor segments. Reviews occur only between
+                         rounds. The final round stops after IMPLEMENTER.
   implement [options]    Run one IMPLEMENTER round and local checkpoint.
   validate               Run the unified configured checks.
   review [options]       Run one read-only REVIEWER round.
@@ -43,6 +44,10 @@ Cycle options:
   --implementer, --implementer-agent claude|codex
   --implementer-model MODEL
   --implementer-effort low|medium|high|xhigh|max
+  --successor-implementer claude|codex  Supervisor-only quota successor.
+  --successor-implementer-model MODEL
+  --successor-implementer-effort low|medium|high|xhigh|max
+  --no-implementer-successor
   --reviewer, --reviewer-agent claude|codex
   --reviewer-model MODEL
   --reviewer-effort low|medium|high|xhigh|max
@@ -54,6 +59,9 @@ Cycle options:
   --start-stage implementer|reviewer
   --review-base COMMIT    Exact base for a REVIEWER process/quota resume;
                          normally read from pending-review state.
+  --implementer-segment N Internal serial segment number for recovery.
+  --implementer-handoff FILE
+                         Internal structured predecessor handoff.
 
 Defaults come from .agent/runtime.env. Roles are not tied to executors: the same
 executor may fill both roles in separate fresh processes, and roles may be
@@ -122,6 +130,18 @@ case "$command_name" in
     implementer_agent="$(agent_runtime_executor_config IMPLEMENTER_AGENT claude)" || exit 2
     implementer_model="$(agent_runtime_model_config IMPLEMENTER_MODEL sonnet)" || exit 2
     implementer_effort="$(agent_runtime_effort_config IMPLEMENTER_EFFORT high)" || exit 2
+    successor_enabled="$(
+      agent_runtime_enum_config IMPLEMENTER_SUCCESSOR_ENABLED yes yes no
+    )" || exit 2
+    successor_agent="$(
+      agent_runtime_executor_config IMPLEMENTER_SUCCESSOR_AGENT codex
+    )" || exit 2
+    successor_model="$(
+      agent_runtime_model_config IMPLEMENTER_SUCCESSOR_MODEL gpt-5.6-sol
+    )" || exit 2
+    successor_effort="$(
+      agent_runtime_effort_config IMPLEMENTER_SUCCESSOR_EFFORT high
+    )" || exit 2
     reviewer_agent="$(agent_runtime_executor_config REVIEWER_AGENT codex)" || exit 2
     reviewer_model="$(agent_runtime_model_config REVIEWER_MODEL gpt-5.6-sol)" || exit 2
     reviewer_effort="$(agent_runtime_effort_config REVIEWER_EFFORT high)" || exit 2
@@ -129,6 +149,8 @@ case "$command_name" in
     review_base_override=""
     requested_rounds="1"
     target_round_override=""
+    implementer_segment=1
+    implementer_handoff=""
 
     while (( $# > 0 )); do
       case "$1" in
@@ -146,6 +168,28 @@ case "$command_name" in
           [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
           implementer_effort="$2"
           shift 2
+          ;;
+        --successor-implementer)
+          [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+          successor_agent="$2"
+          successor_enabled=yes
+          shift 2
+          ;;
+        --successor-implementer-model)
+          [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+          successor_model="$2"
+          successor_enabled=yes
+          shift 2
+          ;;
+        --successor-implementer-effort)
+          [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+          successor_effort="$2"
+          successor_enabled=yes
+          shift 2
+          ;;
+        --no-implementer-successor)
+          successor_enabled=no
+          shift
           ;;
         --reviewer|--reviewer-agent)
           [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
@@ -182,6 +226,16 @@ case "$command_name" in
           review_base_override="$2"
           shift 2
           ;;
+        --implementer-segment)
+          [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { usage >&2; exit 2; }
+          implementer_segment="$2"
+          shift 2
+          ;;
+        --implementer-handoff)
+          [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+          implementer_handoff="$2"
+          shift 2
+          ;;
         --help|-h)
           usage
           exit 0
@@ -197,6 +251,15 @@ case "$command_name" in
     agent_validate_executor "$implementer_agent" || exit 2
     agent_validate_model "$implementer_model" || exit 2
     agent_validate_effort "$implementer_effort" || exit 2
+    if [[ "$successor_enabled" == "yes" ]]; then
+      agent_validate_executor "$successor_agent" || exit 2
+      agent_validate_model "$successor_model" || exit 2
+      agent_validate_effort "$successor_effort" || exit 2
+      if [[ "$successor_agent" == "$implementer_agent" ]]; then
+        printf 'Enabled successor must use a different executor from IMPLEMENTER.\n' >&2
+        exit 2
+      fi
+    fi
     agent_validate_executor "$reviewer_agent" || exit 2
     agent_validate_model "$reviewer_model" || exit 2
     agent_validate_effort "$reviewer_effort" || exit 2
@@ -239,6 +302,12 @@ case "$command_name" in
     printf 'Cycle configuration\n'
     printf '  IMPLEMENTER: %s / %s / %s\n' \
       "$implementer_agent" "$implementer_model" "$implementer_effort"
+    if [[ "$successor_enabled" == "yes" ]]; then
+      printf '  SUCCESSOR:   %s / %s / %s (supervisor quota failover)\n' \
+        "$successor_agent" "$successor_model" "$successor_effort"
+    else
+      printf '  SUCCESSOR:   disabled\n'
+    fi
     printf '  REVIEWER:    %s / %s / %s\n' \
       "$reviewer_agent" "$reviewer_model" "$reviewer_effort"
     printf '  START STAGE: %s\n' "$next_stage"
@@ -266,6 +335,15 @@ case "$command_name" in
       --reviewer-model "$reviewer_model" \
       --reviewer-effort "$reviewer_effort"
     )
+    if [[ "$successor_enabled" == "yes" ]]; then
+      preflight_args+=(
+        --successor-implementer "$successor_agent"
+        --successor-implementer-model "$successor_model"
+        --successor-implementer-effort "$successor_effort"
+      )
+    else
+      preflight_args+=(--no-implementer-successor)
+    fi
     preflight_args+=(--max-rounds "$target_round")
     if ! "$ROOT_DIR/scripts/agent-preflight.sh" "${preflight_args[@]}"; then
       printf 'Automatic cycle stopped at preflight; no Agent was started.\n' >&2
@@ -278,6 +356,8 @@ case "$command_name" in
       printf 'STARTING_ROUND=%s\n' "$starting_round"
       printf 'REQUESTED_ROUNDS=%s\n' "$requested_rounds"
       printf 'TARGET_ROUND=%s\n' "$target_round"
+      printf 'IMPLEMENTER_SEGMENT=%s\n' "$implementer_segment"
+      printf 'IMPLEMENTER_HANDOFF=%s\n' "$implementer_handoff"
       printf 'STARTED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
     } >"$ROOT_DIR/.agent/artifacts/cycle/runtime.env"
 
@@ -363,13 +443,21 @@ case "$command_name" in
         exit 0
       fi
 
-      printf '\n=== IMPLEMENTER (%s) round %s (target %s) ===\n' \
-        "$implementer_agent" "$((current_round + 1))" "$target_round"
-      AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-implementation.sh" \
-        --agent "$implementer_agent" \
-        --model "$implementer_model" \
-        --effort "$implementer_effort" \
+      printf '\n=== IMPLEMENTER (%s) round %s, segment %s (target %s) ===\n' \
+        "$implementer_agent" "$((current_round + 1))" \
+        "$implementer_segment" "$target_round"
+      implementation_args=(
+        --agent "$implementer_agent"
+        --model "$implementer_model"
+        --effort "$implementer_effort"
         --max-rounds "$target_round"
+        --segment "$implementer_segment"
+      )
+      if [[ -n "$implementer_handoff" ]]; then
+        implementation_args+=(--handoff-file "$implementer_handoff")
+      fi
+      AGENT_CYCLE_LOCK_HELD=1 "$ROOT_DIR/scripts/run-implementation.sh" \
+        "${implementation_args[@]}"
       implementation_exit=$?
       if (( implementation_exit != 0 )); then
         printf 'Cycle stopped during IMPLEMENTER (exit %s).\n' "$implementation_exit" >&2
@@ -377,6 +465,11 @@ case "$command_name" in
       fi
 
       current_round="$(state_value CURRENT_ROUND)"
+      # A successor handoff belongs only to the interrupted round. If this
+      # cycle continues into another owner-requested round, the already-active
+      # runtime starts that new round as segment 1 without replaying the handoff.
+      implementer_segment=1
+      implementer_handoff=""
       if (( current_round >= target_round )); then
         printf 'Final requested round completed after IMPLEMENTER %s.\n' "$current_round"
         printf 'No REVIEWER was started; the owner now inspects the implementation.\n'

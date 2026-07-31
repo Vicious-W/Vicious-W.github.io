@@ -18,6 +18,7 @@ AGENT_SESSION_ID=""
 AGENT_SESSION_MODE="new"
 AGENT_SESSION_GENERATION=1
 AGENT_SESSION_ROTATED_FROM=""
+AGENT_SUPERSEDED_SESSION_ARCHIVE=""
 
 agent_runtime_init() {
   AGENT_RUNTIME_ROOT="$1"
@@ -229,6 +230,54 @@ agent_force_role_session_rotation() {
     printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   } >>"$session_tmp"
   mv "$session_tmp" "$session_file"
+}
+
+agent_supersede_role_session() {
+  local task_id="$1"
+  local role="$2"
+  local successor_runtime="$3"
+  local reason="${4:-IMPLEMENTER_SUCCESSION}"
+  local session_dir="$AGENT_RUNTIME_ROOT/.agent/artifacts/sessions"
+  local history_dir="$session_dir/history"
+  local task_slug role_slug session_file session_status session_tmp archive_file
+
+  task_slug="$(agent_safe_slug "$task_id")"
+  role_slug="$(printf '%s' "$role" | tr '[:upper:]' '[:lower:]')"
+  session_file="$session_dir/${task_slug}-${role_slug}.env"
+  AGENT_SUPERSEDED_SESSION_ARCHIVE=""
+  [[ -s "$session_file" ]] || {
+    printf 'Cannot supersede missing role session: %s\n' "$session_file" >&2
+    return 2
+  }
+
+  session_status="$(agent_session_value "$session_file" STATUS)"
+  if [[ "$session_status" == "SUPERSEDED" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$history_dir"
+  archive_file="$history_dir/${task_slug}-${role_slug}-$(date -u +'%Y%m%dT%H%M%SZ')-$$.env"
+
+  session_tmp="${session_file}.tmp"
+  while IFS= read -r line; do
+    case "$line" in
+      STATUS=*|UPDATED_AT_UTC=*|SUPERSEDED_BY_RUNTIME=*|SUPERSEDE_REASON=*|SESSION_ARCHIVE=*) ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done <"$session_file" >"$session_tmp"
+  {
+    printf 'STATUS=SUPERSEDED\n'
+    printf 'SUPERSEDED_BY_RUNTIME=%s\n' "$successor_runtime"
+    printf 'SUPERSEDE_REASON=%s\n' "$reason"
+    printf 'SESSION_ARCHIVE=%s\n' "${archive_file#"$AGENT_RUNTIME_ROOT/"}"
+    printf 'UPDATED_AT_UTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  } >>"$session_tmp"
+  cp -- "$session_tmp" "$archive_file" || {
+    rm -f -- "$session_tmp"
+    return 2
+  }
+  mv "$session_tmp" "$session_file"
+  AGENT_SUPERSEDED_SESSION_ARCHIVE="${archive_file#"$AGENT_RUNTIME_ROOT/"}"
 }
 
 agent_record_telemetry() {

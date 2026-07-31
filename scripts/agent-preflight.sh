@@ -14,6 +14,7 @@ agent_runtime_init "$ROOT_DIR"
 
 check_implementation=1
 check_review=1
+check_successor=1
 control_only=0
 allow_dirty=0
 skip_git_write=0
@@ -21,6 +22,18 @@ skip_external=0
 implementer_agent="$(agent_runtime_executor_config IMPLEMENTER_AGENT claude)" || exit 2
 implementer_model="$(agent_runtime_model_config IMPLEMENTER_MODEL sonnet)" || exit 2
 implementer_effort="$(agent_runtime_effort_config IMPLEMENTER_EFFORT high)" || exit 2
+successor_enabled="$(
+  agent_runtime_enum_config IMPLEMENTER_SUCCESSOR_ENABLED yes yes no
+)" || exit 2
+successor_agent="$(
+  agent_runtime_executor_config IMPLEMENTER_SUCCESSOR_AGENT codex
+)" || exit 2
+successor_model="$(
+  agent_runtime_model_config IMPLEMENTER_SUCCESSOR_MODEL gpt-5.6-sol
+)" || exit 2
+successor_effort="$(
+  agent_runtime_effort_config IMPLEMENTER_SUCCESSOR_EFFORT high
+)" || exit 2
 reviewer_agent="$(agent_runtime_executor_config REVIEWER_AGENT codex)" || exit 2
 reviewer_model="$(agent_runtime_model_config REVIEWER_MODEL gpt-5.6-sol)" || exit 2
 reviewer_effort="$(agent_runtime_effort_config REVIEWER_EFFORT high)" || exit 2
@@ -42,6 +55,11 @@ Options:
   --implementer-agent NAME    claude or codex.
   --implementer-model MODEL
   --implementer-effort LEVEL
+  --successor-implementer NAME  claude or codex; supervisor failover only.
+  --successor-implementer-model MODEL
+  --successor-implementer-effort LEVEL
+  --no-implementer-successor    Disable successor failover for this run.
+  --no-successor-check          Internal: preflight only the active implementer.
   --reviewer-agent NAME       claude or codex.
   --reviewer-model MODEL
   --reviewer-effort LEVEL
@@ -62,11 +80,13 @@ while (( $# > 0 )); do
     --review-only)
       check_implementation=0
       check_review=1
+      check_successor=0
       shift
       ;;
     --control-only)
       check_implementation=0
       check_review=1
+      check_successor=0
       control_only=1
       shift
       ;;
@@ -84,6 +104,32 @@ while (( $# > 0 )); do
       [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
       implementer_effort="$2"
       shift 2
+      ;;
+    --successor-implementer)
+      [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+      successor_agent="$2"
+      successor_enabled=yes
+      shift 2
+      ;;
+    --successor-implementer-model)
+      [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+      successor_model="$2"
+      successor_enabled=yes
+      shift 2
+      ;;
+    --successor-implementer-effort)
+      [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+      successor_effort="$2"
+      successor_enabled=yes
+      shift 2
+      ;;
+    --no-implementer-successor)
+      successor_enabled=no
+      shift
+      ;;
+    --no-successor-check)
+      check_successor=0
+      shift
       ;;
     --reviewer-agent)
       [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
@@ -217,6 +263,12 @@ check_executor_external() {
   if (( check_implementation == 1 )); then
     printf -- '- IMPLEMENTER: `%s / %s / %s`\n' \
       "$implementer_agent" "$implementer_model" "$implementer_effort"
+    if (( check_successor == 1 )) && [[ "$successor_enabled" == "yes" ]]; then
+      printf -- '- IMPLEMENTER successor: `%s / %s / %s`\n' \
+        "$successor_agent" "$successor_model" "$successor_effort"
+    else
+      printf -- '- IMPLEMENTER successor: `disabled/not checked`\n'
+    fi
   fi
   if (( control_only == 1 )); then
     printf -- '- GENERAL supervisor: `%s / %s / %s`\n' \
@@ -239,11 +291,34 @@ if (( check_implementation == 1 )); then
   agent_validate_effort "$implementer_effort" || config_ok=0
   check_command "$implementer_agent"
 fi
+if (( check_implementation == 1 && check_successor == 1 )) && \
+   [[ "$successor_enabled" == "yes" ]]; then
+  agent_validate_executor "$successor_agent" || config_ok=0
+  agent_validate_model "$successor_model" || config_ok=0
+  agent_validate_effort "$successor_effort" || config_ok=0
+  if [[ "$successor_agent" == "$implementer_agent" ]]; then
+    printf 'Invalid successor: it must use a different executor from the primary implementer.\n' >&2
+    config_ok=0
+  fi
+  if [[ "$successor_agent" != "$implementer_agent" ]]; then
+    check_command "$successor_agent"
+  fi
+fi
 if (( check_review == 1 )); then
   agent_validate_executor "$reviewer_agent" || config_ok=0
   agent_validate_model "$reviewer_model" || config_ok=0
   agent_validate_effort "$reviewer_effort" || config_ok=0
-  if (( check_implementation == 0 )) || [[ "$reviewer_agent" != "$implementer_agent" ]]; then
+  reviewer_command_needed=1
+  if (( check_implementation == 1 )) && \
+     [[ "$reviewer_agent" == "$implementer_agent" ]]; then
+    reviewer_command_needed=0
+  fi
+  if (( check_implementation == 1 && check_successor == 1 )) && \
+     [[ "$successor_enabled" == "yes" && \
+        "$reviewer_agent" == "$successor_agent" ]]; then
+    reviewer_command_needed=0
+  fi
+  if (( reviewer_command_needed == 1 )); then
     check_command "$reviewer_agent"
   fi
 fi
@@ -275,6 +350,7 @@ required_files=(
   docs/methodology/AI_Project_Meta_Method_v4.0_2026-07-23.md
   docs/methodology/AI_Project_Meta_Method_v5.0_2026-07-24.md
   docs/methodology/AI_Project_Meta_Method_v6.0_2026-07-29.md
+  docs/methodology/AI_Project_Meta_Method_v7.0_2026-07-31.md
   references/README.md
   .vscode/settings.json
   .agent/next-task.md
@@ -311,6 +387,8 @@ done
 
 uses_claude=0
 if (( check_implementation == 1 )) && [[ "$implementer_agent" == "claude" ]]; then uses_claude=1; fi
+if (( check_implementation == 1 && check_successor == 1 )) && \
+   [[ "$successor_enabled" == "yes" && "$successor_agent" == "claude" ]]; then uses_claude=1; fi
 if (( check_review == 1 )) && [[ "$reviewer_agent" == "claude" ]]; then uses_claude=1; fi
 if (( uses_claude == 1 )); then
   if node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' \
@@ -425,6 +503,10 @@ fi
 
 runtime_values_ok=1
 agent_runtime_config IMPLEMENTER_TIMEOUT_SECONDS 7200 60 43200 >/dev/null || runtime_values_ok=0
+agent_runtime_enum_config IMPLEMENTER_SUCCESSOR_ENABLED yes yes no >/dev/null || runtime_values_ok=0
+agent_runtime_executor_config IMPLEMENTER_SUCCESSOR_AGENT codex >/dev/null || runtime_values_ok=0
+agent_runtime_model_config IMPLEMENTER_SUCCESSOR_MODEL gpt-5.6-sol >/dev/null || runtime_values_ok=0
+agent_runtime_effort_config IMPLEMENTER_SUCCESSOR_EFFORT high >/dev/null || runtime_values_ok=0
 agent_runtime_config REVIEWER_TIMEOUT_SECONDS 3600 60 43200 >/dev/null || runtime_values_ok=0
 agent_runtime_config MONITOR_TIMEOUT_SECONDS 900 60 7200 >/dev/null || runtime_values_ok=0
 agent_runtime_enum_config MONITOR_MODE attached attached persistent-cli >/dev/null || runtime_values_ok=0
@@ -520,6 +602,14 @@ else
   if (( check_implementation == 1 )); then
     check_executor_external "$implementer_agent"
     [[ "$implementer_agent" == "claude" ]] && checked_claude=1 || checked_codex=1
+  fi
+  if (( check_implementation == 1 && check_successor == 1 )) && \
+     [[ "$successor_enabled" == "yes" ]]; then
+    if [[ "$successor_agent" == "claude" && "$checked_claude" == "0" ]] || \
+       [[ "$successor_agent" == "codex" && "$checked_codex" == "0" ]]; then
+      check_executor_external "$successor_agent"
+      [[ "$successor_agent" == "claude" ]] && checked_claude=1 || checked_codex=1
+    fi
   fi
   if (( check_review == 1 )); then
     if [[ "$reviewer_agent" == "claude" && "$checked_claude" == "0" ]] || \

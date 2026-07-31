@@ -91,6 +91,8 @@ fi
 first_implementation_manifest=""
 latest_implementation_manifest=""
 declare -A implementation_manifests=()
+declare -A implementation_segment_manifests=()
+declare -A implementation_max_segments=()
 declare -A review_manifests=()
 if [[ -d "$RUN_DIR" ]]; then
   while IFS= read -r manifest_path; do
@@ -99,9 +101,15 @@ if [[ -d "$RUN_DIR" ]]; then
     manifest_round="$(manifest_value "$manifest_path" ROUND)"
     case "$manifest_role" in
       IMPLEMENTER)
+        manifest_segment="$(manifest_value "$manifest_path" IMPLEMENTER_SEGMENT)"
+        [[ "$manifest_segment" =~ ^[1-9][0-9]*$ ]] || manifest_segment=1
         [[ -n "$first_implementation_manifest" ]] || first_implementation_manifest="$manifest_path"
         latest_implementation_manifest="$manifest_path"
         implementation_manifests["$manifest_round"]="$manifest_path"
+        implementation_segment_manifests["$manifest_round:$manifest_segment"]="$manifest_path"
+        if (( manifest_segment > ${implementation_max_segments[$manifest_round]:-0} )); then
+          implementation_max_segments["$manifest_round"]="$manifest_segment"
+        fi
         ;;
       REVIEWER)
         review_manifests["$manifest_round"]="$manifest_path"
@@ -191,6 +199,17 @@ fi
       printf -- '- 最近 GENERAL 监督决策：`%s`\n' \
         "$last_supervision_action"
     fi
+    implementer_switches="$(supervisor_value IMPLEMENTER_SWITCHES)"
+    [[ "$implementer_switches" =~ ^[0-9]+$ ]] || implementer_switches=0
+    if (( implementer_switches > 0 )); then
+      printf -- '- 实现者后继：`%s` → `%s`，切换 `%s` 次（严格串行）\n' \
+        "$(supervisor_value PRIMARY_IMPLEMENTER)" \
+        "$(supervisor_value ACTIVE_IMPLEMENTER)" "$implementer_switches"
+      if [[ -n "$(supervisor_value IMPLEMENTER_HANDOFF)" ]]; then
+        printf -- '- 后继交接：`%s`\n' \
+          "$(supervisor_value IMPLEMENTER_HANDOFF)"
+      fi
+    fi
     if [[ -n "$(supervisor_value RESUME_AT)" ]]; then
       printf -- '- 计划恢复时间：`%s`\n' "$(supervisor_value RESUME_AT)"
     fi
@@ -214,6 +233,14 @@ fi
   printf -- '- 默认 IMPLEMENTER：`%s / %s / %s`\n' \
     "$(runtime_value IMPLEMENTER_AGENT)" "$(runtime_value IMPLEMENTER_MODEL)" \
     "$(runtime_value IMPLEMENTER_EFFORT)"
+  if [[ "$(runtime_value IMPLEMENTER_SUCCESSOR_ENABLED)" == "yes" ]]; then
+    printf -- '- 默认 IMPLEMENTER 后继：`%s / %s / %s`（仅真实额度切换）\n' \
+      "$(runtime_value IMPLEMENTER_SUCCESSOR_AGENT)" \
+      "$(runtime_value IMPLEMENTER_SUCCESSOR_MODEL)" \
+      "$(runtime_value IMPLEMENTER_SUCCESSOR_EFFORT)"
+  else
+    printf -- '- 默认 IMPLEMENTER 后继：`disabled`\n'
+  fi
   printf -- '- 默认 REVIEWER：`%s / %s / %s`\n\n' \
     "$(runtime_value REVIEWER_AGENT)" "$(runtime_value REVIEWER_MODEL)" \
     "$(runtime_value REVIEWER_EFFORT)"
@@ -225,6 +252,7 @@ fi
 
     printf '### IMPLEMENTER\n\n'
     implementation_manifest="${implementation_manifests[$round]:-}"
+    max_implementation_segment="${implementation_max_segments[$round]:-0}"
     if [[ -n "$implementation_commit" ]] && \
        git -C "$ROOT_DIR" show "$implementation_commit:.agent/implementation-report.md" \
          >"$report_tmp" 2>/dev/null; then
@@ -232,6 +260,20 @@ fi
         sed -n 's/^- Implementer runtime: *//p' "$report_tmp" | head -n 1 | tr -d '`'
       )"
       printf -- '- 实际运行：`%s`\n' "${implementer_runtime:-未记录（旧格式）}"
+      if (( max_implementation_segment > 1 )); then
+        printf -- '- 串行实现段：\n'
+        for ((segment = 1; segment <= max_implementation_segment; segment++)); do
+          segment_manifest="${implementation_segment_manifests[$round:$segment]:-}"
+          [[ -n "$segment_manifest" ]] || continue
+          printf '  - 段 %s：`%s / %s / %s`，结果 `%s`，用量 `%s`\n' \
+            "$segment" \
+            "$(manifest_value "$segment_manifest" EXECUTOR)" \
+            "$(manifest_value "$segment_manifest" MODEL)" \
+            "$(manifest_value "$segment_manifest" EFFORT)" \
+            "$(manifest_value "$segment_manifest" RUN_STATUS)" \
+            "$(manifest_value "$segment_manifest" USAGE_FILE)"
+        done
+      fi
       printf -- '- 提交：`%s`\n' "$implementation_commit"
       printf -- '- 改动文件：%s\n' "$(join_changed_files "$implementation_commit")"
       printf -- '- 主要改动：\n'

@@ -23,7 +23,8 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/run-implementation.sh [options]
 
-Runs exactly one non-interactive IMPLEMENTER round for .agent/next-task.md.
+Runs one non-interactive IMPLEMENTER segment for .agent/next-task.md. A normal
+round has one segment; a quota successor may complete segment 2 of the same round.
 The executor may edit the allowed workspace but cannot control Git history.
 The neutral wrapper validates and creates one local implementation checkpoint.
 
@@ -32,6 +33,8 @@ Options:
   --model MODEL         Override IMPLEMENTER_MODEL.
   --effort LEVEL        Override IMPLEMENTER_EFFORT.
   --max-rounds N        Internal absolute round target (compatibility option).
+  --segment N           Internal serial segment number inside this round.
+  --handoff-file FILE   Structured predecessor handoff for a successor segment.
 EOF
 }
 
@@ -39,6 +42,8 @@ executor_override=""
 model_override=""
 effort_override=""
 max_rounds_override=""
+implementer_segment=1
+handoff_file=""
 while (( $# > 0 )); do
   case "$1" in
     --agent)
@@ -61,6 +66,16 @@ while (( $# > 0 )); do
       max_rounds_override="$2"
       shift 2
       ;;
+    --segment)
+      [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { usage >&2; exit 2; }
+      implementer_segment="$2"
+      shift 2
+      ;;
+    --handoff-file)
+      [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
+      handoff_file="$2"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -72,6 +87,29 @@ while (( $# > 0 )); do
       ;;
   esac
 done
+
+handoff_relative=""
+handoff_absolute=""
+if [[ -n "$handoff_file" ]]; then
+  case "$handoff_file" in
+    .agent/artifacts/supervisor/*)
+      if [[ "$handoff_file" == *'..'* ]]; then
+        printf 'Successor handoff path may not contain .. segments.\n' >&2
+        exit 2
+      fi
+      handoff_relative="$handoff_file"
+      handoff_absolute="$ROOT_DIR/$handoff_relative"
+      ;;
+    *)
+      printf 'Successor handoff must be under .agent/artifacts/supervisor/.\n' >&2
+      exit 2
+      ;;
+  esac
+  if [[ ! -s "$handoff_absolute" ]]; then
+    printf 'Successor handoff is missing or empty: %s\n' "$handoff_relative" >&2
+    exit 2
+  fi
+fi
 
 if [[ -n "$executor_override" ]]; then
   agent_validate_executor "$executor_override" || exit 2
@@ -133,6 +171,7 @@ trap 'exit 143' TERM HUP
 
 preflight_args=(
   --implementation-only
+  --no-successor-check
   --implementer-agent "$implementer_agent"
   --implementer-model "$implementer_model"
   --implementer-effort "$implementer_effort"
@@ -207,9 +246,9 @@ review_base_commit="$AGENT_IMPLEMENTATION_REVIEW_BASE"
 base_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 base_git_config="$(git -C "$ROOT_DIR" config --local --list --show-origin 2>/dev/null)"
 base_git_refs="$(git -C "$ROOT_DIR" show-ref 2>/dev/null || true)"
-run_id="implementation-r${implementation_round}-$(date -u +'%Y%m%dT%H%M%SZ')-$$"
-prompt_file="$ARTIFACT_DIR/prompt-round-${implementation_round}.md"
-agent_log="$ARTIFACT_DIR/${implementer_agent}-round-${implementation_round}.log"
+run_id="implementation-r${implementation_round}-s${implementer_segment}-$(date -u +'%Y%m%dT%H%M%SZ')-$$"
+prompt_file="$ARTIFACT_DIR/prompt-round-${implementation_round}-segment-${implementer_segment}.md"
+agent_log="$ARTIFACT_DIR/${implementer_agent}-round-${implementation_round}-segment-${implementer_segment}.log"
 manifest_file="$RUN_DIR/${run_id}.env"
 events_file="$ARTIFACT_DIR/${run_id}.events.jsonl"
 usage_file="$ARTIFACT_DIR/${run_id}.usage.json"
@@ -229,8 +268,19 @@ agent_append_run_limits \
   "$manifest_file" "$claude_max_turns" "$claude_max_budget_usd" \
   "$claude_context_rotate_tokens"
 printf 'ROUND_REVIEW_BASE_COMMIT=%s\n' "$review_base_commit" >>"$manifest_file"
+printf 'IMPLEMENTER_SEGMENT=%s\n' "$implementer_segment" >>"$manifest_file"
+printf 'SUCCESSOR_HANDOFF_FILE=%s\n' "$handoff_relative" >>"$manifest_file"
 
-if [[ -n "$AGENT_SESSION_ROTATED_FROM" ]]; then
+if [[ -n "$handoff_relative" ]]; then
+  context_instructions="You are serial successor segment $implementer_segment of the same
+logical implementation round. The predecessor stopped only because its real usage
+quota was exhausted. Its conversation is superseded and must not be resumed.
+First read $handoff_relative, then verify its recovery commit and original round
+review base against current Git history/status. Continue from the checkpoint;
+do not repeat completed work. Reconstruct only the active working set from the
+handoff, PROJECT.md, .agent/next-task.md, .agent/latest-review.md,
+.agent/implementation-report.md and directly relevant specifications/code."
+elif [[ -n "$AGENT_SESSION_ROTATED_FROM" ]]; then
   context_instructions="This is a deliberately compacted continuation of the same
 task-scoped IMPLEMENTER role. The previous raw session
 $AGENT_SESSION_ROTATED_FROM exceeded the context guard and was closed after a
@@ -247,12 +297,11 @@ diff, then open only changed or directly relevant specification sections and
 code. Confirm the checkpointed workspace rather than assuming prior tool state."
 else
   context_instructions="Read, in order: PROJECT.md, AGENT_PROTOCOL.md,
-.agent/roles/IMPLEMENTER.md, PROJECT_SPEC.md,
-docs/engineering/SOURCE_SCENE.md, docs/engineering/REACTOR_POOL_SYSTEM.md,
-docs/engineering/REACTOR_MODEL.md,
-docs/engineering/SOURCE_LAB_OPTICS.md, REVIEW_CONTRACT.md, .agent/next-task.md,
-.agent/latest-review.md, .agent/implementation-report.md, README.md, the current
-Git status, and all directly relevant code."
+.agent/roles/IMPLEMENTER.md, PROJECT_SPEC.md, .agent/next-task.md,
+.agent/latest-review.md, .agent/implementation-report.md, REVIEW_CONTRACT.md,
+the engineering specifications directly named by the active task, README.md,
+the current Git status, and directly relevant code. Do not reread unrelated
+scene specifications."
 fi
 
 cat >"$prompt_file" <<EOF
@@ -263,26 +312,24 @@ and do not switch roles.
 
 Task: $active_task_id
 Implementation round: $implementation_round
+Serial implementation segment: $implementer_segment
 Absolute target for this parent run: $max_rounds
 Base commit: $base_commit
 Round review base commit: $review_base_commit
 Role session: ${AGENT_SESSION_ID:-pending} ($AGENT_SESSION_MODE)
 Session generation: $AGENT_SESSION_GENERATION
 Run manifest: ${manifest_file#"$ROOT_DIR/"}
+Predecessor handoff: ${handoff_relative:-none}
 
 $context_instructions
 
 Implement the active task comprehensively. If the latest verdict is
 CHANGES_REQUIRED, address every valid Blocker and Major first. Make reasonable
 technical decisions inside the owner's approved scope; do not invent unrelated
-features. Follow the protected SOURCE, reactor-pool, laboratory and optics
-baselines. Record continuous operation, session reset, laboratory/underground
-equipment, camera navigation, water optics, Cherenkov volume/particles,
-MANUAL/AUTO consoles, wall/ceiling/floor glass, constrained glass grabbing,
-grating support, glass damage/fracture, audio activation, changed RP-* and
-LAB/CAM/WTR/CHR/GLA/CTL component IDs, sources, geometry, state links, proxy
-labels, deliberate abstractions, performance, verification, and open gap IDs
-in .agent/implementation-report.md.
+features. Preserve completed scenes and protected baselines outside the active
+task. In .agent/implementation-report.md, record the task's changed component
+IDs, sources, geometry and state links, proxy labels, deliberate abstractions,
+performance, verification and open gap IDs.
 
 Keep the autonomous slice efficient: batch related reads and edits, avoid
 re-reading unchanged files or printing large generated output, stabilize the
@@ -304,9 +351,8 @@ Run ./scripts/run-validation.sh as a standalone command; do not chain diagnostic
 echo/cat commands onto it. Use the Write/Edit tools, not a shell heredoc, for
 temporary source probes in ignored artifact paths. For page appearance or behavior changes, use
 Playwright MCP—not a Bash Playwright script—to exercise the required viewports,
-session reset, first-interaction activation, reactor-pool operation and pulse,
-water response, glass interactions, audio activation, responsive layout, and
-browser console. Bash child processes and Playwright MCP may not share a network
+session reset, first-interaction activation, active-scene interactions,
+responsive layout, and browser console. Bash child processes and Playwright MCP may not share a network
 namespace, so do not start a background Vite, preview, or HTTP server for this
 evidence pass. Build first, then use Playwright MCP browser_run_code_unsafe with
 page.route('**/*', ...) to fulfill requests from files under dist/ at a synthetic
@@ -317,7 +363,10 @@ ignored artifact paths.
 
 Replace .agent/implementation-report.md with a complete report. Include
 "- Implementer runtime: $implementer_agent / $implementer_model / $implementer_effort"
-in its metadata. Report passes, failures, NOT CONFIGURED items, unverified areas,
+and "- Implementation segment: $implementer_segment" in its metadata. If this is
+a successor segment, also include a metadata line beginning
+"- Implementation lineage:" and record the predecessor-to-successor runtime
+lineage from the structured handoff. Report passes, failures, NOT CONFIGURED items, unverified areas,
 remaining risks, and the exact handoff focus for the next REVIEWER. Then stop;
 the neutral wrapper will verify, validate, and create the Git checkpoint.
 EOF
@@ -367,6 +416,10 @@ agent_finish_run_manifest \
 if (( implementer_exit != 0 )); then
   agent_record_stop \
     IMPLEMENTER "$AGENT_RUN_REASON" "$implementer_exit" "$agent_log" "$usage_file"
+  {
+    printf 'IMPLEMENTER_SEGMENT=%s\n' "$implementer_segment"
+    printf 'SUCCESSOR_HANDOFF_FILE=%s\n' "$handoff_relative"
+  } >>"$AGENT_DIR/artifacts/runtime/last-stop.env"
   printf 'IMPLEMENTER stopped (exit %s, reason %s). Changes were left for inspection.\n' \
     "$implementer_exit" "$AGENT_RUN_REASON" >&2
   printf 'Log: %s\n' "$agent_log" >&2
@@ -438,6 +491,17 @@ if ! grep -Fq -- "- Implementer runtime: $implementer_agent / $implementer_model
   "$REPORT_FILE"; then
   agent_record_stop IMPLEMENTER IMPLEMENTATION_RUNTIME_MISSING 5 "$agent_log"
   printf 'Implementation report does not record the assigned runtime.\n' >&2
+  exit 5
+fi
+if ! grep -Fq -- "- Implementation segment: $implementer_segment" "$REPORT_FILE"; then
+  agent_record_stop IMPLEMENTER IMPLEMENTATION_SEGMENT_MISSING 5 "$agent_log"
+  printf 'Implementation report does not record the serial segment.\n' >&2
+  exit 5
+fi
+if [[ -n "$handoff_relative" ]] && \
+   ! grep -Fq -- '- Implementation lineage:' "$REPORT_FILE"; then
+  agent_record_stop IMPLEMENTER IMPLEMENTATION_LINEAGE_MISSING 5 "$agent_log"
+  printf 'Successor implementation report does not record its runtime lineage.\n' >&2
   exit 5
 fi
 

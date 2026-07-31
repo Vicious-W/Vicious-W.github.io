@@ -63,6 +63,9 @@
 - 同一目标追加轮回或发生额度恢复时，同角色以新进程精确恢复该会话；
 - IMPLEMENTER 与 REVIEWER 使用不同会话 ID，绝不互相恢复或共享；
 - 新任务或执行器、模型、effort 变化时创建新会话；
+- 若所有者预先配置了不同执行器的 IMPLEMENTER 后继，主实现者遇到真实额度上限时，
+  旧会话必须标记为 `SUPERSEDED` 并归档；后继只通过 Git 恢复提交和结构化交接创建
+  新会话，不得恢复旧执行器 transcript，写入后也不得回切旧实现会话；
 - 父脚本显式重新注入角色、任务边界和权限；
 - `REVIEWER` 始终使用只读权限；
 - 实现和审查严格串行，不同时运行；
@@ -108,8 +111,11 @@ AI 轮询。可见的附着式 GENERAL 必须从开始到终止一直持有前�
 
 ### 轮回的唯一计量单位
 
-从本版本起，“一次轮回”固定等于**一次 IMPLEMENTER 调用**。不得再用“一次轮回”
-表示多组实现—审查，也不再混用“循环”“大轮回”等计量单位。
+从本版本起，“一次轮回”固定等于**一份完成的 IMPLEMENTER 交付**。正常情况下它只有
+一次 IMPLEMENTER 调用；若主实现者遇到真实额度上限，同一轮回可以由严格串行的
+“主实现段 → 后继实现段”共同完成。进程、切片或实现段都不是新轮回，不增加
+`CURRENT_ROUND`。不得再用“一次轮回”表示多组实现—审查，也不再混用“循环”、
+“大轮回”等计量单位。
 
 REVIEWER 不是轮回的机械收尾，而是为下一次实现准备证据：
 
@@ -136,6 +142,19 @@ REVIEWER 不是轮回的机械收尾，而是为下一次实现准备证据：
 - REVIEWER 比较从轮回原始起点到最终实现提交的完整范围，因此恢复检查点中的业务
   改动不会漏审。
 
+IMPLEMENTER 后继是预先配置的有界容错链，不是并行协作：
+
+- 当前只允许一个主实现者和一个后继，最大切换一次；
+- 触发条件只允许 `USAGE_OR_BILLING_LIMIT`，不得用
+  `AUTONOMY_SLICE_LIMIT`、timeout、权限错误、模型错误或普通失败触发；
+- 父脚本必须先确认前一工作进程退出，再记录用量、验证合法路径并创建 recovery
+  checkpoint，然后生成包含任务、原始审查基线、恢复提交、运行时、日志、用量和
+  改动路径的结构化交接；
+- 后继从新会话继续同一轮回，沿用原始审查基线；完成后只产生一次正式实现提交；
+- 后继自身额度耗尽时按后继会话等待/恢复，不能回切主实现者或形成乒乓切换；
+- 若后继与 REVIEWER 使用同一执行器，两种角色仍须使用不同进程、不同会话和不同
+  权限；流程隔离存在，但模型多样性相应降低。
+
 `scripts/agent-cycle.sh` 是流程控制器，不属于任何 Agent 角色。它负责：
 
 - 读取或接收实现者和审查者的执行器、模型与强度；
@@ -148,7 +167,8 @@ REVIEWER 不是轮回的机械收尾，而是为下一次实现准备证据：
 Agent 不递归启动下一 Agent；角色交接由仍在前台等待子进程结束的父脚本完成。
 
 `scripts/agent-supervisor.sh` 位于 cycle 之外，负责一次可能跨多个额度窗口的完整
-轮回运行：保存恢复现场、记录 `WAITING_FOR_QUOTA`、零 token 等待、按原角色续跑，
+轮回运行：保存恢复现场、在符合上述唯一触发条件时单向交给 IMPLEMENTER 后继，
+否则记录 `WAITING_FOR_QUOTA`、零 token 等待并按当前角色续跑，
 并按 `attached` 或 `persistent-cli` 模式交接 GENERAL 监督上下文。Claude 非交互调用还必须
 具有最大自主轮次与 API 等价预算；命中任一保险时记为
 `AUTONOMY_SLICE_LIMIT`，但这不等于真实额度耗尽。监督器保存合法现场并进入
@@ -168,6 +188,7 @@ PID/start-ticks 双重身份记录，使 `persistent-cli` 父脚本不会在启�
 每次专用角色调用都在被 Git 忽略的 `.agent/artifacts/runs/` 写入清单，至少包含：
 
 - `RUN_ID`、`TASK_ID`、`ROUND`；
+- IMPLEMENTER 的 `IMPLEMENTER_SEGMENT` 与可选 `SUCCESSOR_HANDOFF_FILE`；
 - `ROLE`、`EXECUTOR`、`MODEL`、`EFFORT`；
 - `PERMISSION_PROFILE`、`TIMEOUT_SECONDS`；
 - `BASE_COMMIT`、`TARGET_COMMIT`；
@@ -194,7 +215,9 @@ Claude 的额度终态可能出现 `subtype=success` 与 `is_error=true` 并存�
 subtype：`terminal_reason=api_error`、HTTP 429、`rate_limit_event.status=rejected`
 和 `rateLimitType/resetsAt` 是更高优先级的结构化额度证据。应归类为
 `USAGE_OR_BILLING_LIMIT`、保留角色会话为 `ACTIVE`，并按 `resetsAt` 记录准确恢复
-时间；不能误记为不可恢复的子进程错误。
+时间；不能误记为不可恢复的子进程错误。若当前是主 IMPLEMENTER 且后继已启用，
+该会话随后转为 `SUPERSEDED` 并立即交接；REVIEWER 或已接班的 IMPLEMENTER 仍按
+额度窗口等待恢复。
 
 清单用于审计实际调用配置，不取代 `PROJECT_SPEC.md`、角色契约或正式交接报告。
 部分订阅执行器不提供费用字段；此时保留空值或 `null`，不能把缺失值写成零。

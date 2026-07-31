@@ -1,6 +1,6 @@
 # 项目参与者指令手册
 
-版本：v4.4
+版本：v4.5
 
 更新日期：2026-07-31
 
@@ -23,7 +23,7 @@ cd /home/vicious/projects/Vicious-W.github.io
 - 反应堆模型基线：`docs/engineering/REACTOR_MODEL.md`
 - Agent 身份总协议：`AGENT_PROTOCOL.md`
 - 三种角色：`.agent/roles/`
-- 当前协作方法：`docs/methodology/AI_Project_Meta_Method_v6.0_2026-07-29.md`
+- 当前协作方法：`docs/methodology/AI_Project_Meta_Method_v7.0_2026-07-31.md`
 - 正式审查格式：`REVIEW_CONTRACT.md`
 
 ## 2. 最常用命令
@@ -105,6 +105,10 @@ IMPLEMENTER_AGENT=claude
 IMPLEMENTER_MODEL=sonnet
 IMPLEMENTER_EFFORT=high
 IMPLEMENTER_TIMEOUT_SECONDS=7200
+IMPLEMENTER_SUCCESSOR_ENABLED=yes
+IMPLEMENTER_SUCCESSOR_AGENT=codex
+IMPLEMENTER_SUCCESSOR_MODEL=gpt-5.6-sol
+IMPLEMENTER_SUCCESSOR_EFFORT=high
 REVIEWER_AGENT=codex
 REVIEWER_MODEL=gpt-5.6-sol
 REVIEWER_EFFORT=high
@@ -127,8 +131,12 @@ MAX_AUTONOMY_SLICES_PER_WINDOW=4
 MONITOR_ACTION_TIMEOUT_SECONDS=7200
 ```
 
-这只是默认调用配置，不是永久身份绑定。`MONITOR_*` 是兼容 v5 的监督功能字段名，
-自动调用的实际身份是 GENERAL。可以在每次 `cycle` 启动时覆盖。
+IMPLEMENTER 后继只在 `supervise` 中生效：主实现者确认遇到真实额度上限后，父脚本
+保存现场并把同一轮回单向交给 Codex。它不是第二个并行实现者，也不会在普通
+`cycle` 命令里自行接班。
+
+其余字段只是默认调用配置，不是永久身份绑定。`MONITOR_*` 是兼容 v5 的监督功能字段名，
+自动调用的实际身份是 GENERAL。可以在每次 `cycle` 或 `supervise` 启动时覆盖。
 
 ### 5.1 使用默认配置
 
@@ -143,6 +151,7 @@ MONITOR_ACTION_TIMEOUT_SECONDS=7200
   --implementer codex \
   --implementer-model gpt-5.6-sol \
   --implementer-effort high \
+  --no-implementer-successor \
   --reviewer claude \
   --reviewer-model sonnet \
   --reviewer-effort high
@@ -155,6 +164,7 @@ MONITOR_ACTION_TIMEOUT_SECONDS=7200
   --implementer codex \
   --implementer-model gpt-5.6-sol \
   --implementer-effort high \
+  --no-implementer-successor \
   --reviewer codex \
   --reviewer-model gpt-5.6-sol \
   --reviewer-effort high
@@ -202,13 +212,15 @@ MONITOR_ACTION_TIMEOUT_SECONDS=7200
 ```text
 Cycle configuration
   IMPLEMENTER: claude / sonnet / high
+  SUCCESSOR:   codex / gpt-5.6-sol / high (supervisor quota failover)
   REVIEWER:    codex / gpt-5.6-sol / high
 
-=== IMPLEMENTER (claude) round 2 (target 2) ===
+=== IMPLEMENTER (claude) round 2, segment 1 (target 2) ===
 ```
 
-一次轮回固定为一次 IMPLEMENTER。审查只为下一次实现准备，因此请求三次轮回时严格
-串行为：
+一次轮回固定为一份完成的 IMPLEMENTER 交付。通常它只有一个实现段；若主实现者因
+真实额度上限交给后继，两个严格串行的实现段仍算同一轮。审查只为下一次实现准备，
+因此请求三次轮回时严格串行为：
 
 ```text
 预检
@@ -225,8 +237,11 @@ Cycle configuration
 请求一次时只有最后一项 IMPLEMENTER，不机械启动 REVIEWER。若所有者随后追加轮回，
 父脚本会先审查当前待定实现，再启动所有者已经明确请求的下一次 IMPLEMENTER。
 PASS 表示没有阻塞项，`CHANGES_REQUIRED` 则提供必须修复的问题；审查结论不会擅自
-减少 `--rounds N` 指定的实现次数。同一 `ACTIVE_TASK_ID` 下，两个角色分别恢复自己的原会话；任务、角色、
-执行器、模型或 effort 改变时才新建，达到上下文阈值时则以新 generation 压缩续接。
+减少 `--rounds N` 指定的实现次数。同一 `ACTIVE_TASK_ID` 下，两个角色分别恢复自己的
+原会话；任务、角色、执行器、模型或 effort 改变时才新建，达到上下文阈值时则以新
+generation 压缩续接。额度后继是例外的显式运行时变化：前任会话归档为
+`SUPERSEDED`，Codex 后继建立新的 IMPLEMENTER 会话，并从 recovery commit 与
+结构化交接继续，之后不得回切前任。
 
 每次实现轮回正式开始前，包装器会先创建 `agent: begin implementation round N`
 状态检查点，保存该轮不可变的 REVIEWER 比较起点。后续即使经历多次额度恢复、自主
@@ -255,6 +270,9 @@ Agent 不负责启动下一个 Agent。中立父脚本一直等待子进程结�
   --implementer claude \
   --implementer-model sonnet \
   --implementer-effort high \
+  --successor-implementer codex \
+  --successor-implementer-model gpt-5.6-sol \
+  --successor-implementer-effort high \
   --reviewer claude \
   --reviewer-model sonnet \
   --reviewer-effort max \
@@ -285,7 +303,7 @@ Agent 不负责启动下一个 Agent。中立父脚本一直等待子进程结�
 agent-supervisor-service.sh：persistent-cli 的独立 WSL 进程托管
 └── agent-supervisor.sh：跨额度窗口、恢复次数、定时等待、异常交接
     └── agent-cycle.sh：N 次实现轮回、相邻实现间按需审查的状态机
-        ├── IMPLEMENTER
+        ├── IMPLEMENTER 主段 → 可选额度后继段（永不并行）
         └── REVIEWER
 ```
 
@@ -293,7 +311,9 @@ agent-supervisor-service.sh：persistent-cli 的独立 WSL 进程托管
 
 额度中断或 Claude 主动预算保险触发时，监督器会先确认工作 Agent 已退出。若实现
 阶段留下合法半成品，它运行统一验证并创建标题明确的 recovery checkpoint；该提交
-只保存现场，不代表通过，也不增加审查次数。真实额度事件进入
+只保存现场，不代表通过，也不增加轮回或审查次数。主 IMPLEMENTER 的真实额度事件
+在启用后继时立即生成结构化交接并进入 `HANDING_OFF`，随后由 Codex 新会话继续同一
+轮回；REVIEWER 或已经接班的 IMPLEMENTER 再遇真实额度事件才进入
 `WAITING_FOR_QUOTA`，由 shell 零 token 等待。主动预算保险只说明当前自主切片结束，
 进入 `AWAITING_MONITOR_ACTION`，不能直接冒充额度耗尽。
 
@@ -341,7 +361,8 @@ supervisor 会读取并真正执行。该字段是控制消息名，不是角色
 防止自动小切片变成无限额度消耗。attached 决策默认最多等待 7200 秒，可在
 `.agent/runtime.env` 调整。
 
-到点后，监督器从中断角色启动全新进程：实现阶段中断就继续 IMPLEMENTER，已有
+没有可用后继或后继已经接班时，到点后监督器从中断角色启动全新进程：实现阶段中断
+就继续当前 IMPLEMENTER，已有
 实现检查点后的审查中断就直接继续 REVIEWER；新进程会精确恢复同一任务的对应角色
 会话，而不是重新选择“最近会话”。如果最后一轮缓存上下文达到
 `CLAUDE_CONTEXT_ROTATE_TOKENS`，父脚本会在安全检查点后创建同一逻辑角色会话的新
@@ -377,7 +398,7 @@ supervisor 会读取并真正执行。该字段是控制消息名，不是角色
 `./scripts/agent-cycle.sh implement` 形成检查点和 pending 状态，不再接受未登记的
 任意 HEAD 直接进入正式审查。
 
-`SCHEDULED`、`AWAITING_MONITOR_ACTION`、`WAITING_FOR_QUOTA` 和
+`SCHEDULED`、`HANDING_OFF`、`AWAITING_MONITOR_ACTION`、`WAITING_FOR_QUOTA` 和
 `WAITING_FOR_BUDGET_WINDOW` 表示没有工作 Agent 在运行；`RESUMING` 是已收到决策、
 即将以新进程恢复；`RUNNING` 表示正在执行一个有界 cycle；`COMPLETE` 或 `STOPPED`
 是终态。
@@ -506,6 +527,8 @@ typecheck。未配置的项目写 `NOT CONFIGURED`，不能算作 PASS。摘要�
 .agent/artifacts/cycle/latest-summary.md
 .agent/artifacts/supervisor/state.env
 .agent/artifacts/supervisor/events.log
+.agent/artifacts/supervisor/implementer-handoff-round-*-attempt-*.md
+.agent/artifacts/sessions/history/
 .agent/artifacts/runs/
 .agent/artifacts/implementation/<executor>-round-N.log
 .agent/artifacts/review/<executor>-round-N.log
@@ -553,7 +576,7 @@ cat .agent/artifacts/runtime/last-stop.env
 
 | 分类 | 含义 | 处理 |
 | --- | --- | --- |
-| `USAGE_OR_BILLING_LIMIT` | 额度、余额或速率限制 | `supervise` 自动保存并定时续跑 |
+| `USAGE_OR_BILLING_LIMIT` | 额度、余额或速率限制 | 主 IMPLEMENTER 单向交给已配置后继；REVIEWER/后继则保存并定时续跑 |
 | `AUTONOMY_SLICE_LIMIT` | 项目 turns/预算保险命中，不等于额度耗尽 | GENERAL 根据实时/累计用量决定立即续片、轮换、等待或停止 |
 | `AUTHENTICATION` | 登录或令牌失效 | 在普通终端恢复对应 CLI 登录 |
 | `MODEL_UNAVAILABLE` | 模型标识无效或账户无访问权 | 改用 CLI 支持的别名/完整 slug 后重新预检 |
