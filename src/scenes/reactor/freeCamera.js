@@ -50,6 +50,12 @@ export const CAM_INPUT = {
   zoomSpeed: 0.00064,       // ln(factor) 每像素等效 delta
   wheelMaxDelta: 120,       // 单事件像素等效上限
   zoomDamping: 14,          // 1/s，指数收敛速率（帧率无关、无过冲）
+  // 世界步长的参考尺度下限（米）。纯几何缩放的步长正比于当前距离，顶到
+  // minDistance = 0.08 后每格滚轮只剩约 6 mm——浏览器实测从池面推到地下设备层
+  // 需要上千格，等于"到不了"。步长改用 max(targetDistance, dollyFloor) 作尺度：
+  // 远处仍是熟悉的按比例缩放（规范机位一格 6.2%，满足 ≤8%），贴近后步长落在
+  // 约 0.37 m/格，推进与退出都保持可用且连续（CAM-001A / CAM-002）。
+  dollyFloor: 6
   // 方向键平移：世界速度随当前轨道距离缩放，使近距离/远距离下的屏幕观感一致。
   panKeySpeed: 5.5,
   panKeyRefDistance: 10,
@@ -199,7 +205,11 @@ export function createFreeCamera({ camera }) {
     zoom(deltaPxEquivalent) {
       const d = clamp(deltaPxEquivalent, -CAM_INPUT.wheelMaxDelta, CAM_INPUT.wheelMaxDelta);
       const factor = Math.exp(d * CAM_INPUT.zoomSpeed);
-      let target = rig.targetDistance * factor;
+      // 步长 = (factor - 1) × 尺度。尺度取 max(当前目标距离, dollyFloor)：距离大时
+      // 等价于旧的 `target *= factor`（同样的 6.2%/格），距离趋近 0 时不再退化成
+      // 毫米级步长，因此贴近堆芯后仍能连续推进和退出。
+      const scale = Math.max(rig.targetDistance, CAM_INPUT.dollyFloor);
+      let target = rig.targetDistance + (factor - 1) * scale;
       if (target < CAM_LIMITS.minDistance) {
         // 顶到最近距离后继续推进：差额记入 pushBudget，tick() 里逐帧把它转成
         // pivot 的连续前移，而不是这里就地跳变 pivot（CAM-001A）。

@@ -672,6 +672,31 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
     `继续推进可以下到地下设备层: y=${camera.position.y.toFixed(2)} < ${UNDERGROUND_BOUNDS.ceilingY}`);
   assert(camera.position.y >= CAM_LIMITS.minY - 1e-6, "但仍被世界包围盒兜住，不会飞到无穷远");
 
+  // 近场步长下限（dollyFloor）：顶到 minDistance 后每格滚轮仍要走出可用的世界距离。
+  // 旧的纯几何步长在这里只剩 minDistance*(1-e^-0.064) ≈ 5 mm/格，等于到不了地下层。
+  cam.goHome();
+  for (let i = 0; i < 120; i++) { cam.zoom(-100); cam.tick(1 / 60); }   // 先顶到最近
+  assert(Math.abs(cam.rig.distance - CAM_LIMITS.minDistance) < 1e-6, "已顶到 minDistance");
+  const nearStart = camera.position.clone();
+  cam.zoom(-100);
+  for (let i = 0; i < 60; i++) cam.tick(1 / 60);                        // 让阻尼把这一格走完
+  const nearStep = camera.position.distanceTo(nearStart);
+  assert(nearStep > 0.2 && nearStep < 1.0,
+    `贴近后单格滚轮仍推进可用世界距离: ${nearStep.toFixed(3)} m`);
+
+  // 反向对称：从贴近状态退出时同样不能只走毫米级
+  const outStart = cam.rig.targetDistance;
+  cam.zoom(100);
+  assert(cam.rig.targetDistance - outStart > 0.2,
+    `贴近后单格反向滚轮同样走出可用距离: ${(cam.rig.targetDistance - outStart).toFixed(3)} m`);
+
+  // 规范机位处的相对步长不受 dollyFloor 影响（仍是 ≤8% 的比例缩放）
+  cam.goHome();
+  const relHome = cam.rig.distance;
+  cam.zoom(-100);
+  assert(Math.abs(cam.rig.targetDistance - relHome) / relHome <= 0.08,
+    "dollyFloor 不改变规范机位处 ≤8% 的单格比例");
+
   // 平移（中键）只改 pivot，不改 distance
   cam.goHome();
   const d0 = cam.rig.distance;
