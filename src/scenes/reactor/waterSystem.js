@@ -250,6 +250,8 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
   caustics.rotation.x = -Math.PI / 2;
   caustics.position.y = -poolDepth + 0.05;
   caustics.renderOrder = 2;
+  // CAM-001 中心焦点拾取只应命中真实结构；焦散是叠加型光学代理，不参与拾取。
+  caustics.raycast = () => {};
   group.add(caustics);
 
   // —— 自然对流羽流（温差驱动的竖向淡色折射代理）——
@@ -266,6 +268,7 @@ export function createWaterSystem({ poolRadius, poolDepth, surfaceY, corePositio
   plume.rotation.x = -Math.PI / 2;
   plume.position.set(corePosition.x, surfaceY - 0.05, corePosition.z);
   plume.renderOrder = 2;
+  plume.raycast = () => {};
   group.add(plume);
 
   const causticData = causticTex.image.data;

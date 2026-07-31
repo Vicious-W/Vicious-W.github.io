@@ -785,6 +785,30 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -LIFT_Y);
   const hit = new THREE.Vector3();
 
+  // —— CAM-001 中心焦点拾取 ——
+  // 右键按下时从**画面中心**（不是鼠标位置）发射独立的一条射线，命中场景真实结构
+  // 时把命中点锁定为本次拖动的旋转焦点；辉光/焦散等纯光学代理已在各自模块里
+  // 禁用了 raycast，因此这里不需要额外的白名单/黑名单过滤。
+  const focusRaycaster = new THREE.Raycaster();
+  const SCREEN_CENTER = new THREE.Vector2(0, 0);
+  const pickFocusPoint = () => {
+    focusRaycaster.setFromCamera(SCREEN_CENTER, camera);
+    const hits = focusRaycaster.intersectObjects(scene.children, true);
+    for (let i = 0; i < hits.length; i++) {
+      if (hits[i].distance > 1e-3) return hits[i].point.clone();
+    }
+    return null;
+  };
+
+  // 右键按住时的短暂、微弱、无文字蓝色中心标记（CAM-001）。camera.lookAt(pivot) 在
+  // apply() 里每帧都成立，所以锁定的焦点永远精确投影到屏幕正中心——标记只需要静态
+  // 居中，不需要逐帧重新计算屏幕位置。
+  const focusMarker = document.createElement("div");
+  focusMarker.className = "physical-focus-marker";
+  focusMarker.setAttribute("aria-hidden", "true");
+  section.appendChild(focusMarker);
+  const showFocusMarker = show => focusMarker.classList.toggle("is-active", !!show);
+
   // ———————— GLA-CTRL 抓取伺服 ————————
   // 鼠标只改世界水平面上的目标位置（GLA-CTRL-001），W/S 改目标高度，A/D 只绕世界
   // 竖直轴偏航（GLA-CTRL-002）。跟随用**有界伺服冲量**，不是每帧传送：玻璃在抓取
@@ -801,7 +825,6 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     baseQuat: new CANNON.Quaternion()
   };
   const keys = new Set();
-  let shiftDown = false;
 
   const yawOf = q => Math.atan2(2 * (q.w * q.y + q.z * q.x), 1 - 2 * (q.y * q.y + q.x * q.x));
 
@@ -881,13 +904,21 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   let activeHotspotPointer = null;
 
   const onPointerDown = event => {
-    // 右键 → 轨道旋转；中键 → 平移（CAM-001）
+    // 右键 → 轨道旋转；中键 → 平移（CAM-001）。抓取玻璃期间两者都不移动相机
+    // （GLA-CTRL-003），直接吞掉事件，避免相机运动改变抓取约束。
     if (event.button === 2 || event.button === 1) {
+      if (grab.entry) { event.preventDefault(); return; }
       interactOutsideConsole();
       if (orbitPointerId !== null) return;
       orbitPointerId = event.pointerId;
       orbitMode = event.button === 1 ? "pan" : "orbit";
       orbitLast.x = event.clientX; orbitLast.y = event.clientY;
+      if (orbitMode === "orbit") {
+        // 从画面中心（不是鼠标位置）拾取本次拖动的固定旋转焦点（CAM-001）
+        cam.beginOrbit(pickFocusPoint());
+        applyCamera();
+        showFocusMarker(true);
+      }
       try { canvas.setPointerCapture(orbitPointerId); } catch (e) { /* 合成事件可能抛 */ }
       canvas.style.cursor = "move";
       event.preventDefault();
@@ -970,6 +1001,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     if (orbitPointerId !== null && (!event || event.pointerId === orbitPointerId)) {
       try { canvas.releasePointerCapture(orbitPointerId); } catch (e) { /* 指针已没了 */ }
       orbitPointerId = null;
+      showFocusMarker(false);
       canvas.style.cursor = "";
       return;
     }
@@ -980,40 +1012,46 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     canvas.style.cursor = "";
   };
 
+  // 滚轮 deltaMode 归一化：0=像素、1=行（约 16px/行）、2=页（视口高度）。归一化到
+  // "像素等效" 后交给 cam.zoom()，它自己再做单事件限幅（CAM-001A）。
+  const WHEEL_LINE_PX = 16;
   const onWheel = event => {
+    if (grab.entry) { event.preventDefault(); return; }   // GLA-CTRL-003：抓取期间滚轮不移动相机
     interactOutsideConsole();
     event.preventDefault();
-    cam.zoom(event.deltaY);
+    const unit = event.deltaMode === 1 ? WHEEL_LINE_PX
+      : event.deltaMode === 2 ? (canvas.clientHeight || 900)
+      : 1;
+    cam.zoom(event.deltaY * unit);
     applyCamera();
   };
 
   const onContextMenu = event => event.preventDefault();
 
-  // —— 键盘：自由飞行 / 抓取输入所有权（GLA-CTRL-003）——
-  // 抓取期间 W/S/A/D 专用于玻璃；松开后立即恢复自由飞行。Q/E 始终属于相机，
-  // Shift 只是速度倍率（不改物理时间）。Home/F = 非文字的"回到规范初始取景"。
-  const CAM_KEYS = new Set(["w", "a", "s", "d", "q", "e"]);
+  // —— 键盘：方向键平移相机 / 抓取输入所有权（GLA-CTRL-003）——
+  // 抓取期间 W/S/A/D 专用于玻璃；未抓取时它们不再是相机输入（CAM-002 不再依赖旧
+  // W/S/A/D/Q/E 自由飞行）。方向键始终只属于相机（画面 up/right 平移），
+  // Home/F = 非文字的"回到规范初始取景"。
+  const GRAB_KEYS = new Set(["w", "a", "s", "d"]);
+  const PAN_KEYS = new Set(["arrowup", "arrowdown", "arrowleft", "arrowright"]);
   const onKeyDown = event => {
     interactOutsideConsole();
     const k = (event.key || "").toLowerCase();
-    if (k === "shift") { shiftDown = true; return; }
     if (k === "home" || k === "f") { cam.goHome(); applyCamera(); return; }
-    if (CAM_KEYS.has(k)) { keys.add(k); event.preventDefault(); }
+    if (GRAB_KEYS.has(k) || PAN_KEYS.has(k)) { keys.add(k); event.preventDefault(); }
   };
   const onKeyUp = event => {
-    const k = (event.key || "").toLowerCase();
-    if (k === "shift") { shiftDown = false; return; }
-    keys.delete(k);
+    keys.delete((event.key || "").toLowerCase());
   };
   // 键盘丢焦 / 窗口失焦 / 标签页隐藏：把**所有**持续输入都安全归零，避免"键卡住"、
   // 玻璃被无人拖着，或者提棒指令在后台继续驱动控制棒（棒速必须立即归零）。
   const onBlur = () => {
     keys.clear();
-    shiftDown = false;
     releaseHotspot();
     if (orbitPointerId !== null) {
       try { canvas.releasePointerCapture(orbitPointerId); } catch (e) { /* 指针已没了 */ }
       orbitPointerId = null;
+      showFocusMarker(false);
     }
     releaseGrab();
     pointerId = null;
@@ -1162,19 +1200,19 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     const dt = frameDelta(now, last);
     last = now;
 
-    // —— 输入所有权（GLA-CTRL-003）：抓着玻璃时 W/S/A/D 属于玻璃，否则属于相机 ——
+    // —— 输入所有权（GLA-CTRL-003）：抓着玻璃时 W/S/A/D 属于玻璃，方向键/滚轮
+    // 阻尼都暂停；未抓取时方向键平移画面、滚轮目标距离每帧阻尼收敛 ——
     if (grab.entry) {
       const lift = (keys.has("w") ? 1 : 0) - (keys.has("s") ? 1 : 0);
       const yaw = (keys.has("a") ? 1 : 0) - (keys.has("d") ? 1 : 0);
       if (lift) grab.y = clamp(grab.y + lift * GRAB.liftRate * dt, GRAB.minY, GRAB.maxY);
       if (yaw) grab.yaw += yaw * GRAB.yawRate * dt;
-      // Q/E 仍归相机：抓取只独占 W/S/A/D
-      const camOnly = new Set();
-      if (keys.has("q")) camOnly.add("q");
-      if (keys.has("e")) camOnly.add("e");
-      if (camOnly.size) cam.fly(dt, camOnly, shiftDown);
     } else {
-      cam.fly(dt, keys, shiftDown);
+      cam.panKeys(dt, {
+        up: keys.has("arrowup"), down: keys.has("arrowdown"),
+        left: keys.has("arrowleft"), right: keys.has("arrowright")
+      });
+      cam.tick(dt);
     }
     // 每帧重算机位与水上/水下分支：水面本身在动，光学分支不能只在鼠标事件里更新
     applyCamera();
@@ -1321,20 +1359,38 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
     home: cam.isHome(),
     near: camera.near, far: camera.far
   });
-  // 自由相机的自动化驱动钩子（非文字，供验收模拟右键/中键/滚轮/飞行；
-  // 走的是与鼠标键盘完全相同的 cam.* 入口，不是另一套简化运动）。
+  // 自由相机的自动化驱动钩子（非文字，供验收模拟右键中心拾取/拖拽/中键/滚轮/
+  // 方向键；走的是与鼠标键盘完全相同的 cam.* 入口，不是另一套简化运动）。
   window.__SOURCE_NAV__ = {
+    // 模拟右键按下：从画面中心拾取并锁定本次轨道焦点（CAM-001）
+    beginOrbit: () => { cam.beginOrbit(pickFocusPoint()); applyCamera(); return cam.snapshot(); },
     orbit: (dx, dy) => { cam.orbit(dx, dy); applyCamera(); return cam.snapshot(); },
     pan: (dx, dy) => { cam.pan(dx, dy, canvas.clientHeight || 900); applyCamera(); return cam.snapshot(); },
-    zoom: (d) => { cam.zoom(d); applyCamera(); return cam.snapshot(); },
-    fly: (dirs, seconds = 1, boost = false) => {
-      const set = new Set(String(dirs).toLowerCase().split(""));
+    // settleSeconds > 0 时额外推进 tick() 阻尼收敛，便于验收观察连续中间状态
+    zoom: (d, settleSeconds = 0) => {
+      cam.zoom(d);
       const step = 1 / 60;
-      for (let i = 0; i < Math.round(seconds / step); i++) cam.fly(step, set, boost);
+      for (let i = 0; i < Math.round(settleSeconds / step); i++) cam.tick(step);
       applyCamera();
       return cam.snapshot();
     },
-    home: () => { cam.goHome(); applyCamera(); return cam.snapshot(); }
+    // dirs = { up, down, left, right }（布尔）：模拟方向键按住 seconds 秒
+    panKeys: (dirs = {}, seconds = 1) => {
+      const step = 1 / 60;
+      for (let i = 0; i < Math.round(seconds / step); i++) cam.panKeys(step, dirs);
+      applyCamera();
+      return cam.snapshot();
+    },
+    home: () => { cam.goHome(); applyCamera(); return cam.snapshot(); },
+    // 锁定焦点投影与画面中心的 CSS 像素偏差（验收 ≤ 2px；lookAt(pivot) 使其恒为 0）
+    focusScreenError: () => {
+      const rect = canvas.getBoundingClientRect();
+      const v = cam.pivot.clone().project(camera);
+      return {
+        dx: (v.x * 0.5 + 0.5) * rect.width - rect.width / 2,
+        dy: (-v.y * 0.5 + 0.5) * rect.height - rect.height / 2
+      };
+    }
   };
   // 切伦科夫的只读快照（功率因果、有界曝光、活粒子数）
   window.__SOURCE_CHR__ = () => cherenkov.snapshot();
@@ -1606,6 +1662,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       materials.forEach(m => m.dispose());
       envRT.dispose();
       renderer.dispose();
+      focusMarker.remove();
       if (window.__SOURCE_STATE__ === session.state) delete window.__SOURCE_STATE__;
       delete window.__SOURCE_GLASS__;
       delete window.__SOURCE_FLOOR__;

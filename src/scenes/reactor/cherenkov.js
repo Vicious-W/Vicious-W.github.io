@@ -197,6 +197,9 @@ export function createCherenkov({
       track(new THREE.CylinderGeometry(radius, radius, halfH * 2, 28, 1, true)), mat);
     mesh.position.y = coreCenterY;
     mesh.renderOrder = 3;
+    // CAM-001 中心焦点拾取只应命中真实结构；辉光体积是功率驱动的光传播代理
+    // （PROJECT_SPEC.md「粒子只作为...代理，不拥有碰撞...」的同一精神），不参与拾取。
+    mesh.raycast = () => {};
     group.add(mesh);
     layers.push({ mat, scale: intensityScale });
     return mesh;
@@ -219,6 +222,7 @@ export function createCherenkov({
   const bloom = new THREE.Sprite(bloomMat);
   bloom.position.set(0, coreCenterY, 0);
   bloom.renderOrder = 4;
+  bloom.raycast = () => {};
   group.add(bloom);
 
   // —— 层 3：光传播粒子代理（TUNED_PRESENTATION）——
@@ -252,6 +256,7 @@ export function createCherenkov({
   const points = new THREE.Points(pGeo, pMat);
   points.renderOrder = 5;
   points.frustumCulled = false;
+  points.raycast = () => {};
   if (COUNT > 0) group.add(points);   // reduced-motion：连绘制调用一起省掉
 
   // 从堆芯发光体积采样起点（CHR-002：起点来自体积，不是水面或相机）

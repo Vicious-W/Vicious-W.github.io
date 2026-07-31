@@ -3,20 +3,23 @@
 // 资料标签：`SOURCE_ART_DIRECTION` —— 可穿越水面、地板与设备的观察相机是所有者锁定
 // 的 SOURCE 方向，不是运行人员在 Pavia 的真实视点。
 //
-// 只有一套状态（pivot + yaw + pitch + distance），轨道观察与自由飞行是同一套状态的
-// 两种输入方式，因此可以在任何时刻连续切换，不存在"两个相机互相打架"：
+// 只有一套状态（pivot + yaw + pitch + distance），三种输入方式都改写这同一套状态，
+// 因此不存在"两个相机互相打架"：
 //
 //   camera.position = pivot - forward(yaw, pitch) * distance
 //   forward = (-sin(yaw)cos(pitch), sin(pitch), -cos(yaw)cos(pitch))
 //
-//   - 右键拖动 → 改 yaw/pitch（绕 pivot 旋转）；
+//   - 右键按下 → beginOrbit() 从画面中心命中/回退焦点锁定本次 pivot；
+//     右键拖动 → 改 yaw/pitch（绕锁定的 pivot 旋转，pivot 本身不跟随鼠标）；
 //   - 中键拖动 → 沿相机右/上方向平移 pivot；
-//   - 滚轮     → 连续改 distance；顶到最近距离后继续推进 pivot（可飞进堆芯附近）；
-//   - W/S/A/D/Q/E → 沿相机基与世界竖直轴推进 pivot（自由飞行），Shift 只是速度倍率；
+//   - 滚轮     → zoom() 只设定目标距离；tick() 每帧无过冲阻尼收敛，顶到最近距离后
+//                继续推进时把剩余量转成 pivot 的连续前移（同样按帧率无关阻尼消耗）；
+//   - 方向键   → panKeys() 按当前画面 up/right 对 pivot 做时间积分平移；
 //   - goHome() → 回到 layout() 记录的规范初始取景（非文字的快速复位动作）。
 //
 // 相机不参与刚体求解（这里只写 camera.position/quaternion，从不建刚体），因此
-// 不会推动玻璃、设备或水体（CAM-002）。
+// 不会推动玻璃、设备或水体（CAM-002）。W/S/A/D/Q/E 不再是相机的基础输入方案——
+// 那六个键现在完全交给抓取中的玻璃（见 physicalScene.js 的 GLA-CTRL-003）。
 
 import * as THREE from "three";
 
@@ -39,11 +42,19 @@ export const CAM_LIMITS = {
 };
 
 export const CAM_INPUT = {
-  orbitSpeed: 0.006,   // 弧度/像素
-  zoomSpeed: 0.0012,   // 每单位 wheel delta 的对数缩放系数
-  flySpeed: 6.5,       // 世界单位/秒
-  flyBoost: 3.4,       // Shift 倍率（只改速度，不改物理时间）
-  panSpeed: 1.0
+  // 所有者锁定值（.agent/next-task.md）：300 CSS px 横向拖动 → 约 0.54 rad。
+  orbitSpeed: 0.0018,      // 弧度/像素
+  panSpeed: 1.0,           // 中键拖拽：与旧实现一致的屏幕空间平移系数
+  // 滚轮：先在 physicalScene 里按 deltaMode 归一化到"像素等效"，这里再做单事件
+  // 限幅 + 指数缩放系数，两道限幅共同保证一次普通滚轮 ≤ 8% 的目标距离变化。
+  zoomSpeed: 0.00064,       // ln(factor) 每像素等效 delta
+  wheelMaxDelta: 120,       // 单事件像素等效上限
+  zoomDamping: 14,          // 1/s，指数收敛速率（帧率无关、无过冲）
+  // 方向键平移：世界速度随当前轨道距离缩放，使近距离/远距离下的屏幕观感一致。
+  panKeySpeed: 5.5,
+  panKeyRefDistance: 10,
+  panKeySpeedMin: 0.15,
+  panKeySpeedMax: 4
 };
 
 // 规范初始取景的距离（CAM-002）。
@@ -90,7 +101,9 @@ export function createFreeCamera({ camera }) {
   const rig = {
     yaw: 0,
     pitch: -(40 * Math.PI) / 180,   // 负 = 俯视（与旧轨道机位的 40° 仰角一致）
-    distance: 14
+    distance: 14,
+    targetDistance: 14,   // 滚轮设定的目标，tick() 阻尼收敛到这里（无过冲）
+    pushBudget: 0          // 顶到 minDistance 后仍要推进的余量，tick() 逐帧消耗
   };
   const home = { pivot: pivot.clone(), yaw: rig.yaw, pitch: rig.pitch, distance: rig.distance };
 
@@ -123,6 +136,23 @@ export function createFreeCamera({ camera }) {
     apply,
     forward,
 
+    // 右键按下时调用一次：命中点（画面中心射线的第一有效命中）成为本次拖动的固定
+    // 焦点；没有命中时保留当前 pivot/distance——这本身就是"沿视线、按既有焦距"的
+    // 稳定虚拟焦点（CAM-001），不需要另外构造。
+    beginOrbit(hitPoint) {
+      if (hitPoint) {
+        const dist = camera.position.distanceTo(hitPoint);
+        if (dist > 1e-4) {
+          pivot.copy(hitPoint);
+          rig.distance = clamp(dist, CAM_LIMITS.minDistance, CAM_LIMITS.maxDistance);
+          rig.targetDistance = rig.distance;
+          rig.pushBudget = 0;
+        }
+      }
+      apply();
+    },
+
+    // 右键拖动：绕当前锁定的 pivot 转动 yaw/pitch，pivot 本身不重新拾取、不漂移。
     orbit(dx, dy) {
       rig.yaw -= dx * CAM_INPUT.orbitSpeed;
       rig.pitch -= dy * CAM_INPUT.orbitSpeed;
@@ -139,37 +169,57 @@ export function createFreeCamera({ camera }) {
       apply();
     },
 
-    // 连续缩放：顶到最近距离后把剩余的推进量转成 pivot 前移，因此可以一路推到
-    // 堆芯附近或穿过水面，而不是卡在一个最小轨道半径上（CAM-002）。
-    zoom(deltaY) {
-      const factor = Math.exp(deltaY * CAM_INPUT.zoomSpeed);
-      const wanted = rig.distance * factor;
-      if (wanted < CAM_LIMITS.minDistance) {
-        basis();
-        pivot.addScaledVector(forward, (CAM_LIMITS.minDistance - wanted) * 4);
-        rig.distance = CAM_LIMITS.minDistance;
-      } else {
-        rig.distance = Math.min(wanted, CAM_LIMITS.maxDistance);
-      }
-      apply();
-    },
-
-    // 自由飞行：keys 是当前按下的键集合（小写）。返回是否真的移动了。
-    fly(dt, keys, boost) {
-      if (!keys || keys.size === 0) return false;
-      const f = (keys.has("w") ? 1 : 0) - (keys.has("s") ? 1 : 0);
-      const r = (keys.has("d") ? 1 : 0) - (keys.has("a") ? 1 : 0);
-      const u = (keys.has("e") ? 1 : 0) - (keys.has("q") ? 1 : 0);
-      if (!f && !r && !u) return false;
+    // 方向键平移：沿**当前画面**的 up/right（不是固定世界 X/Z），按 dt 积分，斜向
+    // 组合归一化。dirs = { up, down, left, right }（布尔）。返回是否真的移动了。
+    panKeys(dt, dirs) {
+      if (!dirs) return false;
+      const x = (dirs.right ? 1 : 0) - (dirs.left ? 1 : 0);
+      const y = (dirs.up ? 1 : 0) - (dirs.down ? 1 : 0);
+      if (!x && !y) return false;
       basis();
-      const speed = CAM_INPUT.flySpeed * (boost ? CAM_INPUT.flyBoost : 1) * dt;
-      tmp.set(0, 0, 0)
-        .addScaledVector(forward, f)
-        .addScaledVector(right, r)
-        .addScaledVector(WORLD_UP, u);
+      const scale = clamp(
+        rig.distance / CAM_INPUT.panKeyRefDistance,
+        CAM_INPUT.panKeySpeedMin, CAM_INPUT.panKeySpeedMax);
+      const speed = CAM_INPUT.panKeySpeed * scale * dt;
+      tmp.set(0, 0, 0).addScaledVector(right, x).addScaledVector(up, y);
       if (tmp.lengthSq() > 1e-9) pivot.addScaledVector(tmp.normalize(), speed);
       apply();
       return true;
+    },
+
+    // 滚轮：只设定目标距离（单事件限幅，≤ 8% 的目标变化），不直接搬动相机——
+    // 实际机位由 tick() 每帧阻尼收敛，因此天然无过冲、连续单调。
+    zoom(deltaPxEquivalent) {
+      const d = clamp(deltaPxEquivalent, -CAM_INPUT.wheelMaxDelta, CAM_INPUT.wheelMaxDelta);
+      const factor = Math.exp(d * CAM_INPUT.zoomSpeed);
+      let target = rig.targetDistance * factor;
+      if (target < CAM_LIMITS.minDistance) {
+        // 顶到最近距离后继续推进：差额记入 pushBudget，tick() 里逐帧把它转成
+        // pivot 的连续前移，而不是这里就地跳变 pivot（CAM-001A）。
+        rig.pushBudget += (CAM_LIMITS.minDistance - target);
+        target = CAM_LIMITS.minDistance;
+      }
+      rig.targetDistance = clamp(target, CAM_LIMITS.minDistance, CAM_LIMITS.maxDistance);
+    },
+
+    // 每帧调用一次：把 rig.distance 阻尼收敛到 rig.targetDistance，并消耗
+    // pushBudget（推进 pivot）。frame-rate 无关（用 1 - e^-k·dt），无过冲。
+    tick(dt) {
+      const t = 1 - Math.exp(-CAM_INPUT.zoomDamping * Math.max(dt, 0));
+      const diff = rig.targetDistance - rig.distance;
+      if (Math.abs(diff) > 1e-6) {
+        rig.distance = clamp(rig.distance + diff * t, CAM_LIMITS.minDistance, CAM_LIMITS.maxDistance);
+      } else {
+        rig.distance = rig.targetDistance;
+      }
+      if (rig.pushBudget > 1e-6) {
+        const move = rig.pushBudget * t;
+        basis();
+        pivot.addScaledVector(forward, -move);
+        rig.pushBudget -= move;
+        if (rig.pushBudget < 1e-5) rig.pushBudget = 0;
+      }
+      apply();
     },
 
     // 规范初始取景：layout() 首帧算出 fit 距离后调用一次
@@ -184,6 +234,8 @@ export function createFreeCamera({ camera }) {
       rig.yaw = home.yaw;
       rig.pitch = home.pitch;
       rig.distance = home.distance;
+      rig.targetDistance = home.distance;
+      rig.pushBudget = 0;
       apply();
     },
     isHome() {
@@ -198,6 +250,7 @@ export function createFreeCamera({ camera }) {
         yaw: +rig.yaw.toFixed(4),
         pitch: +rig.pitch.toFixed(4),
         dist: +rig.distance.toFixed(3),
+        distTarget: +rig.targetDistance.toFixed(3),
         pivot: [+pivot.x.toFixed(2), +pivot.y.toFixed(2), +pivot.z.toFixed(2)],
         pos: [+camera.position.x.toFixed(2), +camera.position.y.toFixed(2), +camera.position.z.toFixed(2)]
       };
