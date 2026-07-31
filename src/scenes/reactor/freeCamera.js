@@ -55,7 +55,7 @@ export const CAM_INPUT = {
   // 需要上千格，等于"到不了"。步长改用 max(targetDistance, dollyFloor) 作尺度：
   // 远处仍是熟悉的按比例缩放（规范机位一格 6.2%，满足 ≤8%），贴近后步长落在
   // 约 0.37 m/格，推进与退出都保持可用且连续（CAM-001A / CAM-002）。
-  dollyFloor: 6
+  dollyFloor: 6,
   // 方向键平移：世界速度随当前轨道距离缩放，使近距离/远距离下的屏幕观感一致。
   panKeySpeed: 5.5,
   panKeyRefDistance: 10,

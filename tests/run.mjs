@@ -677,6 +677,7 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   cam.goHome();
   for (let i = 0; i < 120; i++) { cam.zoom(-100); cam.tick(1 / 60); }   // 先顶到最近
   assert(Math.abs(cam.rig.distance - CAM_LIMITS.minDistance) < 1e-6, "已顶到 minDistance");
+  for (let i = 0; i < 120; i++) cam.tick(1 / 60);        // 先把上面攒下的 pushBudget 走完，再单独量一格
   const nearStart = camera.position.clone();
   cam.zoom(-100);
   for (let i = 0; i < 60; i++) cam.tick(1 / 60);                        // 让阻尼把这一格走完
