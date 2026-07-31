@@ -803,11 +803,25 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
   // 右键按住时的短暂、微弱、无文字蓝色中心标记（CAM-001）。camera.lookAt(pivot) 在
   // apply() 里每帧都成立，所以锁定的焦点永远精确投影到屏幕正中心——标记只需要静态
   // 居中，不需要逐帧重新计算屏幕位置。
+  //
+  // "短暂"按字面实现：按下即出现，1.2 s 后自行淡出（旋转中心此时已经看清，长时间
+  // 缓慢检阅不该一直被一个亮点压在画面正中）。松开右键立刻隐藏并清掉定时器。
+  const FOCUS_MARKER_MS = 1200;
   const focusMarker = document.createElement("div");
   focusMarker.className = "physical-focus-marker";
   focusMarker.setAttribute("aria-hidden", "true");
   section.appendChild(focusMarker);
-  const showFocusMarker = show => focusMarker.classList.toggle("is-active", !!show);
+  let focusMarkerTimer = null;
+  const showFocusMarker = show => {
+    if (focusMarkerTimer !== null) { clearTimeout(focusMarkerTimer); focusMarkerTimer = null; }
+    focusMarker.classList.toggle("is-active", !!show);
+    if (show) {
+      focusMarkerTimer = setTimeout(() => {
+        focusMarkerTimer = null;
+        focusMarker.classList.remove("is-active");
+      }, FOCUS_MARKER_MS);
+    }
+  };
 
   // ———————— GLA-CTRL 抓取伺服 ————————
   // 鼠标只改世界水平面上的目标位置（GLA-CTRL-001），W/S 改目标高度，A/D 只绕世界
@@ -1662,6 +1676,7 @@ export function createPhysicalScene({ section, canvas, reduceMotion }) {
       materials.forEach(m => m.dispose());
       envRT.dispose();
       renderer.dispose();
+      if (focusMarkerTimer !== null) clearTimeout(focusMarkerTimer);
       focusMarker.remove();
       if (window.__SOURCE_STATE__ === session.state) delete window.__SOURCE_STATE__;
       delete window.__SOURCE_GLASS__;

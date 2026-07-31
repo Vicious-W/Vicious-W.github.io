@@ -591,11 +591,14 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   assert(Math.abs(yawDelta - 300 * CAM_INPUT.orbitSpeed) < 1e-9,
     "yaw 变化与 orbitSpeed 常量严格线性一致");
 
-  // beginOrbit：命中点锁定为本次拖动的固定焦点，拖动期间 pivot 投影恒在画面中心
+  // beginOrbit：命中点锁定为本次拖动的固定焦点，拖动期间 pivot 投影恒在画面中心。
+  // 真实调用方 pickFocusPoint() 打的就是画面中心那条射线，所以命中点必定落在
+  // camera.position + forward*t 上——这里按同样方式构造，量程内的锁定结果与命中点重合。
   cam.goHome();
-  const hitPoint = new THREE.Vector3(1.2, 0.3, 3.4);
+  const hitPoint = camera.position.clone().addScaledVector(cam.forward, 6.5);
   cam.beginOrbit(hitPoint);
   assert(cam.pivot.distanceTo(hitPoint) < 1e-6, "命中点直接成为锁定焦点");
+  assert(Math.abs(cam.rig.distance - 6.5) < 1e-6, "锁定距离等于相机到命中点的真实距离");
   const distAfterLock = cam.rig.distance;
   cam.orbit(140, -70);
   assert(Math.abs(cam.rig.distance - distAfterLock) < 1e-6,
@@ -611,6 +614,17 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   cam.beginOrbit(null);
   assert(cam.pivot.distanceTo(pivotBefore) < 1e-9 && Math.abs(cam.rig.distance - distBefore) < 1e-9,
     "无命中时沿视线保留既有焦距的稳定虚拟焦点，不重新拾取");
+
+  // beginOrbit 命中点远于 maxDistance：距离被钳住，但焦点沿视线重建，机位不得跳动
+  cam.goHome();
+  const posBeforeFar = camera.position.clone();
+  const farHit = camera.position.clone().addScaledVector(cam.forward, CAM_LIMITS.maxDistance * 3);
+  cam.beginOrbit(farHit);
+  assert(camera.position.distanceTo(posBeforeFar) < 1e-6,
+    "超量程命中点不会让右键按下的瞬间搬动相机");
+  assert(Math.abs(cam.rig.distance - CAM_LIMITS.maxDistance) < 1e-6
+    && Math.abs(cam.pivot.distanceTo(camera.position) - CAM_LIMITS.maxDistance) < 1e-6,
+    "超量程时焦点沿视线落在 maxDistance 处，rig 与实际机位仍自洽");
 
   // 滚轮归一化 + 阻尼：单次普通事件的目标距离变化 ≤ 8%，且 tick() 逐帧平滑收敛
   cam.goHome();
@@ -694,6 +708,20 @@ section("review regressions: TRANS drive / control-owner source / cherenkov / tr
   const totalCoarse = cam.pivot.distanceTo(pB);
   assert(Math.abs(totalFine - totalCoarse) < 1e-6,
     `方向键位移不因帧率改变总量: ${totalFine.toFixed(4)} == ${totalCoarse.toFixed(4)}`);
+
+  // 斜向组合归一化：右+上 1 秒的总位移量与单方向 1 秒相同（不是 √2 倍）
+  cam.goHome();
+  cam.orbit(500, -200);
+  const pDiagStart = cam.pivot.clone();
+  cam.panKeys(1, { right: true, up: true });
+  const diagLen = cam.pivot.distanceTo(pDiagStart);
+  cam.goHome();
+  cam.orbit(500, -200);
+  const pSingleStart = cam.pivot.clone();
+  cam.panKeys(1, { right: true });
+  const singleLen = cam.pivot.distanceTo(pSingleStart);
+  assert(Math.abs(diagLen - singleLen) < 1e-6,
+    `斜向组合归一化: ${diagLen.toFixed(4)} == ${singleLen.toFixed(4)}`);
 
   // 松开方向键（无按住方向）：panKeys 返回 false，不产生位移
   cam.goHome();

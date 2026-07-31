@@ -139,14 +139,21 @@ export function createFreeCamera({ camera }) {
     // 右键按下时调用一次：命中点（画面中心射线的第一有效命中）成为本次拖动的固定
     // 焦点；没有命中时保留当前 pivot/distance——这本身就是"沿视线、按既有焦距"的
     // 稳定虚拟焦点（CAM-001），不需要另外构造。
+    //
+    // 焦点沿**当前视线**重建（而不是直接 copy(hitPoint)）：命中距离超过
+    // maxDistance 时 rig.distance 会被钳住，若 pivot 仍留在原命中点，apply() 里
+    // `pivot - forward*distance` 就会把相机往前搬——右键一按下画面就跳。沿视线
+    // 重建后，距离在量程内时结果与命中点完全相同，超量程时也只是焦点更近，
+    // 机位纹丝不动（CAM-001「不得漂移、跳换」）。
     beginOrbit(hitPoint) {
       if (hitPoint) {
         const dist = camera.position.distanceTo(hitPoint);
         if (dist > 1e-4) {
-          pivot.copy(hitPoint);
           rig.distance = clamp(dist, CAM_LIMITS.minDistance, CAM_LIMITS.maxDistance);
           rig.targetDistance = rig.distance;
           rig.pushBudget = 0;
+          basis();
+          pivot.copy(camera.position).addScaledVector(forward, rig.distance);
         }
       }
       apply();
