@@ -162,7 +162,8 @@ fi
 
 if agent_validate_model gpt-5.6-sol && agent_validate_model opus-4.1 && \
    ! agent_validate_model 'bad model' >/dev/null 2>&1 && \
-   agent_validate_effort high && ! agent_validate_effort extreme >/dev/null 2>&1; then
+   agent_validate_effort high && agent_validate_effort ultra && \
+   ! agent_validate_effort extreme >/dev/null 2>&1; then
   printf 'PASS  model and effort values are validated as inert configuration\n'
 else
   printf 'FAIL  model or effort validation produced an unexpected result\n' >&2

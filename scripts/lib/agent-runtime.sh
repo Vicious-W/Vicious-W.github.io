@@ -489,9 +489,9 @@ agent_validate_model() {
 agent_validate_effort() {
   local value="$1"
   case "$value" in
-    low|medium|high|xhigh|max) ;;
+    low|medium|high|xhigh|max|ultra) ;;
     *)
-      printf 'Invalid effort value: %s; expected low, medium, high, xhigh, or max.\n' \
+      printf 'Invalid effort value: %s; expected low, medium, high, xhigh, max, or ultra.\n' \
         "$value" >&2
       return 2
       ;;
@@ -510,9 +510,9 @@ agent_runtime_effort_config() {
   [[ -n "$value" ]] || value="$default_value"
 
   case "$value" in
-    low|medium|high|xhigh|max) ;;
+    low|medium|high|xhigh|max|ultra) ;;
     *)
-      printf 'Invalid %s=%s in %s; expected low, medium, high, xhigh, or max.\n' \
+      printf 'Invalid %s=%s in %s; expected low, medium, high, xhigh, max, or ultra.\n' \
         "$key" "$value" "$config_file" >&2
       return 2
       ;;

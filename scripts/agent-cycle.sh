@@ -43,14 +43,14 @@ Commands:
 Cycle options:
   --implementer, --implementer-agent claude|codex
   --implementer-model MODEL
-  --implementer-effort low|medium|high|xhigh|max
+  --implementer-effort low|medium|high|xhigh|max|ultra
   --successor-implementer claude|codex  Supervisor-only quota successor.
   --successor-implementer-model MODEL
-  --successor-implementer-effort low|medium|high|xhigh|max
+  --successor-implementer-effort low|medium|high|xhigh|max|ultra
   --no-implementer-successor
   --reviewer, --reviewer-agent claude|codex
   --reviewer-model MODEL
-  --reviewer-effort low|medium|high|xhigh|max
+  --reviewer-effort low|medium|high|xhigh|max|ultra
   --rounds N             Number of additional rounds requested now (default 1).
                          One round is exactly one implementation.
   --max-rounds N         Deprecated alias for --rounds.
