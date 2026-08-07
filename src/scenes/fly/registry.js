@@ -37,3 +37,8 @@ export const weatherRegistry = Object.freeze({
 });
 
 export const DEFAULT_FLY_SELECTION = Object.freeze({ weatherId: "clear", vehicleId: "hotAirBalloonC100" });
+
+export const FLY_REGISTRIES = Object.freeze({
+  vehicles: vehicleRegistry,
+  weather: weatherRegistry
+});

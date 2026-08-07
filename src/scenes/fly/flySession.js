@@ -1,26 +1,37 @@
 import { createSimulationClock } from "../../core/simulationClock.js";
 import { createProceduralWorld } from "./world/proceduralWorld.js";
-import { vehicleRegistry, weatherRegistry, DEFAULT_FLY_SELECTION } from "./registry.js";
+import { DEFAULT_FLY_SELECTION, FLY_REGISTRIES } from "./registry.js";
 import { assessRecoveryPlan, planBalloonRecovery, recoveryControls } from "./recovery/recoveryPlanner.js";
 
 export const FLY_CONTROL_OWNERS = Object.freeze(["NONE", "MANUAL", "AUTO_RECOVERY", "RECOVERED"]);
 
-export function createFlySession({ seed = 0xc1002026, selection = DEFAULT_FLY_SELECTION } = {}) {
-  const weatherDefinition = weatherRegistry[selection.weatherId];
-  const vehicleDefinition = vehicleRegistry[selection.vehicleId];
+export function createFlySession({
+  seed = 0xc1002026,
+  selection = DEFAULT_FLY_SELECTION,
+  registries = FLY_REGISTRIES
+} = {}) {
+  const weatherDefinition = registries.weather[selection.weatherId];
+  const vehicleDefinition = registries.vehicles[selection.vehicleId];
   if (!weatherDefinition || !vehicleDefinition) throw new Error("Invalid FLY registry selection");
-  if (!vehicleDefinition.compatibleWeather.includes(weatherDefinition.id)) throw new Error("Incompatible FLY selection");
+  if (!vehicleDefinition.compatibleWeather.includes(weatherDefinition.id)
+    || !weatherDefinition.compatibleVehicles.includes(vehicleDefinition.id)) {
+    throw new Error("Incompatible FLY selection");
+  }
   const atmosphere = weatherDefinition.weatherFactory(seed);
   const world = createProceduralWorld(seed);
   const vehicle = vehicleDefinition.vehicleFactory({ atmosphere, world });
   const state = {
     seed,
+    selection: Object.freeze({ weatherId: weatherDefinition.id, vehicleId: vehicleDefinition.id }),
     stage: "READY_ON_FIELD",
     controlOwner: "MANUAL",
     manualControls: { burner: 0, vent: 0 },
     appliedControls: { burner: 0, vent: 0 },
     recoveryPlan: null,
     recoveryPlans: [],
+    recoveryContactAttempts: [],
+    activeRecoveryContact: null,
+    nextRecoveryPlanId: 1,
     recoveryDiagnostics: null,
     recoveryDeadline: null,
     trajectory: [],
@@ -36,6 +47,7 @@ export function createFlySession({ seed = 0xc1002026, selection = DEFAULT_FLY_SE
     const vehicleState = vehicle.snapshot();
     return {
       seed,
+      selection: { ...state.selection },
       simTime: clock?.simTime || 0,
       stage: state.stage,
       controlOwner: state.controlOwner,
@@ -45,6 +57,7 @@ export function createFlySession({ seed = 0xc1002026, selection = DEFAULT_FLY_SE
       vehicle: vehicleState,
       world: world.snapshot(),
       recovery: state.recoveryPlan ? {
+        planId: state.recoveryPlan.id,
         selected: state.recoveryPlan.selected ? {
           x: state.recoveryPlan.selected.x,
           z: state.recoveryPlan.selected.z,
@@ -62,6 +75,7 @@ export function createFlySession({ seed = 0xc1002026, selection = DEFAULT_FLY_SE
         rejectedUnsafe: state.recoveryPlan.rejectedUnsafe,
         writesPose: state.recoveryPlan.writesPose,
         plannedAt: state.recoveryPlan.plannedAt,
+        activeContactPlanId: state.activeRecoveryContact?.planId || null,
         diagnostics: state.recoveryDiagnostics ? { ...state.recoveryDiagnostics } : null
       } : null,
       trajectorySamples: state.trajectory.length,
@@ -70,23 +84,27 @@ export function createFlySession({ seed = 0xc1002026, selection = DEFAULT_FLY_SE
     };
   };
 
-  const installRecoveryPlan = (simTime, reason, preserveDeadline = true) => {
-    const timeBudget = preserveDeadline && Number.isFinite(state.recoveryDeadline)
-      ? Math.max(12, state.recoveryDeadline - simTime)
-      : null;
+  const installRecoveryPlan = (simTime, reason, preserveDeadline = true, forcedTimeBudget = null) => {
+    const timeBudget = Number.isFinite(forcedTimeBudget)
+      ? forcedTimeBudget
+      : preserveDeadline && Number.isFinite(state.recoveryDeadline)
+        ? Math.max(12, state.recoveryDeadline - simTime)
+        : null;
     state.recoveryPlan = planBalloonRecovery({ vehicle, world, atmosphere, simTime, timeBudget });
     if (state.recoveryPlan.selected && !state.recoveryPlan.selected.reachable) {
       const extendedBudget = Math.max(46, (timeBudget || 24) + 34);
       state.recoveryPlan = planBalloonRecovery({ vehicle, world, atmosphere, simTime, timeBudget: extendedBudget });
       state.recoveryDeadline = simTime + (state.recoveryPlan.selected?.eta || extendedBudget);
     }
-    if (!Number.isFinite(state.recoveryDeadline)) {
+    if (!preserveDeadline || !Number.isFinite(state.recoveryDeadline)) {
       state.recoveryDeadline = simTime + (state.recoveryPlan.selected?.eta || 120);
     }
+    state.recoveryPlan.id = `recovery-plan-${state.nextRecoveryPlanId++}`;
     state.lastPlanTime = simTime;
     state.recoveryDiagnostics = null;
     const selected = state.recoveryPlan.selected;
     state.recoveryPlans.push({
+      id: state.recoveryPlan.id,
       simTime,
       reason,
       selected: selected ? {
@@ -107,55 +125,6 @@ export function createFlySession({ seed = 0xc1002026, selection = DEFAULT_FLY_SE
     if (state.recoveryPlans.length > 64) state.recoveryPlans.shift();
   };
 
-  const lockRecoveryToSafeContact = (simTime, current, zone) => {
-    const selected = {
-      x: current.basket.position.x,
-      z: current.basket.position.z,
-      height: current.terrain.height,
-      terrain: current.terrain,
-      zone,
-      landingRegionId: current.terrain.landingRegionId,
-      eta: 0,
-      cruiseAgl: 0,
-      predictedLanding: { x: current.basket.position.x, z: current.basket.position.z },
-      predictionErrorM: 0,
-      arrivalToleranceM: zone.radius,
-      reachable: true,
-      score: 0
-    };
-    state.recoveryPlan = {
-      selected,
-      evaluated: 1,
-      rejectedUnsafe: 0,
-      writesPose: false,
-      sampledWind: { ...atmosphere.sample(current.envelope.position, simTime).windVelocityMps },
-      predictedPeakAgl: current.heightAgl,
-      alongDistance: 0,
-      plannedAt: simTime,
-      forecastModel: "safe-contact-lock-v1"
-    };
-    state.lastPlanTime = simTime;
-    state.recoveryPlans.push({
-      simTime,
-      reason: "SAFE_CONTACT_LOCK",
-      selected: {
-        x: selected.x,
-        z: selected.z,
-        safe: true,
-        landingRegionId: selected.landingRegionId,
-        eta: 0,
-        cruiseAgl: 0,
-        arrivalToleranceM: selected.arrivalToleranceM,
-        predictedLanding: { ...selected.predictedLanding }
-      },
-      evaluated: 1,
-      rejectedUnsafe: 0,
-      forecastModel: state.recoveryPlan.forecastModel,
-      writesPose: false
-    });
-    if (state.recoveryPlans.length > 64) state.recoveryPlans.shift();
-  };
-
   let clock;
   const physicsStep = (dt, simTime) => {
     try {
@@ -165,7 +134,17 @@ export function createFlySession({ seed = 0xc1002026, selection = DEFAULT_FLY_SE
         const current = vehicle.snapshot();
         const terrainBelow = current.terrain;
         if (!selected) installRecoveryPlan(simTime, "NO_CANDIDATE");
-        else if (simTime - state.lastPlanTime >= 8) {
+        else if (!current.contact
+          && current.heightAgl < 18
+          && current.basket.velocity.y < 0.35
+          && current.terrain.landingRegionId !== selected.landingRegionId
+          && Math.hypot(selected.x - current.basket.position.x, selected.z - current.basket.position.z) > selected.arrivalToleranceM
+          && simTime - state.lastPlanTime >= 2) {
+          const contactBudget = Math.max(12, Math.min(40,
+            current.heightAgl / Math.max(0.55, -current.basket.velocity.y) + 8));
+          installRecoveryPlan(simTime, "APPROACH_MISMATCH", false, contactBudget);
+        }
+        else if (!current.contact && simTime - state.lastPlanTime >= 8) {
           const assessment = assessRecoveryPlan({ vehicle, plan: state.recoveryPlan, world, atmosphere, simTime });
           state.recoveryDiagnostics = {
             reason: assessment.reason,
@@ -203,34 +182,51 @@ export function createFlySession({ seed = 0xc1002026, selection = DEFAULT_FLY_SE
       if (state.controlOwner === "AUTO_RECOVERY") {
         state.stage = current.heightAgl < 7 && current.basket.velocity.y < 0.5
           ? "LANDING" : "AUTO_RECOVERY";
-        let selected = state.recoveryPlan?.selected;
-        let landingErrorM = selected
+        if (!current.contact && state.activeRecoveryContact) {
+          state.activeRecoveryContact.endedAt = simTime;
+          state.activeRecoveryContact = null;
+        }
+        if (current.contact && !state.activeRecoveryContact) {
+          const selected = state.recoveryPlan?.selected;
+          const landingErrorM = selected
+            ? Math.hypot(selected.x - current.basket.position.x, selected.z - current.basket.position.z)
+            : Infinity;
+          const attempt = {
+            firstContactAt: simTime,
+            planId: state.recoveryPlan?.id || null,
+            x: current.basket.position.x,
+            z: current.basket.position.z,
+            landingRegionId: current.terrain.landingRegionId,
+            matchedAtFirstContact: !!selected && (current.terrain.landingRegionId === selected.landingRegionId
+              || landingErrorM <= selected.arrivalToleranceM)
+          };
+          state.activeRecoveryContact = attempt;
+          state.recoveryContactAttempts.push(attempt);
+          if (state.recoveryContactAttempts.length > 64) state.recoveryContactAttempts.shift();
+        }
+        const approachHistory = state.activeRecoveryContact
+          ? state.recoveryPlans.find(entry => entry.id === state.activeRecoveryContact.planId)
+          : null;
+        const selected = approachHistory?.selected;
+        const landingErrorM = selected
           ? Math.hypot(selected.x - current.basket.position.x, selected.z - current.basket.position.z)
           : Infinity;
-        let matchesPlan = !!selected && (current.terrain.landingRegionId === selected.landingRegionId
+        const matchesPlan = !!selected && (current.terrain.landingRegionId === selected.landingRegionId
           || landingErrorM <= selected.arrivalToleranceM);
-        if (current.contact && current.terrain.safe && current.stableContactSeconds >= 3 && !matchesPlan) {
-          const contactZone = world.landingZoneAt(current.basket.position.x, current.basket.position.z, 16);
-          if (contactZone.safe) {
-            lockRecoveryToSafeContact(simTime, current, contactZone);
-            selected = state.recoveryPlan.selected;
-            landingErrorM = 0;
-            matchesPlan = true;
-          }
-        }
         if (current.contact && current.terrain.safe && current.stableContactSeconds >= 3 && matchesPlan) {
           state.controlOwner = "RECOVERED";
           state.stage = "RECOVERED";
           vehicle.state.stage = "RECOVERED";
           state.manualControls.burner = 0;
           state.manualControls.vent = 0;
-          const history = state.recoveryPlans[state.recoveryPlans.length - 1];
-          if (history) history.actualLanding = {
+          if (approachHistory) approachHistory.actualLanding = {
             x: current.basket.position.x,
             z: current.basket.position.z,
             landingRegionId: current.terrain.landingRegionId,
             errorM: landingErrorM,
-            landedAt: simTime
+            landedAt: simTime,
+            firstContactAt: state.activeRecoveryContact.firstContactAt,
+            approachPlanId: approachHistory.id
           };
         }
       }

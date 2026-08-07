@@ -44,6 +44,11 @@ import { createFlySession } from "../src/scenes/fly/flySession.js";
 import { planBalloonRecovery, recoveryControls } from "../src/scenes/fly/recovery/recoveryPlanner.js";
 import { applyOriginShiftToObserver } from "../src/scenes/fly/flyScene.js";
 import { vehicleRegistry, weatherRegistry } from "../src/scenes/fly/registry.js";
+import {
+  createConfigPreviewCatalog,
+  createConfigSelectionController,
+  layoutConfigPreviewCatalog
+} from "../src/scenes/fly/configPreview.js";
 import { readFileSync } from "node:fs";
 import * as THREE from "three";
 
@@ -1370,6 +1375,65 @@ section("FLY C-100 manifest / relative air / thermal causality");
     && weatherRegistry.clear.compatibleVehicles.includes("hotAirBalloonC100"),
     "FLY_CONFIG 的气象/飞行器预览与兼容性来自注册表，不写死在主循环");
 
+  const fixtureVehicleIds = ["balloonFixtureA", "balloonFixtureB"];
+  const fixtureWeatherIds = ["clearFixtureA", "clearFixtureB"];
+  const fixtureVehicles = Object.fromEntries(fixtureVehicleIds.map(id => [id, {
+    ...vehicleRegistry.hotAirBalloonC100,
+    id,
+    compatibleWeather: fixtureWeatherIds
+  }]));
+  const fixtureWeather = Object.fromEntries(fixtureWeatherIds.map(id => [id, {
+    ...weatherRegistry.clear,
+    id,
+    compatibleVehicles: fixtureVehicleIds
+  }]));
+  const fixtureRegistries = { vehicles: fixtureVehicles, weather: fixtureWeather };
+  const fixtureCatalog = createConfigPreviewCatalog({
+    vehicleRegistry: fixtureVehicles,
+    weatherRegistry: fixtureWeather,
+    seed: 0xfeed
+  });
+  layoutConfigPreviewCatalog(fixtureCatalog, 1.6);
+  fixtureCatalog.entries.forEach(entry => entry.slot.updateMatrixWorld(true));
+  const hitIds = new Set();
+  for (const entry of fixtureCatalog.entries) {
+    const target = new THREE.Vector3();
+    entry.selectables[0].getWorldPosition(target);
+    const ray = new THREE.Raycaster(target.clone().add(new THREE.Vector3(0, 0, 100)), new THREE.Vector3(0, 0, -1));
+    const hit = ray.intersectObjects(entry.selectables, false)
+      .find(result => result.object.userData.configKind && result.object.userData.configId === entry.id);
+    if (hit) hitIds.add(`${hit.object.userData.configKind}:${hit.object.userData.configId}`);
+  }
+  assert(fixtureCatalog.vehicles.size === 2 && fixtureCatalog.weather.size === 2
+    && hitIds.size === 4,
+    "双天气/双飞行器 fixture 无需改主场景即可枚举并生成可射线命中的注册预览");
+  assert(new Set([...fixtureCatalog.vehicles.values()].map(entry => entry.slot.position.x)).size === 2
+    && new Set([...fixtureCatalog.weather.values()].map(entry => entry.slot.position.x)).size === 2,
+    "多注册项由通用布局分配独立三维槽位，不重叠为单个默认预览");
+  const fixtureSelection = createConfigSelectionController({
+    vehicleRegistry: fixtureVehicles,
+    weatherRegistry: fixtureWeather
+  });
+  assert(fixtureSelection.select("weather", fixtureWeatherIds[0])
+    && fixtureSelection.select("vehicle", fixtureVehicleIds[0])
+    && fixtureSelection.select("weather", fixtureWeatherIds[1])
+    && fixtureSelection.select("vehicle", fixtureVehicleIds[1])
+    && fixtureSelection.confirm(),
+    "通用配置状态可命中并切换所有兼容注册项后确认所选 ID");
+  const fixtureSession = createFlySession({
+    seed: 0xfeed,
+    selection: {
+      weatherId: fixtureSelection.selection.weatherId,
+      vehicleId: fixtureSelection.selection.vehicleId
+    },
+    registries: fixtureRegistries
+  });
+  assert(fixtureSession.snapshot().selection.weatherId === fixtureWeatherIds[1]
+    && fixtureSession.snapshot().selection.vehicleId === fixtureVehicleIds[1],
+    "确认后的 session 由所选天气/飞行器 ID 构建，而不是回退默认项");
+  fixtureSession.dispose();
+  fixtureCatalog.dispose();
+
   const still = aerodynamicDragForce({ x: 4, y: -1, z: 2 }, { x: 4, y: -1, z: 2 }, 1.2, 0.5, 20);
   assert(Math.hypot(still.x, still.y, still.z) < 1e-12,
     "v_body == v_wind 时相对空气阻力为零");
@@ -1542,7 +1606,7 @@ section("FLY render-rate determinism / origin / recovery");
     "RECOVERED 只在安全地表接触稳定且燃烧器关闭后成立");
   assert(recovery.state.recoveryPlans.every(entry => entry.writesPose === false),
     "整个自动回收重规划历史均未获得位姿写权限");
-  const finalPlan = recovery.state.recoveryPlans.at(-1);
+  const finalPlan = recovery.state.recoveryPlans.find(entry => entry.actualLanding);
   assert(recovery.state.recoveryPlans.length > 1
     && recovery.state.recoveryPlans.some(entry => entry.reason === "FORECAST_DIVERGED" || entry.reason === "LOW_UNSAFE"),
     `预测失配/地表变化会产生有原因的重规划历史: ${recovery.state.recoveryPlans.length} plans`);
@@ -1550,6 +1614,11 @@ section("FLY render-rate determinism / origin / recovery");
     && (finalPlan.actualLanding.landingRegionId === finalPlan.selected.landingRegionId
       || finalPlan.actualLanding.errorM <= finalPlan.selected.arrivalToleranceM),
     `实际接地点受最后计划区域/容差约束: ${finalPlan.actualLanding?.errorM.toFixed(2)} m`);
+  assert(!recovery.state.recoveryPlans.some(entry => entry.reason === "SAFE_CONTACT_LOCK")
+    && finalPlan.actualLanding.approachPlanId === finalPlan.id
+    && finalPlan.simTime < finalPlan.actualLanding.firstContactAt
+    && finalPlan.actualLanding.landedAt - finalPlan.actualLanding.firstContactAt >= 2.99,
+    "最终接地点绑定稳定接触前建立的进近计划 ID，历史不存在接地后计划替换");
   assert(landed.unsafeContactCount === 0,
     "AUTO_RECOVERY 全时步历史没有接触 WATER / FOREST / ROAD / 障碍不安全地表");
   recovery.dispose();
@@ -1564,10 +1633,18 @@ section("FLY render-rate determinism / origin / recovery");
       alternate.advance(2); seconds += 2;
     }
     const result = alternate.snapshot();
-    const lastPlan = alternate.state.recoveryPlans.at(-1);
+    const lastPlan = alternate.state.recoveryPlans.find(entry => entry.actualLanding);
     assert(result.controlOwner === "RECOVERED" && result.vehicle.terrain.safe
       && result.unsafeContactCount === 0 && lastPlan.actualLanding,
-      `固定种子 ${seed} 穿过混合地表后仍按当前计划安全回收: ${seconds}s / ${lastPlan.actualLanding?.errorM.toFixed(1)}m`);
+      `固定种子 ${seed} 穿过混合地表后仍按当前计划安全回收: ${seconds}s / ${lastPlan?.actualLanding?.errorM.toFixed(1)}m`);
+    if (seed === 0x1234) {
+      assert(!alternate.state.recoveryPlans.some(entry => entry.reason === "SAFE_CONTACT_LOCK")
+        && lastPlan.simTime < lastPlan.actualLanding.firstContactAt
+        && lastPlan.actualLanding.approachPlanId === lastPlan.id
+        && (lastPlan.actualLanding.landingRegionId === lastPlan.selected.landingRegionId
+          || lastPlan.actualLanding.errorM <= lastPlan.selected.arrivalToleranceM),
+      "seed 0x1234 的接地点由稳定接触前计划约束，不能用 SAFE_CONTACT_LOCK 事后归因");
+    }
     alternate.dispose();
   }
 
@@ -1584,7 +1661,7 @@ section("FLY render-rate determinism / origin / recovery");
     longJourney.advance(2); longRecoverySeconds += 2;
   }
   const longResult = longJourney.snapshot();
-  const longFinalPlan = longJourney.state.recoveryPlans.at(-1);
+  const longFinalPlan = longJourney.state.recoveryPlans.find(entry => entry.actualLanding);
   assert(longResult.controlOwner === "RECOVERED" && longResult.world.originShiftCount >= 3
     && longResult.vehicle.terrain.safe && longResult.unsafeContactCount === 0
     && longFinalPlan.actualLanding

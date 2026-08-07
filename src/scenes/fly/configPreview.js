@@ -12,6 +12,133 @@ function tagSelectable(root, kind, id) {
   return selectables;
 }
 
+function registryEntries(registry, kind) {
+  return Object.entries(registry || {}).map(([key, definition]) => {
+    if (!definition || definition.id !== key || typeof definition.previewFactory !== "function") {
+      throw new Error(`Invalid FLY ${kind} registry entry: ${key}`);
+    }
+    return [key, definition];
+  });
+}
+
+function createPreviewEntry(kind, id, definition, seed) {
+  const preview = definition.previewFactory({
+    id,
+    definition,
+    weather: kind === "weather" ? definition.weatherFactory(seed) : undefined
+  });
+  if (!preview?.group || typeof preview.dispose !== "function") {
+    throw new Error(`Invalid FLY ${kind} preview: ${id}`);
+  }
+  const selectables = preview.selectables?.length
+    ? preview.selectables
+    : tagSelectable(preview.group, kind, id);
+  for (const object of selectables) {
+    object.userData.configKind = kind;
+    object.userData.configId = id;
+  }
+  const slot = new THREE.Group();
+  slot.name = `FLY-config-${kind}-${id}`;
+  slot.userData.configKind = kind;
+  slot.userData.configId = id;
+  slot.add(preview.group);
+  return { id, definition, preview, slot, selectables };
+}
+
+export function createConfigSelectionController({ vehicleRegistry, weatherRegistry }) {
+  const selection = { weatherId: null, vehicleId: null, confirmed: false };
+  const compatible = (weatherId, vehicleId) => {
+    const weather = weatherRegistry[weatherId];
+    const vehicle = vehicleRegistry[vehicleId];
+    return !!weather && !!vehicle
+      && weather.compatibleVehicles.includes(vehicle.id)
+      && vehicle.compatibleWeather.includes(weather.id);
+  };
+  return {
+    selection,
+    compatible,
+    select(kind, id) {
+      if (selection.confirmed) return false;
+      if (kind === "weather") {
+        const definition = weatherRegistry[id];
+        if (!definition || (selection.vehicleId && !compatible(id, selection.vehicleId))) return false;
+        selection.weatherId = id;
+      } else if (kind === "vehicle") {
+        const definition = vehicleRegistry[id];
+        if (!definition || (selection.weatherId && !compatible(selection.weatherId, id))) return false;
+        selection.vehicleId = id;
+      } else return false;
+      return true;
+    },
+    confirm() {
+      if (!selection.weatherId || !selection.vehicleId
+        || !compatible(selection.weatherId, selection.vehicleId)) return false;
+      selection.confirmed = true;
+      return true;
+    }
+  };
+}
+
+/**
+ * Instantiate every registered configuration preview. The scene consumes this
+ * collection generically, so adding a compatible registry entry does not add a
+ * new branch to the FLY main loop.
+ */
+export function createConfigPreviewCatalog({ vehicleRegistry, weatherRegistry, seed = 0xc1002026 }) {
+  const vehicles = new Map(registryEntries(vehicleRegistry, "vehicle")
+    .map(([id, definition]) => [id, createPreviewEntry("vehicle", id, definition, seed)]));
+  const weather = new Map(registryEntries(weatherRegistry, "weather")
+    .map(([id, definition]) => [id, createPreviewEntry("weather", id, definition, seed)]));
+  const entries = [...vehicles.values(), ...weather.values()];
+  return {
+    vehicles,
+    weather,
+    entries,
+    selectables: entries.flatMap(entry => entry.selectables),
+    setSelected(selection) {
+      vehicles.forEach(entry => entry.preview.setSelected?.(selection.vehicleId === entry.id));
+      weather.forEach(entry => entry.preview.setSelected?.(selection.weatherId === entry.id));
+    },
+    update(time, reduceMotion = false) {
+      entries.forEach(entry => entry.preview.update?.(time, reduceMotion));
+    },
+    dispose() {
+      entries.forEach(entry => {
+        entry.slot.remove(entry.preview.group);
+        entry.preview.dispose();
+      });
+      vehicles.clear();
+      weather.clear();
+    }
+  };
+}
+
+export function layoutConfigPreviewCatalog(catalog, aspect) {
+  const portrait = aspect < 0.72;
+  const place = (entries, { centerX, y, z, spacing, multiScale }) => {
+    const count = entries.length;
+    entries.forEach((entry, index) => {
+      entry.slot.position.set(centerX + (index - (count - 1) / 2) * spacing, y, z);
+      entry.slot.scale.setScalar(count > 1 ? multiScale : 1);
+    });
+  };
+  place([...catalog.vehicles.values()], {
+    centerX: 0,
+    y: 0,
+    z: 0,
+    spacing: portrait ? 12 : 15,
+    multiScale: portrait ? 0.62 : 0.7
+  });
+  place([...catalog.weather.values()], {
+    centerX: portrait ? -12.5 : -18,
+    y: 8.5,
+    z: -1.5,
+    spacing: portrait ? 6 : 8,
+    multiScale: 0.78
+  });
+  return catalog;
+}
+
 export function createC100ConfigPreview({ id = "hotAirBalloonC100" } = {}) {
   const model = createBalloonModel();
   const group = model.group;
@@ -52,7 +179,6 @@ export function createC100ConfigPreview({ id = "hotAirBalloonC100" } = {}) {
 
 export function createClearWeatherConfigPreview({ id = "clear", weather = null } = {}) {
   const group = new THREE.Group();
-  group.position.set(-12.5, 8.5, -1.5);
   const sunMaterial = new THREE.MeshBasicMaterial({ color: 0xffd983 });
   const sun = new THREE.Mesh(new THREE.SphereGeometry(2.05, 24, 16), sunMaterial);
   const haloMaterial = new THREE.MeshBasicMaterial({

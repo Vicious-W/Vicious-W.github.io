@@ -4,7 +4,12 @@ import { createFlySession } from "./flySession.js";
 import { createBalloonModel } from "./balloonModel.js";
 import { createWorldView } from "./worldView.js";
 import { createFlyAudio } from "./audio/flyAudio.js";
-import { vehicleRegistry, weatherRegistry, DEFAULT_FLY_SELECTION } from "./registry.js";
+import { FLY_REGISTRIES } from "./registry.js";
+import {
+  createConfigPreviewCatalog,
+  createConfigSelectionController,
+  layoutConfigPreviewCatalog
+} from "./configPreview.js";
 
 const MAX_DPR = 1.5;
 const CAMERA_MODES = ["PILOT", "CHASE", "ORBIT"];
@@ -63,7 +68,16 @@ export function applyOriginShiftToObserver(observer, shift) {
   return observer;
 }
 
-export function createFlyScene({ section, canvas, reduceMotion, requestSelector }) {
+export function createFlyScene({
+  section,
+  canvas,
+  reduceMotion,
+  requestSelector,
+  registries = FLY_REGISTRIES,
+  sessionFactory = createFlySession
+}) {
+  const activeVehicleRegistry = registries.vehicles;
+  const activeWeatherRegistry = registries.weather;
   const scope = createResourceScope("fly-scene");
   let renderer;
   try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); } catch (error) {
@@ -81,8 +95,7 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
   let session = null;
   let worldView = null;
   let balloonModel = null;
-  let vehiclePreview = null;
-  let weatherPreview = null;
+  let previewCatalog = null;
   let previewGround = null;
   let configConfirm = null;
   let configSelectables = [];
@@ -99,7 +112,11 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
   let lookPointer = null;
   const pointerControlActions = new Map();
   const controlOwners = { burner: new Set(), vent: new Set() };
-  const configSelection = { weatherId: null, vehicleId: null, confirmed: false };
+  const configController = createConfigSelectionController({
+    vehicleRegistry: activeVehicleRegistry,
+    weatherRegistry: activeWeatherRegistry
+  });
+  const configSelection = configController.selection;
   let handledOriginEvents = 0;
   const originCameraCorrections = [];
   let lastGuideFocus = null;
@@ -155,15 +172,14 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
   overlay.appendChild(returnConfirm);
 
   const buildPreview = () => {
-    const vehicleDefinition = vehicleRegistry[DEFAULT_FLY_SELECTION.vehicleId];
-    const weatherDefinition = weatherRegistry[DEFAULT_FLY_SELECTION.weatherId];
-    vehiclePreview = vehicleDefinition.previewFactory({ id: vehicleDefinition.id });
-    weatherPreview = weatherDefinition.previewFactory({
-      id: weatherDefinition.id,
-      weather: weatherDefinition.weatherFactory(0xc1002026)
+    previewCatalog = createConfigPreviewCatalog({
+      vehicleRegistry: activeVehicleRegistry,
+      weatherRegistry: activeWeatherRegistry,
+      seed: 0xc1002026
     });
-    scene.add(vehiclePreview.group, weatherPreview.group);
-    configSelectables.push(...vehiclePreview.selectables, ...weatherPreview.selectables);
+    previewCatalog.entries.forEach(entry => scene.add(entry.slot));
+    layoutConfigPreviewCatalog(previewCatalog, camera.aspect);
+    configSelectables.push(...previewCatalog.selectables);
     previewGround = new THREE.Mesh(new THREE.CircleGeometry(55, 64), new THREE.MeshStandardMaterial({ color: 0x456f32, roughness: 0.92 }));
     previewGround.rotation.x = -Math.PI / 2;
     previewGround.position.y = -7.82;
@@ -193,8 +209,11 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
   };
 
   const disposePreview = () => {
-    if (vehiclePreview) { scene.remove(vehiclePreview.group); vehiclePreview.dispose(); vehiclePreview = null; }
-    if (weatherPreview) { scene.remove(weatherPreview.group); weatherPreview.dispose(); weatherPreview = null; }
+    if (previewCatalog) {
+      previewCatalog.entries.forEach(entry => scene.remove(entry.slot));
+      previewCatalog.dispose();
+      previewCatalog = null;
+    }
     if (configConfirm) { scene.remove(configConfirm); disposeObject(configConfirm); configConfirm = null; }
     configSelectables = [];
     if (previewGround) { scene.remove(previewGround); disposeObject(previewGround); previewGround = null; }
@@ -207,15 +226,14 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     if (!session) {
-      if (weatherPreview) weatherPreview.group.position.x = camera.aspect < 0.72 ? -12.5 : -18;
+      if (previewCatalog) layoutConfigPreviewCatalog(previewCatalog, camera.aspect);
       camera.position.set(camera.aspect < 0.72 ? 27 : 24, camera.aspect < 0.72 ? 8 : 6, camera.aspect < 0.72 ? 52 : 31);
       camera.lookAt(0, 2, 0);
     }
   };
 
   const syncConfigVisuals = () => {
-    vehiclePreview?.setSelected(configSelection.vehicleId === vehiclePreview.id);
-    weatherPreview?.setSelected(configSelection.weatherId === weatherPreview.id);
+    previewCatalog?.setSelected(configSelection);
     const ready = !!configSelection.vehicleId && !!configSelection.weatherId;
     if (configConfirm) {
       configConfirm.userData.material.color.setHex(ready ? 0x42bdf0 : 0x355268);
@@ -226,17 +244,7 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
 
   const selectConfig = (kind, id) => {
     if (session || configSelection.confirmed) return false;
-    if (kind === "weather") {
-      const definition = weatherRegistry[id];
-      if (!definition) return false;
-      if (configSelection.vehicleId && !definition.compatibleVehicles.includes(configSelection.vehicleId)) return false;
-      configSelection.weatherId = id;
-    } else if (kind === "vehicle") {
-      const definition = vehicleRegistry[id];
-      if (!definition) return false;
-      if (configSelection.weatherId && !definition.compatibleWeather.includes(configSelection.weatherId)) return false;
-      configSelection.vehicleId = id;
-    } else return false;
+    if (!configController.select(kind, id)) return false;
     syncConfigVisuals();
     return true;
   };
@@ -244,11 +252,7 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
   const confirmConfig = () => {
     if (session) return false;
     if (configSelection.confirmed) { openGuide(); return true; }
-    if (!configSelection.weatherId || !configSelection.vehicleId) return false;
-    const weather = weatherRegistry[configSelection.weatherId];
-    const vehicle = vehicleRegistry[configSelection.vehicleId];
-    if (!weather?.compatibleVehicles.includes(vehicle.id) || !vehicle.compatibleWeather.includes(weather.id)) return false;
-    configSelection.confirmed = true;
+    if (!configController.confirm()) return false;
     openGuide();
     return true;
   };
@@ -265,9 +269,10 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
   const startFlight = () => {
     if (session || !configSelection.confirmed) return false;
     disposePreview();
-    session = createFlySession({
+    session = sessionFactory({
       seed: 0xc1002026,
-      selection: { weatherId: configSelection.weatherId, vehicleId: configSelection.vehicleId }
+      selection: { weatherId: configSelection.weatherId, vehicleId: configSelection.vehicleId },
+      registries
     });
     worldView = createWorldView({ scene, world: session.world, atmosphere: session.atmosphere });
     balloonModel = createBalloonModel();
@@ -280,7 +285,7 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
   };
 
   const populateGuide = () => {
-    const definition = vehicleRegistry[configSelection.vehicleId].guideDefinition;
+    const definition = activeVehicleRegistry[configSelection.vehicleId].guideDefinition;
     guideTitle.textContent = definition.title;
     guideList.replaceChildren();
     definition.controls.forEach(([term, description]) => {
@@ -451,7 +456,9 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     const dx = event.clientX - lookPointer.x, dy = event.clientY - lookPointer.y;
     lookPointer.x = event.clientX; lookPointer.y = event.clientY;
     if (lookPointer.config) {
-      if (vehiclePreview) vehiclePreview.group.rotation.y += dx * 0.006;
+      const selected = previewCatalog?.vehicles.get(configSelection.vehicleId)
+        || previewCatalog?.vehicles.values().next().value;
+      if (selected) selected.preview.group.rotation.y += dx * 0.006;
       return;
     }
     lookYaw -= dx * 0.003;
@@ -473,8 +480,8 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     const key = event.key.toLowerCase();
     if (!session && guide.hidden) {
       if (key === "enter" || key === " " || key === "spacebar") {
-        if (!configSelection.weatherId) selectConfig("weather", Object.keys(weatherRegistry)[0]);
-        else if (!configSelection.vehicleId) selectConfig("vehicle", Object.keys(vehicleRegistry)[0]);
+        if (!configSelection.weatherId) selectConfig("weather", Object.keys(activeWeatherRegistry)[0]);
+        else if (!configSelection.vehicleId) selectConfig("vehicle", Object.keys(activeVehicleRegistry)[0]);
         else confirmConfig();
         event.preventDefault();
       }
@@ -530,8 +537,7 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
     last = now;
     if (!session) {
-      vehiclePreview?.update(now / 1000, reduceMotion);
-      weatherPreview?.update(now / 1000, reduceMotion);
+      previewCatalog?.update(now / 1000, reduceMotion);
     } else {
       if (guide.hidden && !returnConfirming) session.update(dt);
       const snapshot = session.snapshot();
@@ -584,9 +590,15 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
         y: rect.top + (1 - position.y) * rect.height * 0.5
       };
     };
+    const vehicleTargets = Object.fromEntries([...previewCatalog?.vehicles.entries() || []]
+      .map(([id, entry]) => [id, project(entry.slot, 4)]));
+    const weatherTargets = Object.fromEntries([...previewCatalog?.weather.entries() || []]
+      .map(([id, entry]) => [id, project(entry.slot)]));
     return {
-      weather: project(weatherPreview?.group),
-      vehicle: project(vehiclePreview?.group, 4),
+      weather: Object.values(weatherTargets)[0] || null,
+      vehicle: Object.values(vehicleTargets)[0] || null,
+      weatherById: weatherTargets,
+      vehicleById: vehicleTargets,
       confirm: project(configConfirm)
     };
   };
@@ -613,8 +625,8 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     get cameras() { return { active: CAMERA_MODES[cameraModeIndex], modes: CAMERA_MODES.slice(), yaw: lookYaw, pitch: lookPitch }; },
     get registries() {
       return {
-        vehicles: Object.keys(vehicleRegistry),
-        weather: Object.keys(weatherRegistry),
+        vehicles: Object.keys(activeVehicleRegistry),
+        weather: Object.keys(activeWeatherRegistry),
         selected: { ...configSelection }
       };
     },
@@ -638,6 +650,7 @@ export function createFlyScene({ section, canvas, reduceMotion, requestSelector 
     evidence: () => session ? {
       trajectory: session.state.trajectory.slice(),
       recoveryPlans: session.state.recoveryPlans.slice(),
+      recoveryContactAttempts: session.state.recoveryContactAttempts.slice(),
       originEvents: session.state.originEvents.slice(),
       unsafeContactEvents: session.state.unsafeContactEvents.slice(),
       originCameraCorrections: originCameraCorrections.slice()

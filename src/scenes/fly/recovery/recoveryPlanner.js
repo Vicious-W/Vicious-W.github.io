@@ -164,6 +164,8 @@ export function recoveryControls({ vehicle, plan, world, atmosphere, simTime = 0
   const dx = selected.x - position.x;
   const dz = selected.z - position.z;
   const targetDistanceM = Math.hypot(dx, dz);
+  const matchesArrival = terrain.landingRegionId === selected.landingRegionId
+    || targetDistanceM <= selected.arrivalToleranceM;
   const targetUnit = targetDistanceM > 1e-6 ? { x: dx / targetDistanceM, z: dz / targetDistanceM } : { x: 0, z: 0 };
   // Include the envelope's thermal response lag, not just ballistic time to
   // contact. At normal wind speeds an eight-second lead is the difference
@@ -177,16 +179,17 @@ export function recoveryControls({ vehicle, plan, world, atmosphere, simTime = 0
   const descendingTowardContact = state.basket.velocity.y < -0.32
     || planTimeRemainingForSafety < agl / 0.72 + 18;
   const currentLandingZoneSafe = world.landingZoneAt(position.x, position.z, 16).safe;
+  const missedApproach = state.contact && !matchesArrival;
   const currentUnsafeHold = agl < 85 && !terrain.safe && state.basket.velocity.y < 0.75;
   const projectedUnsafeHold = agl < 70 && descendingTowardContact && !projectedPathSafe
     && (!currentLandingZoneSafe || !state.contact);
-  if (currentUnsafeHold || projectedUnsafeHold) {
+  if (currentUnsafeHold || projectedUnsafeHold || missedApproach) {
     return {
       // A contact point already over unsafe terrain needs an authoritative
       // climb command because the envelope has several seconds of thermal
       // lag. The projected-path guard is intentionally gentler so it does not
       // create repeated 50-130 m oscillations while skirting an obstacle.
-      burner: currentUnsafeHold ? 0.58 : projectedUnsafeHold && agl < 35 ? 0.55 : 0.3,
+      burner: missedApproach ? 0.72 : currentUnsafeHold ? 0.58 : projectedUnsafeHold && agl < 35 ? 0.55 : 0.3,
       vent: 0,
       desiredVy: 1.15,
       desiredLayerAgl: selected.cruiseAgl,
@@ -195,7 +198,8 @@ export function recoveryControls({ vehicle, plan, world, atmosphere, simTime = 0
       planTimeRemaining: planTimeRemainingForSafety,
       approach: false,
       landingRegionId: selected.landingRegionId,
-      safetyHold: true
+      safetyHold: true,
+      missedApproach
     };
   }
   const layers = [24, 45, 80, 130, 200, 270].map(layerAgl => {
