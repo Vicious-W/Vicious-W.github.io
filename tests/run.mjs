@@ -46,8 +46,10 @@ import { applyOriginShiftToObserver } from "../src/scenes/fly/flyScene.js";
 import { vehicleRegistry, weatherRegistry } from "../src/scenes/fly/registry.js";
 import {
   createConfigPreviewCatalog,
+  createConfigKeyboardNavigator,
   createConfigSelectionController,
-  layoutConfigPreviewCatalog
+  layoutConfigPreviewCatalog,
+  resolveConfigPointerTarget
 } from "../src/scenes/fly/configPreview.js";
 import { readFileSync } from "node:fs";
 import * as THREE from "three";
@@ -1380,12 +1382,12 @@ section("FLY C-100 manifest / relative air / thermal causality");
   const fixtureVehicles = Object.fromEntries(fixtureVehicleIds.map(id => [id, {
     ...vehicleRegistry.hotAirBalloonC100,
     id,
-    compatibleWeather: fixtureWeatherIds
+    compatibleWeather: [fixtureWeatherIds[fixtureVehicleIds.indexOf(id)]]
   }]));
   const fixtureWeather = Object.fromEntries(fixtureWeatherIds.map(id => [id, {
     ...weatherRegistry.clear,
     id,
-    compatibleVehicles: fixtureVehicleIds
+    compatibleVehicles: [fixtureVehicleIds[fixtureWeatherIds.indexOf(id)]]
   }]));
   const fixtureRegistries = { vehicles: fixtureVehicles, weather: fixtureWeather };
   const fixtureCatalog = createConfigPreviewCatalog({
@@ -1417,9 +1419,46 @@ section("FLY C-100 manifest / relative air / thermal causality");
   assert(fixtureSelection.select("weather", fixtureWeatherIds[0])
     && fixtureSelection.select("vehicle", fixtureVehicleIds[0])
     && fixtureSelection.select("weather", fixtureWeatherIds[1])
+    && fixtureSelection.selection.weatherId === fixtureWeatherIds[1]
+    && fixtureSelection.selection.vehicleId === null
+    && !fixtureSelection.confirm()
+    && fixtureSelection.select("vehicle", fixtureVehicleIds[1])
+    && fixtureSelection.select("vehicle", fixtureVehicleIds[0])
+    && fixtureSelection.selection.weatherId === null
+    && fixtureSelection.selection.vehicleId === fixtureVehicleIds[0]
+    && !fixtureSelection.confirm()
+    && fixtureSelection.select("weather", fixtureWeatherIds[0]),
+    "互斥 A/A 与 B/B 配对可双向切换；中间不兼容状态清除旧项且不能确认");
+  assert(fixtureSelection.select("weather", fixtureWeatherIds[1])
     && fixtureSelection.select("vehicle", fixtureVehicleIds[1])
     && fixtureSelection.confirm(),
-    "通用配置状态可命中并切换所有兼容注册项后确认所选 ID");
+    "互斥配置图可在不重载控制器的情况下再次切到 B/B 并确认所选 ID");
+  const fixtureKeyboard = createConfigKeyboardNavigator({
+    vehicleRegistry: fixtureVehicles,
+    weatherRegistry: fixtureWeather
+  });
+  fixtureKeyboard.move("ArrowRight");
+  const keyboardWeather = fixtureKeyboard.snapshot();
+  fixtureKeyboard.focusNext({ weatherId: keyboardWeather.id, vehicleId: null });
+  fixtureKeyboard.move("ArrowRight");
+  const keyboardVehicle = fixtureKeyboard.snapshot();
+  fixtureKeyboard.focusNext({ weatherId: keyboardWeather.id, vehicleId: keyboardVehicle.id });
+  const keyboardConfirm = fixtureKeyboard.snapshot();
+  assert(keyboardWeather.kind === "weather" && keyboardWeather.id === fixtureWeatherIds[1]
+    && keyboardVehicle.kind === "vehicle" && keyboardVehicle.id === fixtureVehicleIds[1]
+    && keyboardConfirm.kind === "confirm",
+    "注册表键盘游标可辨识第二个 weather/vehicle 并前进到确认目标");
+  const overlappingTargets = {
+    weatherById: {
+      [fixtureWeatherIds[0]]: { x: 86.46, y: 368.38 },
+      [fixtureWeatherIds[1]]: { x: 182.25, y: 363.81 }
+    },
+    vehicleById: {},
+    confirm: { x: 661.02, y: 786.45 }
+  };
+  assert(resolveConfigPointerTarget({ x: 182.25, y: 363.81 }, overlappingTargets)?.id === fixtureWeatherIds[1]
+    && resolveConfigPointerTarget({ x: 767, y: 1023 }, overlappingTargets) === null,
+    "重叠三维预览按最近注册槽位消歧，第二项中心可命中且空白区域不误选");
   const fixtureSession = createFlySession({
     seed: 0xfeed,
     selection: {

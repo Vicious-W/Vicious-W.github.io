@@ -6,9 +6,11 @@ import { createWorldView } from "./worldView.js";
 import { createFlyAudio } from "./audio/flyAudio.js";
 import { FLY_REGISTRIES } from "./registry.js";
 import {
+  createConfigKeyboardNavigator,
   createConfigPreviewCatalog,
   createConfigSelectionController,
-  layoutConfigPreviewCatalog
+  layoutConfigPreviewCatalog,
+  resolveConfigPointerTarget
 } from "./configPreview.js";
 
 const MAX_DPR = 1.5;
@@ -113,6 +115,10 @@ export function createFlyScene({
   const pointerControlActions = new Map();
   const controlOwners = { burner: new Set(), vent: new Set() };
   const configController = createConfigSelectionController({
+    vehicleRegistry: activeVehicleRegistry,
+    weatherRegistry: activeWeatherRegistry
+  });
+  const configKeyboard = createConfigKeyboardNavigator({
     vehicleRegistry: activeVehicleRegistry,
     weatherRegistry: activeWeatherRegistry
   });
@@ -233,18 +239,39 @@ export function createFlyScene({
   };
 
   const syncConfigVisuals = () => {
+    const keyboardFocus = configKeyboard.current();
     previewCatalog?.setSelected(configSelection);
-    const ready = !!configSelection.vehicleId && !!configSelection.weatherId;
+    previewCatalog?.setFocused(keyboardFocus);
+    const ready = !!configSelection.vehicleId && !!configSelection.weatherId
+      && configController.compatible(configSelection.weatherId, configSelection.vehicleId);
     if (configConfirm) {
-      configConfirm.userData.material.color.setHex(ready ? 0x42bdf0 : 0x355268);
-      configConfirm.userData.material.emissive.setHex(ready ? 0x0a6d99 : 0x06121b);
-      configConfirm.scale.setScalar(ready ? 1.08 : 0.82);
+      const focused = keyboardFocus.kind === "confirm";
+      configConfirm.userData.material.color.setHex(focused ? 0xe7f8ff : ready ? 0x42bdf0 : 0x355268);
+      configConfirm.userData.material.emissive.setHex(focused ? 0x176f94 : ready ? 0x0a6d99 : 0x06121b);
+      configConfirm.scale.setScalar((ready ? 1.08 : 0.82) * (focused ? 1.08 : 1));
+    }
+    if (!session) {
+      if (keyboardFocus.kind === "confirm") {
+        const status = ready
+          ? `Confirm ${configSelection.weatherId} weather and ${configSelection.vehicleId} vehicle.`
+          : "Configuration incomplete; choose both a compatible weather and vehicle.";
+        canvas.setAttribute("aria-label", `FLY configuration. ${status} Use Up and Down Arrow to change category, then Enter or Space to activate.`);
+      } else {
+        const registry = keyboardFocus.kind === "weather" ? activeWeatherRegistry : activeVehicleRegistry;
+        const definition = registry[keyboardFocus.id];
+        const name = definition.accessibleLabel || definition.guideDefinition?.title || keyboardFocus.id;
+        const selectedId = keyboardFocus.kind === "weather" ? configSelection.weatherId : configSelection.vehicleId;
+        const status = selectedId === keyboardFocus.id ? "selected" : "not selected";
+        canvas.setAttribute("aria-label", `FLY configuration. ${keyboardFocus.kind} option ${keyboardFocus.index + 1} of ${keyboardFocus.count}: ${name}; ${status}. Use Left and Right Arrow to browse, Up and Down Arrow to change category, then Enter or Space to select.`);
+      }
     }
   };
 
   const selectConfig = (kind, id) => {
     if (session || configSelection.confirmed) return false;
     if (!configController.select(kind, id)) return false;
+    configKeyboard.focus(kind, id);
+    configKeyboard.focusNext(configSelection);
     syncConfigVisuals();
     return true;
   };
@@ -280,6 +307,7 @@ export function createFlyScene({
     session.resume();
     audio.unlock();
     flightControls.hidden = false;
+    canvas.setAttribute("aria-label", "FLY three-dimensional flight scene");
     phase = "READY_ON_FIELD";
     return true;
   };
@@ -429,10 +457,16 @@ export function createFlyScene({
       canvasPoint(event);
       raycaster.setFromCamera(pointer, camera);
       const hit = raycaster.intersectObjects(configSelectables, false)[0];
-      const kind = hit?.object.userData.configKind;
-      const id = hit?.object.userData.configId;
+      const rect = canvas.getBoundingClientRect();
+      const projectedTarget = resolveConfigPointerTarget(
+        { x: event.clientX, y: event.clientY },
+        configTargetPixels(),
+        Math.max(44, Math.min(96, Math.min(rect.width, rect.height) * 0.14))
+      );
+      const kind = projectedTarget?.kind || hit?.object.userData.configKind;
+      const id = projectedTarget?.id || hit?.object.userData.configId;
       if (kind === "confirm") { event.preventDefault(); confirmConfig(); }
-      else if (kind && id) selectConfig(kind, id);
+      else if (kind && id) { event.preventDefault(); selectConfig(kind, id); }
       else {
         lookPointer = { id: event.pointerId, x: event.clientX, y: event.clientY, config: true };
         try { canvas.setPointerCapture(event.pointerId); } catch (error) { /* synthetic pointer */ }
@@ -479,10 +513,18 @@ export function createFlyScene({
     if (event.repeat && ["r", "c", "h"].includes(event.key.toLowerCase())) return;
     const key = event.key.toLowerCase();
     if (!session && guide.hidden) {
-      if (key === "enter" || key === " " || key === "spacebar") {
-        if (!configSelection.weatherId) selectConfig("weather", Object.keys(activeWeatherRegistry)[0]);
-        else if (!configSelection.vehicleId) selectConfig("vehicle", Object.keys(activeVehicleRegistry)[0]);
-        else confirmConfig();
+      if (event.repeat && (key === "enter" || key === " " || key === "spacebar")) {
+        event.preventDefault();
+        return;
+      }
+      if (["arrowleft", "arrowright", "arrowup", "arrowdown", "home", "end"].includes(key)) {
+        configKeyboard.move(key);
+        syncConfigVisuals();
+        event.preventDefault();
+      } else if (key === "enter" || key === " " || key === "spacebar") {
+        const target = configKeyboard.current();
+        if (target.kind === "confirm") confirmConfig();
+        else selectConfig(target.kind, target.id);
         event.preventDefault();
       }
       return;
@@ -630,6 +672,9 @@ export function createFlyScene({
         selected: { ...configSelection }
       };
     },
+    get configKeyboard() {
+      return { ...configKeyboard.snapshot(), ariaLabel: canvas.getAttribute("aria-label") };
+    },
     get configTargets() { return configTargetPixels(); },
     selectConfig,
     confirmConfig,
@@ -661,7 +706,7 @@ export function createFlyScene({
   return {
     mount() {
       section.classList.add("fly-scene", "physical-ready");
-      canvas.setAttribute("aria-label", "FLY three-dimensional configuration and flight scene");
+      canvas.removeAttribute("aria-hidden");
       canvas.tabIndex = 0;
       buildPreview();
       syncConfigVisuals();

@@ -6,6 +6,7 @@ import { createC100ConfigPreview, createClearWeatherConfigPreview } from "./conf
 export const vehicleRegistry = Object.freeze({
   hotAirBalloonC100: Object.freeze({
     id: "hotAirBalloonC100",
+    accessibleLabel: "Cameron C-100 hot-air balloon",
     manifest: C100_MANIFEST,
     previewFactory: createC100ConfigPreview,
     compatibleWeather: ["clear"],
@@ -29,6 +30,7 @@ export const vehicleRegistry = Object.freeze({
 export const weatherRegistry = Object.freeze({
   clear: Object.freeze({
     id: "clear",
+    accessibleLabel: "Clear weather",
     previewFactory: createClearWeatherConfigPreview,
     weatherFactory: createClearWeather,
     compatibleVehicles: ["hotAirBalloonC100"],

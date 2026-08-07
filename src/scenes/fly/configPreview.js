@@ -41,8 +41,23 @@ function createPreviewEntry(kind, id, definition, seed) {
   slot.name = `FLY-config-${kind}-${id}`;
   slot.userData.configKind = kind;
   slot.userData.configId = id;
-  slot.add(preview.group);
-  return { id, definition, preview, slot, selectables };
+  const focusMaterial = new THREE.MeshBasicMaterial({
+    color: 0xf4fbff,
+    transparent: true,
+    opacity: 0.94,
+    depthWrite: false
+  });
+  const focusMarker = new THREE.Mesh(
+    new THREE.TorusGeometry(kind === "vehicle" ? 11.15 : 4.75, 0.105, 8, 64),
+    focusMaterial
+  );
+  focusMarker.name = `FLY-config-focus-${kind}-${id}`;
+  focusMarker.position.y = kind === "vehicle" ? -7.74 : 0;
+  focusMarker.rotation.x = Math.PI / 2;
+  focusMarker.visible = false;
+  focusMarker.raycast = () => {};
+  slot.add(preview.group, focusMarker);
+  return { id, definition, preview, slot, selectables, focusMarker };
 }
 
 export function createConfigSelectionController({ vehicleRegistry, weatherRegistry }) {
@@ -61,12 +76,14 @@ export function createConfigSelectionController({ vehicleRegistry, weatherRegist
       if (selection.confirmed) return false;
       if (kind === "weather") {
         const definition = weatherRegistry[id];
-        if (!definition || (selection.vehicleId && !compatible(id, selection.vehicleId))) return false;
+        if (!definition) return false;
         selection.weatherId = id;
+        if (selection.vehicleId && !compatible(id, selection.vehicleId)) selection.vehicleId = null;
       } else if (kind === "vehicle") {
         const definition = vehicleRegistry[id];
-        if (!definition || (selection.weatherId && !compatible(selection.weatherId, id))) return false;
+        if (!definition) return false;
         selection.vehicleId = id;
+        if (selection.weatherId && !compatible(selection.weatherId, id)) selection.weatherId = null;
       } else return false;
       return true;
     },
@@ -77,6 +94,78 @@ export function createConfigSelectionController({ vehicleRegistry, weatherRegist
       return true;
     }
   };
+}
+
+/**
+ * Registry-derived focus order for the canvas configuration controls. Keeping
+ * this independent from selection lets an incompatible intermediate state stay
+ * reachable while preventing it from being confirmed.
+ */
+export function createConfigKeyboardNavigator({ vehicleRegistry, weatherRegistry }) {
+  const groups = [
+    { kind: "weather", ids: Object.keys(weatherRegistry || {}) },
+    { kind: "vehicle", ids: Object.keys(vehicleRegistry || {}) },
+    { kind: "confirm", ids: ["confirmedSelection"] }
+  ];
+  if (groups[0].ids.length === 0 || groups[1].ids.length === 0) {
+    throw new Error("FLY configuration keyboard navigation requires weather and vehicle entries");
+  }
+  const itemIndexes = { weather: 0, vehicle: 0, confirm: 0 };
+  let groupIndex = 0;
+  const current = () => {
+    const group = groups[groupIndex];
+    const index = itemIndexes[group.kind];
+    return { kind: group.kind, id: group.ids[index], index, count: group.ids.length };
+  };
+  const focus = (kind, id = null) => {
+    const nextGroupIndex = groups.findIndex(group => group.kind === kind);
+    if (nextGroupIndex < 0) return false;
+    const group = groups[nextGroupIndex];
+    const nextItemIndex = id == null ? itemIndexes[kind] : group.ids.indexOf(id);
+    if (nextItemIndex < 0) return false;
+    groupIndex = nextGroupIndex;
+    itemIndexes[kind] = nextItemIndex;
+    return true;
+  };
+  return {
+    current,
+    focus,
+    move(key) {
+      const normalized = String(key || "").toLowerCase();
+      const group = groups[groupIndex];
+      if (normalized === "arrowleft" || normalized === "arrowright") {
+        const delta = normalized === "arrowright" ? 1 : -1;
+        itemIndexes[group.kind] = (itemIndexes[group.kind] + delta + group.ids.length) % group.ids.length;
+      } else if (normalized === "home" || normalized === "end") {
+        itemIndexes[group.kind] = normalized === "home" ? 0 : group.ids.length - 1;
+      } else if (normalized === "arrowup" || normalized === "arrowdown") {
+        const delta = normalized === "arrowdown" ? 1 : -1;
+        groupIndex = (groupIndex + delta + groups.length) % groups.length;
+      } else return false;
+      return true;
+    },
+    focusNext(selection) {
+      if (!selection.weatherId) return focus("weather");
+      if (!selection.vehicleId) return focus("vehicle");
+      return focus("confirm");
+    },
+    snapshot() { return { ...current() }; }
+  };
+}
+
+export function resolveConfigPointerTarget(point, targets, radiusPx = 96) {
+  const candidates = [
+    ...Object.entries(targets?.weatherById || {}).map(([id, target]) => ({ kind: "weather", id, target })),
+    ...Object.entries(targets?.vehicleById || {}).map(([id, target]) => ({ kind: "vehicle", id, target })),
+    { kind: "confirm", id: "confirmedSelection", target: targets?.confirm }
+  ].filter(candidate => Number.isFinite(candidate.target?.x) && Number.isFinite(candidate.target?.y));
+  let nearest = null;
+  for (const candidate of candidates) {
+    const distancePx = Math.hypot(point.x - candidate.target.x, point.y - candidate.target.y);
+    if (!nearest || distancePx < nearest.distancePx) nearest = { ...candidate, distancePx };
+  }
+  if (!nearest || nearest.distancePx > radiusPx) return null;
+  return { kind: nearest.kind, id: nearest.id, distancePx: nearest.distancePx };
 }
 
 /**
@@ -99,13 +188,19 @@ export function createConfigPreviewCatalog({ vehicleRegistry, weatherRegistry, s
       vehicles.forEach(entry => entry.preview.setSelected?.(selection.vehicleId === entry.id));
       weather.forEach(entry => entry.preview.setSelected?.(selection.weatherId === entry.id));
     },
+    setFocused(focus) {
+      vehicles.forEach(entry => { entry.focusMarker.visible = focus?.kind === "vehicle" && focus.id === entry.id; });
+      weather.forEach(entry => { entry.focusMarker.visible = focus?.kind === "weather" && focus.id === entry.id; });
+    },
     update(time, reduceMotion = false) {
       entries.forEach(entry => entry.preview.update?.(time, reduceMotion));
     },
     dispose() {
       entries.forEach(entry => {
-        entry.slot.remove(entry.preview.group);
+        entry.slot.remove(entry.preview.group, entry.focusMarker);
         entry.preview.dispose();
+        entry.focusMarker.geometry.dispose();
+        entry.focusMarker.material.dispose();
       });
       vehicles.clear();
       weather.clear();
