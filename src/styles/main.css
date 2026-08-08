@@ -225,6 +225,11 @@ body {
     filter 120ms ease-out;
 }
 
+.fly-burner,
+.fly-vent {
+  transition: none;
+}
+
 @media (hover: hover) {
   .fly-icon-control:not(:disabled):hover {
     background: rgba(12, 67, 103, 0.88);

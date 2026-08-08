@@ -12,15 +12,20 @@ export const FAR_TERRAIN_CONFIG = Object.freeze({
   halfExtentM: 6144,
   segments: 96,
   recenterM: 512,
-  verifiedAltitudeM: 500,
-  waterLiftM: 0.28
+  verifiedAltitudeM: 700,
+  waterLiftM: 0.28,
+  horizonHalfExtentM: 18000,
+  horizonSegments: 72,
+  horizonDropM: 1.4
 });
 
 export const CLOUD_DENSITY_PROXY = Object.freeze({
   representation: "THREE_DIMENSIONAL_PARTICLE_DENSITY_OPTICAL_PROXY",
   clusters: 10,
   particlesPerCluster: 240,
-  advectionScale: 0.58
+  advectionScale: 0.58,
+  integrationStepS: 0.5,
+  integrationMethod: "FIXED_GRID_MIDPOINT_WIND_INTEGRAL"
 });
 
 const CLOUD_FIELD_SPAN_M = 3600;
@@ -29,6 +34,75 @@ const fract = value => value - Math.floor(value);
 const seeded = (index, salt) => fract(Math.sin(index * 127.1 + salt * 311.7) * 43758.5453123);
 const wrapSigned = (value, span) => ((value + span * 0.5) % span + span) % span - span * 0.5;
 
+export function createCloudAdvectionPhase() {
+  return {
+    completedSteps: 0,
+    lastTargetTimeS: 0,
+    advectionM: { x: 0, y: 0, z: 0 }
+  };
+}
+
+function resetCloudAdvectionPhase(phase) {
+  phase.completedSteps = 0;
+  phase.lastTargetTimeS = 0;
+  phase.advectionM.x = 0;
+  phase.advectionM.y = 0;
+  phase.advectionM.z = 0;
+}
+
+function accumulateCloudWind(advection, wind, durationS) {
+  const scale = CLOUD_DENSITY_PROXY.advectionScale * durationS;
+  advection.x += wind.x * scale;
+  advection.y += wind.y * scale;
+  advection.z += wind.z * scale;
+}
+
+export function advanceCloudAdvectionPhase(atmosphere, samplePosition, phase, simTime = 0) {
+  const targetTimeS = Math.max(0, Number.isFinite(simTime) ? simTime : 0);
+  const stepS = CLOUD_DENSITY_PROXY.integrationStepS;
+  if (targetTimeS + 1e-10 < phase.lastTargetTimeS) resetCloudAdvectionPhase(phase);
+
+  const targetSteps = Math.floor((targetTimeS + 1e-10) / stepS);
+  while (phase.completedSteps < targetSteps) {
+    const midpointS = (phase.completedSteps + 0.5) * stepS;
+    accumulateCloudWind(
+      phase.advectionM,
+      atmosphere.sample(samplePosition, midpointS).windVelocityMps,
+      stepS
+    );
+    phase.completedSteps++;
+  }
+
+  const integratedTimeS = phase.completedSteps * stepS;
+  const remainderS = Math.max(0, targetTimeS - integratedTimeS);
+  const resolved = { ...phase.advectionM };
+  if (remainderS > 1e-10) {
+    accumulateCloudWind(
+      resolved,
+      atmosphere.sample(samplePosition, integratedTimeS + remainderS * 0.5).windVelocityMps,
+      remainderS
+    );
+  }
+  phase.lastTargetTimeS = targetTimeS;
+  return resolved;
+}
+
+export function integrateCloudAdvection(atmosphere, samplePosition, simTime = 0) {
+  return advanceCloudAdvectionPhase(
+    atmosphere,
+    samplePosition,
+    createCloudAdvectionPhase(),
+    simTime
+  );
+}
+
+export function resolveCloudFieldPosition(fieldCenter, baseOffset, advectionM) {
+  return {
+    x: fieldCenter.x + wrapSigned(baseOffset.x + advectionM.x, CLOUD_FIELD_SPAN_M),
+    z: fieldCenter.z + wrapSigned(baseOffset.z + advectionM.z, CLOUD_FIELD_SPAN_M)
+  };
+}
+
 function quantizedCenter(position, spacing) {
   return {
     x: Math.round((position?.x || 0) / spacing) * spacing,
@@ -36,7 +110,7 @@ function quantizedCenter(position, spacing) {
   };
 }
 
-export function deriveCloudVisualState(atmosphere, samplePosition, simTime = 0) {
+export function deriveCloudVisualState(atmosphere, samplePosition, simTime = 0, integratedAdvectionM = null) {
   const air = atmosphere.sample(samplePosition, simTime);
   const wind = air.windVelocityMps;
   const horizontalSpeedMps = Math.hypot(wind.x, wind.z);
@@ -53,11 +127,15 @@ export function deriveCloudVisualState(atmosphere, samplePosition, simTime = 0) 
     density01,
     verticalScale: clamp(0.72 + air.humidity01 * 0.65 + Math.max(0, wind.y) * 0.08, 0.78, 1.35),
     horizontalScale: 1 + horizontalSpeedMps * 0.027,
-    advectionM: {
-      x: wind.x * simTime * CLOUD_DENSITY_PROXY.advectionScale,
-      y: wind.y * simTime * CLOUD_DENSITY_PROXY.advectionScale,
-      z: wind.z * simTime * CLOUD_DENSITY_PROXY.advectionScale
-    }
+    advectionVelocityMps: {
+      x: wind.x * CLOUD_DENSITY_PROXY.advectionScale,
+      y: wind.y * CLOUD_DENSITY_PROXY.advectionScale,
+      z: wind.z * CLOUD_DENSITY_PROXY.advectionScale
+    },
+    advectionMethod: CLOUD_DENSITY_PROXY.integrationMethod,
+    advectionM: integratedAdvectionM
+      ? { ...integratedAdvectionM }
+      : integrateCloudAdvection(atmosphere, samplePosition, simTime)
   };
 }
 
@@ -251,7 +329,7 @@ export function createWorldView({ scene, world, atmosphere }) {
     points.userData.baseOffset = { x: thermal.x, z: thermal.z };
     points.userData.baseY = 470 + index * 31;
     cloudGroup.add(points);
-    return { points, geometry, material, state: null };
+    return { points, geometry, material, state: null, advectionPhase: createCloudAdvectionPhase() };
   });
   group.add(cloudGroup);
 
@@ -357,6 +435,7 @@ export function createWorldView({ scene, world, atmosphere }) {
     if (!farTerrain) return;
     group.remove(farTerrain.group);
     farTerrain.ground.geometry.dispose();
+    farTerrain.horizon.geometry.dispose();
     farTerrain.water.geometry.dispose();
     farTerrain.forest.dispose();
     farTerrain = null;
@@ -383,6 +462,31 @@ export function createWorldView({ scene, world, atmosphere }) {
     geometry.computeVertexNormals();
     const ground = new THREE.Mesh(geometry, farTerrainMaterial);
     ground.name = "FLY-far-terrain-lod";
+
+    const horizonSize = FAR_TERRAIN_CONFIG.horizonHalfExtentM * 2;
+    const horizonGeometry = new THREE.PlaneGeometry(
+      horizonSize,
+      horizonSize,
+      FAR_TERRAIN_CONFIG.horizonSegments,
+      FAR_TERRAIN_CONFIG.horizonSegments
+    );
+    horizonGeometry.rotateX(-Math.PI / 2);
+    const horizonPositions = horizonGeometry.attributes.position;
+    const horizonColors = [];
+    for (let index = 0; index < horizonPositions.count; index++) {
+      const worldX = coverage.center.x + horizonPositions.getX(index);
+      const worldZ = coverage.center.z + horizonPositions.getZ(index);
+      const terrain = world.surfaceAt(worldX, worldZ);
+      horizonPositions.setY(index, terrain.height - FAR_TERRAIN_CONFIG.horizonDropM);
+      const color = SURFACE_COLORS[terrain.surface].clone();
+      color.offsetHSL(0, -0.08, 0.035);
+      horizonColors.push(color.r, color.g, color.b);
+    }
+    horizonGeometry.setAttribute("color", new THREE.Float32BufferAttribute(horizonColors, 3));
+    horizonGeometry.computeVertexNormals();
+    const horizon = new THREE.Mesh(horizonGeometry, farTerrainMaterial);
+    horizon.name = "FLY-authoritative-horizon-terrain-lod";
+    horizon.renderOrder = -2;
 
     const localCells = coverage.cells.map(cell => ({
       ...cell,
@@ -417,7 +521,7 @@ export function createWorldView({ scene, world, atmosphere }) {
 
     const farGroup = new THREE.Group();
     farGroup.name = "FLY-far-render-domain";
-    farGroup.add(ground, water, forest);
+    farGroup.add(horizon, ground, water, forest);
     farGroup.position.set(
       coverage.center.x - world.origin.x,
       -world.origin.y,
@@ -427,6 +531,7 @@ export function createWorldView({ scene, world, atmosphere }) {
     farTerrain = {
       group: farGroup,
       ground,
+      horizon,
       water,
       forest,
       coverage,
@@ -511,20 +616,25 @@ export function createWorldView({ scene, world, atmosphere }) {
         y: entry.points.userData.baseY,
         z: fieldCenter.z + baseOffset.z
       };
-      const state = deriveCloudVisualState(atmosphere, samplePosition, simTime);
-      const logicalX = fieldCenter.x + wrapSigned(baseOffset.x + state.advectionM.x, CLOUD_FIELD_SPAN_M);
-      const logicalZ = fieldCenter.z + wrapSigned(baseOffset.z + state.advectionM.z, CLOUD_FIELD_SPAN_M);
+      const advectionM = advanceCloudAdvectionPhase(
+        atmosphere,
+        samplePosition,
+        entry.advectionPhase,
+        simTime
+      );
+      const state = deriveCloudVisualState(atmosphere, samplePosition, simTime, advectionM);
+      const logicalPosition = resolveCloudFieldPosition(fieldCenter, baseOffset, state.advectionM);
       entry.points.position.set(
-        logicalX - world.origin.x,
+        logicalPosition.x - world.origin.x,
         samplePosition.y + Math.sin(index * 1.7 + simTime * 0.025) * 3 - world.origin.y,
-        logicalZ - world.origin.z
+        logicalPosition.z - world.origin.z
       );
       entry.points.rotation.y = state.headingRad;
       entry.points.scale.set(state.horizontalScale, state.verticalScale, 1);
       entry.material.uniforms.density01.value = state.density01;
       entry.state = {
         ...state,
-        logicalPosition: { x: logicalX, y: samplePosition.y, z: logicalZ },
+        logicalPosition: { ...logicalPosition, y: samplePosition.y },
         particleCount: CLOUD_DENSITY_PROXY.particlesPerCluster
       };
     });
@@ -654,6 +764,9 @@ export function createWorldView({ scene, world, atmosphere }) {
           halfExtentM: farTerrain.coverage.halfExtentM,
           cellSizeM: farTerrain.coverage.cellSizeM,
           verifiedAltitudeM: farTerrain.coverage.verifiedAltitudeM,
+          horizonHalfExtentM: FAR_TERRAIN_CONFIG.horizonHalfExtentM,
+          horizonSegments: FAR_TERRAIN_CONFIG.horizonSegments,
+          horizonMinimumEdgeDistanceM: FAR_TERRAIN_CONFIG.horizonHalfExtentM - FAR_TERRAIN_CONFIG.recenterM * 0.5,
           surfaceCounts: { ...farTerrain.coverage.surfaceCounts },
           waterCells: farTerrain.waterCells,
           forestMarkers: farTerrain.forestMarkers,
@@ -661,7 +774,7 @@ export function createWorldView({ scene, world, atmosphere }) {
         } : null,
         weatherFeedback: lastWindFeedback,
         thermalColumns: Math.min(12, atmosphere.thermals.length),
-        drawMeshes: chunkMeshes.size + cloudEntries.length + 13
+        drawMeshes: chunkMeshes.size + cloudEntries.length + 14
       };
     },
     dispose() {

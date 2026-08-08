@@ -35,6 +35,53 @@ export const PILOT_VIEW_CONFIG = Object.freeze({
   eye: C100_PILOT_ANCHORS.eye
 });
 
+export function createContinuousControlLedger(actions = ["burner", "vent"]) {
+  const owners = Object.fromEntries(actions.map(action => [action, new Set()]));
+  const requireAction = action => {
+    if (!owners[action]) throw new Error(`Unknown continuous control: ${action}`);
+    return owners[action];
+  };
+  return {
+    claim(action, owner) {
+      requireAction(action).add(owner);
+      return true;
+    },
+    release(action, owner) {
+      return requireAction(action).delete(owner);
+    },
+    clear() {
+      Object.values(owners).forEach(actionOwners => actionOwners.clear());
+    },
+    active(action) {
+      return requireAction(action).size > 0;
+    },
+    snapshot() {
+      return Object.fromEntries(Object.entries(owners).map(([action, actionOwners]) => [
+        action,
+        [...actionOwners].sort()
+      ]));
+    }
+  };
+}
+
+export function resolvePilotEyePosition(
+  basketPosition,
+  basketTilt,
+  target = new THREE.Vector3(),
+  rotation = new THREE.Euler()
+) {
+  return target.set(
+    PILOT_VIEW_CONFIG.eye.x,
+    PILOT_VIEW_CONFIG.eye.y,
+    PILOT_VIEW_CONFIG.eye.z
+  ).applyEuler(rotation.set(basketTilt.x, 0, basketTilt.z)).add(basketPosition);
+}
+
+export function lockPilotTranslation(cameraPosition, desiredPosition) {
+  cameraPosition.copy(desiredPosition);
+  return cameraPosition;
+}
+
 export function deriveFlightControlState(snapshot, cameraMode = "PILOT") {
   const owner = snapshot?.controlOwner || "NONE";
   const manual = owner === "MANUAL";
@@ -158,7 +205,7 @@ export function createFlyScene({
   let lookPitch = PILOT_VIEW_CONFIG.defaultPitchRad;
   let lookPointer = null;
   const pointerControlActions = new Map();
-  const controlOwners = { burner: new Set(), vent: new Set() };
+  const controlOwners = createContinuousControlLedger();
   const configController = createConfigSelectionController({
     vehicleRegistry: activeVehicleRegistry,
     weatherRegistry: activeWeatherRegistry
@@ -253,6 +300,9 @@ export function createFlyScene({
       button.setAttribute("aria-disabled", String(state.disabled));
       button.dataset.status = state.status;
       button.classList.toggle("is-active", state.pressed);
+      if (action === "burner" || action === "vent") {
+        button.classList.toggle("is-pressed", state.pressed);
+      }
       button.classList.toggle("is-automatic", action === "recovery" && state.status === "automatic");
       button.classList.toggle("is-complete", action === "recovery" && state.status === "recovered");
       if (["burner", "vent", "recovery"].includes(action)) {
@@ -379,10 +429,7 @@ export function createFlyScene({
   const clearContinuousControls = () => {
     session?.clearControls();
     pointerControlActions.clear();
-    controlOwners.burner.clear();
-    controlOwners.vent.clear();
-    burnerButton.classList.remove("is-pressed");
-    ventButton.classList.remove("is-pressed");
+    controlOwners.clear();
     if (session) syncFlightControlState(session.snapshot());
   };
 
@@ -532,19 +579,18 @@ export function createFlyScene({
   };
 
   const syncOwnedControl = action => {
-    const active = controlOwners[action].size > 0;
+    const active = controlOwners.active(action);
     setControl(action, active);
   };
 
   const claimControl = (action, owner) => {
     if (!session || !setControl(action, true)) return false;
-    controlOwners[action].add(owner);
-    (action === "burner" ? burnerButton : ventButton).classList.add("is-pressed");
+    controlOwners.claim(action, owner);
     return true;
   };
 
   const releaseControl = (action, owner) => {
-    if (!controlOwners[action]?.delete(owner)) return false;
+    if (!controlOwners.release(action, owner)) return false;
     syncOwnedControl(action);
     return true;
   };
@@ -568,27 +614,24 @@ export function createFlyScene({
   const bindHoldButton = (button, action) => {
     scope.listen(button, "pointerdown", event => {
       if (!claimPointerControl(event.pointerId, action)) return;
-      button.classList.add("is-pressed");
       try { button.setPointerCapture(event.pointerId); } catch (error) { /* synthetic pointer */ }
       event.preventDefault();
     });
     const release = event => {
       releasePointerControl(event.pointerId);
-      button.classList.remove("is-pressed");
     };
     scope.listen(button, "pointerup", release);
     scope.listen(button, "pointercancel", release);
     scope.listen(button, "lostpointercapture", release);
     scope.listen(button, "keydown", event => {
       if (![' ', "Enter"].includes(event.key) || event.repeat) return;
-      if (claimControl(action, `button-keyboard:${action}`)) button.classList.add("is-pressed");
+      claimControl(action, `button-keyboard:${action}`);
       event.preventDefault();
       event.stopPropagation();
     });
     scope.listen(button, "keyup", event => {
       if (![' ', "Enter"].includes(event.key)) return;
       releaseControl(action, `button-keyboard:${action}`);
-      button.classList.remove("is-pressed");
       event.preventDefault();
       event.stopPropagation();
     });
@@ -597,7 +640,11 @@ export function createFlyScene({
   bindHoldButton(ventButton, "vent");
 
   for (const button of Object.values(flightButtons)) {
-    scope.listen(button, "pointerdown", () => { if (!button.disabled) button.classList.add("is-pressed"); });
+    scope.listen(button, "pointerdown", () => {
+      if (!button.disabled && button !== burnerButton && button !== ventButton) {
+        button.classList.add("is-pressed");
+      }
+    });
     const releaseFeedback = () => {
       if (button !== burnerButton && button !== ventButton) button.classList.remove("is-pressed");
     };
@@ -766,21 +813,13 @@ export function createFlyScene({
         0,
         snapshot.vehicle.basket.tilt.z
       );
-      pilotEyeOffset.set(
-        PILOT_VIEW_CONFIG.eye.x,
-        PILOT_VIEW_CONFIG.eye.y,
-        PILOT_VIEW_CONFIG.eye.z
-      ).applyEuler(pilotBasketRotation);
+      resolvePilotEyePosition(basket, snapshot.vehicle.basket.tilt, desiredCamera, pilotBasketRotation);
+      pilotEyeOffset.copy(desiredCamera).sub(basket);
       pilotConsoleOffset.set(
         PILOT_CONSOLE_CENTER.x,
         PILOT_CONSOLE_CENTER.y,
         PILOT_CONSOLE_CENTER.z
       ).applyEuler(pilotBasketRotation);
-      desiredCamera.set(
-        basket.x + pilotEyeOffset.x,
-        basket.y + pilotEyeOffset.y,
-        basket.z + pilotEyeOffset.z
-      );
       const consoleX = pilotConsoleOffset.x - pilotEyeOffset.x;
       const consoleY = pilotConsoleOffset.y - pilotEyeOffset.y;
       const consoleZ = pilotConsoleOffset.z - pilotEyeOffset.z;
@@ -798,7 +837,7 @@ export function createFlyScene({
         desiredCamera.y + Math.sin(pilotEffectivePitch) * 20,
         desiredCamera.z - Math.cos(pilotEffectiveYaw) * cosPitch * 20
       );
-      camera.position.lerp(desiredCamera, Math.min(1, dt * 12));
+      lockPilotTranslation(camera.position, desiredCamera);
     } else {
       if (camera.fov !== 56 || camera.near !== 0.08) {
         camera.fov = 56;
@@ -911,14 +950,18 @@ export function createFlyScene({
     }));
   };
 
-  const controlDomSnapshot = () => Object.fromEntries(Object.entries(flightButtons).map(([action, button]) => [action, {
-    disabled: button.disabled,
-    ariaDisabled: button.getAttribute("aria-disabled"),
-    ariaPressed: button.getAttribute("aria-pressed"),
-    status: button.dataset.status,
-    mode: button.dataset.mode || null,
-    classes: [...button.classList]
-  }]));
+  const controlDomSnapshot = () => {
+    const heldOwners = controlOwners.snapshot();
+    return Object.fromEntries(Object.entries(flightButtons).map(([action, button]) => [action, {
+      disabled: button.disabled,
+      ariaDisabled: button.getAttribute("aria-disabled"),
+      ariaPressed: button.getAttribute("aria-pressed"),
+      status: button.dataset.status,
+      mode: button.dataset.mode || null,
+      classes: [...button.classList],
+      heldOwners: heldOwners[action] || []
+    }]));
+  };
 
   scope.listen(canvas, "webglcontextlost", event => {
     event.preventDefault();
@@ -952,7 +995,10 @@ export function createFlyScene({
         nearM: camera.near,
         farM: camera.far,
         yawLimits: [PILOT_VIEW_CONFIG.minYawRad, PILOT_VIEW_CONFIG.maxYawRad],
-        pitchLimits: [PILOT_VIEW_CONFIG.minPitchRad, PILOT_VIEW_CONFIG.maxPitchRad]
+        pitchLimits: [PILOT_VIEW_CONFIG.minPitchRad, PILOT_VIEW_CONFIG.maxPitchRad],
+        translationLockErrorM: CAMERA_MODES[cameraModeIndex] === "PILOT"
+          ? camera.position.distanceTo(desiredCamera)
+          : null
       };
     },
     get worldView() { return worldView?.snapshot() || null; },

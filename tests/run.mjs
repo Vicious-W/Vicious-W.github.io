@@ -45,13 +45,19 @@ import { planBalloonRecovery, recoveryControls } from "../src/scenes/fly/recover
 import {
   PILOT_VIEW_CONFIG,
   applyOriginShiftToObserver,
+  createContinuousControlLedger,
+  lockPilotTranslation,
+  resolvePilotEyePosition,
   deriveFlightControlState
 } from "../src/scenes/fly/flyScene.js";
 import { C100_PILOT_ANCHORS } from "../src/scenes/fly/balloonModel.js";
 import {
   CLOUD_DENSITY_PROXY,
   FAR_TERRAIN_CONFIG,
+  advanceCloudAdvectionPhase,
+  createCloudAdvectionPhase,
   deriveCloudVisualState,
+  resolveCloudFieldPosition,
   sampleFarTerrainCoverage
 } from "../src/scenes/fly/worldView.js";
 import { vehicleRegistry, weatherRegistry } from "../src/scenes/fly/registry.js";
@@ -1411,6 +1417,23 @@ section("FLY control map / PILOT framing / far weather rendering contracts");
     && !automaticPresentation.help.disabled && !automaticPresentation.return.disabled,
   "相机、指南和安全返回在自动接管期间仍保持可用且相机模式可辨认");
 
+  for (const action of ["burner", "vent"]) {
+    const ownership = createContinuousControlLedger();
+    ownership.claim(action, `screen-pointer:${action}`);
+    ownership.claim(action, `physical-pointer:${action}`);
+    ownership.claim(action, `global-keyboard:${action}`);
+    ownership.release(action, `screen-pointer:${action}`);
+    assert(ownership.active(action), `${action} pointercancel 后其余物理/键盘 owner 继续保持输入`);
+    ownership.release(action, `physical-pointer:${action}`);
+    assert(ownership.active(action), `${action} lostpointercapture 后最后一个键盘 owner 继续保持输入`);
+    ownership.release(action, `global-keyboard:${action}`);
+    assert(!ownership.active(action) && ownership.snapshot()[action].length === 0,
+      `${action} 最后一个 owner keyup 后 ledger 与画面保持状态共同归零`);
+    ownership.claim(action, `screen-pointer:${action}`);
+    ownership.clear();
+    assert(!ownership.active(action), `${action} blur/hidden 清理路径无条件释放所有 owner`);
+  }
+
   for (const [width, height] of [[390, 844], [768, 1024], [1440, 900]]) {
     const camera = new THREE.PerspectiveCamera(
       PILOT_VIEW_CONFIG.fovDeg,
@@ -1462,11 +1485,32 @@ section("FLY control map / PILOT framing / far weather rendering contracts");
     && PILOT_VIEW_CONFIG.maxPitchRad > PILOT_VIEW_CONFIG.defaultPitchRad,
   "PILOT 近裁剪面与上下环视约束为篮筐内部取景保留有界余量");
 
+  for (const renderDt of [1 / 30, 1 / 60, 1 / 120]) {
+    const cameraPosition = new THREE.Vector3(80, -30, 140);
+    let maximumEyeErrorM = 0;
+    for (let time = 0; time <= 12 + 1e-10; time += renderDt) {
+      const basket = new THREE.Vector3(4.94 * time, 4.39 * time, 5.52 * time);
+      const tilt = {
+        x: Math.sin(time * 0.7) * 0.04,
+        z: Math.cos(time * 0.53) * 0.04
+      };
+      const desiredEye = resolvePilotEyePosition(basket, tilt);
+      lockPilotTranslation(cameraPosition, desiredEye);
+      maximumEyeErrorM = Math.max(maximumEyeErrorM, cameraPosition.distanceTo(desiredEye));
+    }
+    const switchedFromExternal = new THREE.Vector3(-900, 260, 1400);
+    const switchedBasket = new THREE.Vector3(1220, 571, -860);
+    const switchedEye = resolvePilotEyePosition(switchedBasket, { x: 0.009, z: -0.012 });
+    lockPilotTranslation(switchedFromExternal, switchedEye);
+    assert(maximumEyeErrorM < 1e-12 && switchedFromExternal.distanceTo(switchedEye) < 1e-12,
+      `${Math.round(1 / renderDt)} Hz 移动篮筐与 CHASE/ORBIT 切回 PILOT 均保持刚性平移、无速度滞后`);
+  }
+
   const renderWorld = createProceduralWorld(0xc1002026);
   const coverage = sampleFarTerrainCoverage(renderWorld, { x: 0, z: 0 });
   assert(coverage.diameterM >= 12000 && coverage.cellSizeM <= CHUNK_SIZE_M
     && FAR_TERRAIN_CONFIG.verifiedAltitudeM >= 500 && renderWorld.chunks.size === 25,
-  "12 km 远景域与 25 块近场物理域解耦，并以不粗于物理块宽度的采样覆盖 0–500 m");
+  "12 km 细节远景域与 25 块近场物理域解耦，并以不粗于物理块宽度的采样覆盖 0–700 m");
   assert(Object.entries(coverage.surfaceCounts).every(([, count]) => count > 0),
     `远景域同时包含 FIELD/FOREST/ROAD/WATER: ${JSON.stringify(coverage.surfaceCounts)}`);
   for (const surface of ["FIELD", "FOREST", "ROAD", "WATER"]) {
@@ -1474,6 +1518,12 @@ section("FLY control map / PILOT framing / far weather rendering contracts");
     assert(renderWorld.terrainAt(cell.x, cell.z).surface === surface,
       `${surface} 远景单元与 terrainAt 的权威 surface 分类一致`);
   }
+  const horizonMinimumEdgeDistanceM = FAR_TERRAIN_CONFIG.horizonHalfExtentM
+    - FAR_TERRAIN_CONFIG.recenterM * 0.5;
+  assert(FAR_TERRAIN_CONFIG.verifiedAltitudeM >= 700
+    && horizonMinimumEdgeDistanceM > PILOT_VIEW_CONFIG.farM + 1000
+    && FAR_TERRAIN_CONFIG.horizonSegments >= 64,
+  `权威 surfaceAt 地平线 LOD 在 700 m 验证高度覆盖相机远裁剪面之外: ${horizonMinimumEdgeDistanceM} m`);
 
   const renderWeather = createClearWeather(0xc1002026);
   const cloudSamplePosition = { x: 120, y: 520, z: -340 };
@@ -1481,11 +1531,48 @@ section("FLY control map / PILOT framing / far weather rendering contracts");
   const cloudState = deriveCloudVisualState(renderWeather, cloudSamplePosition, cloudTime);
   const authoritativeAir = renderWeather.sample(cloudSamplePosition, cloudTime);
   assert(JSON.stringify(cloudState.windVelocityMps) === JSON.stringify(authoritativeAir.windVelocityMps)
-    && Math.abs(cloudState.advectionM.x
-      - authoritativeAir.windVelocityMps.x * cloudTime * CLOUD_DENSITY_PROXY.advectionScale) < 1e-12
-    && Math.abs(cloudState.advectionM.z
-      - authoritativeAir.windVelocityMps.z * cloudTime * CLOUD_DENSITY_PROXY.advectionScale) < 1e-12,
-  "云平流方向/强度可由同一次 atmosphere.sample 的权威风矢量精确预测");
+    && CLOUD_DENSITY_PROXY.integrationMethod === "FIXED_GRID_MIDPOINT_WIND_INTEGRAL",
+  "云形态与固定网格平流积分都读取同一权威 atmosphere.sample 风场");
+  for (const sampleTime of [37.5, 127.37, 600]) {
+    const sampleDt = 1 / 60;
+    const before = deriveCloudVisualState(renderWeather, cloudSamplePosition, sampleTime).advectionM;
+    const after = deriveCloudVisualState(renderWeather, cloudSamplePosition, sampleTime + sampleDt).advectionM;
+    const observed = {
+      x: (after.x - before.x) / sampleDt,
+      z: (after.z - before.z) / sampleDt
+    };
+    const midpointWind = renderWeather.sample(cloudSamplePosition, sampleTime + sampleDt * 0.5).windVelocityMps;
+    const expected = {
+      x: midpointWind.x * CLOUD_DENSITY_PROXY.advectionScale,
+      z: midpointWind.z * CLOUD_DENSITY_PROXY.advectionScale
+    };
+    const observedSpeed = Math.hypot(observed.x, observed.z);
+    const expectedSpeed = Math.hypot(expected.x, expected.z);
+    const directionCosine = (observed.x * expected.x + observed.z * expected.z)
+      / Math.max(1e-12, observedSpeed * expectedSpeed);
+    const speedRelativeError = Math.hypot(observed.x - expected.x, observed.z - expected.z)
+      / Math.max(1e-12, expectedSpeed);
+    assert(directionCosine > 0.999 && speedRelativeError < 0.025,
+      `${sampleTime} s gust/长会话云有限差分速度与当前权威风同向且误差有界: ${(speedRelativeError * 100).toFixed(2)}%`);
+  }
+  const coarsePhase = createCloudAdvectionPhase();
+  let coarseAdvection = null;
+  for (let time = 0; time < 127.5; time += 1 / 30) {
+    coarseAdvection = advanceCloudAdvectionPhase(renderWeather, cloudSamplePosition, coarsePhase, time);
+  }
+  coarseAdvection = advanceCloudAdvectionPhase(renderWeather, cloudSamplePosition, coarsePhase, 127.5);
+  const directAdvection = deriveCloudVisualState(renderWeather, cloudSamplePosition, 127.5).advectionM;
+  assert(Math.hypot(
+    coarseAdvection.x - directAdvection.x,
+    coarseAdvection.y - directAdvection.y,
+    coarseAdvection.z - directAdvection.z
+  ) < 1e-10,
+  "云固定积分相位在 30 Hz 增量与单次长会话求值之间严格确定，不依赖渲染节奏");
+  const fieldA = resolveCloudFieldPosition({ x: 0, z: 0 }, { x: 350, z: -270 }, directAdvection);
+  const fieldB = resolveCloudFieldPosition({ x: 3600, z: -3600 }, { x: 350, z: -270 }, directAdvection);
+  assert(Math.abs((fieldB.x - 3600) - fieldA.x) < 1e-12
+    && Math.abs((fieldB.z + 3600) - fieldA.z) < 1e-12,
+  "云字段重心切换只平移周期域，不重置或反转权威风积分相位");
   assert(CLOUD_DENSITY_PROXY.representation.includes("THREE_DIMENSIONAL")
     && CLOUD_DENSITY_PROXY.particlesPerCluster >= 200
     && cloudState.density01 >= 0.18 && cloudState.density01 <= 0.92,
