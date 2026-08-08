@@ -2,186 +2,197 @@
 
 IMPLEMENTATION_STATUS: COMPLETE
 
-VERDICT_ADDRESSED: CHANGES_REQUIRED — repeated Major `R-005` is addressed.
+VERDICT_ADDRESSED: CHANGES_REQUIRED — Majors `R-006`, `R-007`, and `R-008` are addressed.
 
 ## Metadata
 
 - Task: `fly-foundation-hot-air-balloon-v1-2026-07-31`
-- Implementation round: 4 (absolute target for this parent run: 4)
+- Implementation round: 5 (absolute target for this parent run: 6)
 - Implementation segment: 1
-- Base commit / current HEAD: `cca4ee410a09d124d1984b042b2ea41a9f456a7a`
-- Round review base commit: `fc285a1c81363ea09341712c0fc4fd8db5f9a900`
+- Base commit / current HEAD: `56e9dae3764959713aa40f551d1897a81eb23019`
+- Round review base commit: `a253ed1f5901e8428ef58c42696c65c0711e7e97`
 - Implementer runtime: codex / gpt-5.6-sol / ultra
 - Role session: `019fdd63-8404-7b03-9818-59c78c0e3b11` (resume), generation 1
-- Run manifest: `.agent/artifacts/runs/implementation-r4-s1-20260807T184744Z-80977.env`
-- Scope: the round-three `R-005` configuration-registry switching and keyboard-accessibility
-  correction. SOURCE business logic, accepted FLY physics/recovery behavior, protected specifications,
-  collaboration controls, dependencies, styles, and validation scripts were preserved.
-- Git ownership: no stage, commit, push, deploy, reset, clean, rebase, branch switch, or history write
-  was performed. The neutral wrapper owns the checkpoint.
+- Run manifest: `.agent/artifacts/runs/implementation-r5-s1-20260808T023807Z-229786.env`
+- Scope: round-five control discoverability/feedback, PILOT framing and physical control targeting,
+  and continuous clear-weather rendering. Accepted FLY physics/recovery and the protected SOURCE
+  business scene were preserved.
+- Git ownership: no stage, commit, push, deploy, reset, clean, rebase, branch switch, or history
+  write was performed. The neutral wrapper owns the checkpoint.
 
-## 1. Outcome and review finding
-
-The FLY configuration controller can now move between mutually exclusive but individually valid
-weather/vehicle pairs without a reload. Selecting a new item always accepts a registered ID and
-clears only an incompatible selection of the other kind. The resulting incomplete state cannot be
-confirmed, but the user can select its compatible counterpart and proceed.
-
-Keyboard selection is no longer a fixed-first shortcut. A registry-derived cursor traverses every
-weather and vehicle ID plus the confirmation target; Left/Right, Home/End, and Up/Down move that
-cursor, while Enter/Space activates its current target. The focused option has a visible 3D marker,
-and the focus ID, ordinal, selection state, instructions, and optional accessible label are reflected
-in the canvas accessible name. FLY removes the bootstrap `aria-hidden` attribute when mounted.
-
-During the first browser evidence attempt, adjacent cloned weather previews exposed a second real
-integration issue: at `768×1024`, the projected B target could ray-hit A's overlapping geometry.
-Pointer resolution now gives a click near a registry slot to the nearest projected slot and retains
-the original 3D raycast as fallback outside those target zones. Touch, pointer, and keyboard all
-complete `A/A → B/null → B/B → A/A → B/B`, reject confirmation at `B/null`, and launch a real
-`createFlyScene` session with the final B/B IDs.
+## 1. Outcome and review findings
 
 | Review ID | Result | Acceptance evidence |
 | --- | --- | --- |
-| `R-005` Major | RESOLVED | A mutually exclusive two-weather/two-vehicle fixture switches both directions without rebuilding the controller or scene. Incomplete states reject confirmation. The actual built `createFlyScene` reaches the second pair by touch at `390×844`, pointer at `768×1024`, and keyboard at `1440×900`; every final session snapshot retains `clearFixtureB / balloonFixtureB`. Production still exposes only `clear / hotAirBalloonC100`. |
+| `R-006` Major | RESOLVED | The guide maps all six screen controls, their keys, and the yellow burner/red vent physical parts. All six buttons have distinct hover/focus/press states in all required viewports. Burner/vent hold state and recovery ownership derive from the authoritative session; `AUTO_RECOVERY` and `RECOVERED` set native `disabled`, `aria-disabled`, `aria-pressed`, status classes, and distinct visuals on inapplicable manual controls. Camera mode remains a three-state `data-mode`/accessible label rather than a false boolean toggle. |
+| `R-007` Major | RESOLVED | PILOT uses an 84° FOV, 0.035 m near plane, bounded yaw/pitch, a basket-relative eye, level world up, and a console-framing assist for large real basket tilt. Default and four look-boundary samples retain both physical control centers at `390×844`, `768×1024`, and `1440×900`. Screenshots show horizon, basket edge, twin burners, yellow handle, red vent ring/line, frame, and real tubular load lines. Real canvas mouse/touch events independently drove visible burner and vent `0→1→0`. |
+| `R-008` Major | RESOLVED | A 12,288 m camera-centered far-render domain now sits behind the bounded 25-chunk near physics domain. At about 360–362 m AGL, PILOT/CHASE/ORBIT retain continuous terrain and horizon at every required viewport. The far domain contains FIELD/FOREST/ROAD/WATER from the authoritative procedural surface field; water has a lifted reflective animated surface and forests have instanced scale markers. Ten 240-particle 3D cloud density volumes, 84 wind tracers, and 12 thermal columns consume the authoritative atmosphere field. Cloud advection is exactly predictable from the sampled wind vector. |
 
-No Blocker, Minor, or additional valid finding was present in the round-three review.
+There were no Blockers, Minors, or Suggestions in the incoming review. `R-005` remains closed.
 
 ## 2. Changed component IDs and files
 
-| Component ID | Files | Round-four change |
+| Component ID | Files | Round-five change |
 | --- | --- | --- |
-| `FLY-CONFIG-001` | `src/scenes/fly/configPreview.js` | Deadlock-free selection replacement; generic registry keyboard navigator; projected pointer-target resolver; per-entry focus-marker geometry and lifecycle. |
-| `FLY-SCENE-001` | `src/scenes/fly/flyScene.js` | Navigator integration, registry-derived accessible names, visible focus synchronization, repeat-safe activation, nearest-slot pointer/touch disambiguation, `aria-hidden` removal, selected-ID/session propagation, and read-only `configKeyboard` debug state. |
-| `FLY-REGISTRY-001` | `src/scenes/fly/registry.js` | Optional accessible labels for the two real production entries; no new production choice. |
-| `FLY-TEST-001` | `tests/run.mjs` | Mutually exclusive A/A and B/B graph, bidirectional switching, incomplete-confirm rejection, second-entry keyboard traversal, overlap disambiguation/blank rejection, and final session-ID checks. Total is now 403 checks. |
-| `PROJECT-FACT-001` | `PROJECT.md` | Current fact records the round-four compatibility, keyboard, and pointer-overlap corrections pending review. |
+| `FLY-CONTROL-001` | `src/scenes/fly/flyScene.js`, `src/styles/main.css` | Authoritative DOM presentation derivation; six-control hover/focus/press/hold/disabled feedback; keyboard shortcuts; native disabled/accessibility state; shared mouse/touch/key ownership paths; return-dialog inert state. |
+| `FLY-GUIDE-001` | `src/scenes/fly/registry.js`, `src/scenes/fly/flyScene.js`, `src/styles/main.css` | Six registry-defined guide rows with screen symbol, keycap, action, and physical mapping; yellow/red model highlighting; responsive bottom-row clearance. |
+| `FLY-C100-VISUAL-001` | `src/scenes/fly/balloonModel.js`, `src/scenes/fly/configPreview.js` | Forward overhead twin-burner/control layout; larger visible rings; dynamic handle feedback; tubular suspension/deflation lines; guide highlight API; direct-control hit volumes and anchors. |
+| `FLY-PILOT-001` | `src/scenes/fly/flyScene.js`, `src/scenes/fly/balloonModel.js` | Calibrated eye/FOV/near/far/look limits; basket-relative eye offset; level-horizon console framing assist; physical target projection/debug evidence; nearest visible-hardware hit disambiguation. |
+| `FLY-WORLD-RENDER-001` | `src/scenes/fly/worldView.js` | Near/far domain split, quantized far recentering, continuous 12.288 km terrain, water overlay, far forest markers, clear-visibility fog, and state/debug snapshot. |
+| `FLY-WEATHER-VISUAL-001` | `src/scenes/fly/worldView.js` | Three-dimensional particle-density/optical cloud proxy, wind-vector tracers, thermal motes, humidity/vertical-wind cloud density, authoritative advection, and size-clamped circular shaders. |
+| `FLY-TEST-001` | `tests/run.mjs` | Guide completeness, UI ownership presentation, three-viewport default/boundary PILOT projection, far coverage/surface identity, and atmosphere-to-cloud causality. Suite total is 432 checks. |
+| `PROJECT-FACT-001` | `PROJECT.md` | Current fact now records the round-five control, PILOT, and environment slice pending review. |
 
-No SOURCE business file, FLY physics/recovery file, style file, package manifest, lockfile, protected
-engineering specification, Agent control script, or collaboration control file changed.
+No SOURCE business file, flight physics, recovery planner, procedural-world authority, clear-weather
+authority, package manifest, dependency lockfile, protected engineering specification, Agent control
+script, or collaboration-control file changed.
 
 ## 3. Sources, geometry, and proxy labels
 
-No aircraft, weather, atmosphere, terrain, material, or certification fact changed. Existing source
-and authenticity boundaries remain:
+No sourced vehicle dimension, mass, certification limit, or atmospheric baseline changed.
 
-- Cameron C-Type official data remains the source for the C-100 16 gores, 100,000 ft³ volume,
-  65 ft height, 57 ft diameter, 2,000 lb certified limit, and 218 lb standard envelope weight
-  (`PRIMARY_SOURCE` plus direct `DERIVED` SI conversions).
-- Cameron same-family burner/tank material and the FAA Balloon Flying Handbook remain the basis for
-  the lower-system reference configuration and control relationships.
-- U.S. Standard Atmosphere 1976 remains the clear-weather baseline.
-- Lower-system masses, lumped thermal terms, contacts, procedural terrain/obstacles, wind field,
-  and recovery forecast remain explicit `ENGINEERING_PROXY` values.
-- `SOURCE_VERIFIED` and `SOURCE_ART_DIRECTION` facts were not edited.
+- Cameron official C-Type/C-100 values remain the source for 16 gores, 100,000 ft³ volume, 65 ft
+  height, 57 ft diameter, 2,000 lb certified limit, and 218 lb standard envelope weight
+  (`PRIMARY_SOURCE` with direct `DERIVED` SI conversions).
+- Cameron same-family lower-system references and the FAA Balloon Flying Handbook remain the basis
+  for burner/tank materials and control relationships.
+- U.S. Standard Atmosphere 1976 remains the clear-weather thermodynamic baseline.
+- Lower-system mass/inertia, low-DOF suspension/contact, procedural world, local weather field,
+  recovery forecast, and this round's rendering simplifications remain `ENGINEERING_PROXY` or
+  `ART_DIRECTION`; no certification-grade or CFD claim was added.
 
-Round-four geometry is configuration/accessibility presentation geometry only:
+### Geometry and camera changes
 
-| Geometry / interaction | Representation | Label and consumers |
+| Geometry/state | Implementation | Label / link |
 | --- | --- | --- |
-| Vehicle keyboard focus marker | White emissive-independent `THREE.TorusGeometry(11.15, 0.105, 8, 64)` at local `y=-7.74`; one per registry slot, only the focused marker visible | `ART_DIRECTION`; keyboard focus feedback, disposed with its catalog entry |
-| Weather keyboard focus marker | White `THREE.TorusGeometry(4.75, 0.105, 8, 64)` at local `y=0`; one per weather slot, only the focused marker visible | `ART_DIRECTION`; keyboard focus feedback, disposed with its catalog entry |
-| Projected target zone | Nearest registry slot inside `max(44, min(96, 0.14 × min(canvas width, canvas height)))` CSS px; otherwise the existing 3D raycast result | Deliberate UI interaction abstraction; prevents adjacent preview geometry from stealing another registry slot and has no physical-world meaning |
+| PILOT eye | Basket-local `(0, 1.20, 0.50)` m; transformed by actual interpolated basket tilt | `PILOT_CAMERA_PROXY`; position follows the physical basket while camera up remains world vertical |
+| PILOT projection | 84° vertical FOV, 0.035 m near, 16,000 m far; yaw `[-0.30, 0.30]`, pitch `[0.10, 0.72]` rad | `PILOT_CAMERA_PROXY`; bounded cockpit framing, no physics write |
+| Console framing assist | Clamps only effective view direction around the transformed burner/vent midpoint using 72% of current vertical/horizontal half-FOV | `PILOT_CONSOLE_FRAMING_ASSIST_PROXY`; prevents real basket tilt from moving both controls outside the camera while preserving level world up |
+| Burner controls | Twin burner bodies at local `x=±0.22`, `z=-0.36`; yellow torus at `(0, 2.08, -0.36)` | Same manual burner state; active rotation/emissive feedback |
+| Vent control | Red torus at `(0.08, 1.72, -0.34)` plus dynamic red tubular deflation line | Same manual vent state; active pull/emissive feedback |
+| Direct-control hit volumes | Transparent 0.30 m burner and 0.27 m vent spheres | `POINTER_HIT_VOLUME`; input-only geometry, resolved by nearest visible hardware projection when volumes overlap |
+| Load/vent lines | Four 0.024 m radius dynamic cylinders and two 0.027 m radius red cylinders | `GEOMETRIC_VISUAL_PROXY`; replaces one-pixel line primitives while endpoints remain attached to rendered envelope/basket/control state |
+| Far terrain | 12,288 m square, 96×96 cells / 97×97 vertices, 128 m cell width, recentered every 512 m | `FAR_TERRAIN_LOD_PROXY`; `world.surfaceAt`, which shares the surface field returned by `terrainAt` |
+| Far water | Two triangles per WATER cell, 0.28 m lift, physical material with 0.07 m shader wave | `WATER_SURFACE_CELL_VISUAL_PROXY`; created only for authoritative WATER cells |
+| Far forest | One instanced 5-sided 7.5 m radius / 20 m high cone per sampled remote FOREST cell; excludes 430 m near ring | `FAR_FOREST_SCALE_MARKER_PROXY`; surface-driven scale cue, not a collision body |
+| Cloud volume | 10 clusters × 240 points distributed through four 3D ellipsoidal billows; circular optical falloff | `THREE_DIMENSIONAL_PARTICLE_DENSITY_OPTICAL_PROXY`; humidity and vertical wind set density/form |
+| Wind feedback | 84 size-clamped circular tracer points around the balloon | `WIND_TRACER_VISUAL_PROXY`; direction and phase use the sampled wind vector/speed |
+| Thermal feedback | 12 columns × 10 rising circular motes | `THERMAL_MOTE_VISUAL_PROXY`; rise/color use the atmosphere sample over registered clear-weather thermals |
 
-The focus marker has `raycast = () => {}` and never becomes a selectable geometry itself. C-100
-envelope, basket, suspension, burner, collision bodies, camera, terrain, obstacles, and all SOURCE
-geometry are unchanged.
+At the final high-altitude browser positions the far domain contained approximately 6,046–6,052
+FIELD, 1,656–1,672 FOREST, 263–265 ROAD, and 1,235–1,243 WATER sampled cells, with 410–414
+instanced forest markers. These counts are evidence of the deterministic seed/current recenter, not
+new product facts.
 
 ## 4. State, geometry, and causality links
 
-### Selection replacement and confirmation
+### Guide and screen controls
 
 ```text
-registered weather or vehicle ID
-  → select(kind, id) accepts the registered item
-  → compare it bidirectionally with the other selected definition
-  → keep compatible counterpart OR clear only stale incompatible counterpart
-  → incomplete state remains editable and confirm() returns false
-  → compatible weatherId + vehicleId can confirm
-  → sessionFactory({ selection, registries })
-  → immutable session snapshot.selection
+vehicleRegistry.guideDefinition.controls (six action objects)
+  → guide symbol + keycap + screen location + description
+  → burner/vent physical text and yellow/red model highlight
+
+session.snapshot {controlOwner, manualControls, vehicle limits}
+  → deriveFlightControlState()
+  → button.disabled + aria-disabled + aria-pressed + data-status/data-mode
+  → CSS hover/focus/pressed/held/automatic/recovered visuals
 ```
 
-- Both `weather.compatibleVehicles` and `vehicle.compatibleWeather` must agree.
-- Confirmation still requires two non-null compatible IDs.
-- Confirmation freezes selection exactly as before.
-- No default ID or product-specific branch was introduced into the scene loop.
-- Production registry contents remain one real weather and one real vehicle.
+- Space/V global keys, focused button keys, screen pointer/touch holds, and physical canvas
+  pointer/touch holds all call the same `session.setControl` ownership path.
+- Recovery screen/key/debug entry calls one `session.requestRecovery` path. Manual owner loss
+  immediately clears holds and disables burner, vent, and recovery in DOM and visuals.
+- Camera, help, and return remain usable during automatic control; they do not mutate flight
+  control ownership. Camera exposes a three-state mode label instead of false `aria-pressed` state.
+- Physical hit volumes can overlap in depth. The ray must still intersect a control volume, after
+  which the action nearest the pointer's projected visible hardware wins. This preserves direct
+  geometry targeting without allowing the nearer vent proxy to steal a burner click.
 
-### Keyboard and accessible state
+### PILOT framing
 
 ```text
-Object.keys(weatherRegistry), Object.keys(vehicleRegistry), confirm
-  → category order weather → vehicle → confirm
-  → per-category cursor index
-  → Left/Right or Home/End changes registry item
-  → Up/Down changes category
-  → Enter/Space activates current {kind, id}
-  → focusNext chooses the missing category or confirm
-  → catalog.setFocused + canvas aria-label + debugApi.configKeyboard
+interpolated basket position + actual basket tilt
+  → transform PILOT eye and console midpoint
+  → user bounded yaw/pitch
+  → if needed, console-safe effective yaw/pitch within 72% half-FOV
+  → world-up camera.lookAt (level horizon)
+  → project real burner/vent anchors for hit/debug evidence
 ```
 
-- Arrow/category movement does not mutate selection.
-- Repeated Enter/Space keydown is ignored so a held activation key cannot choose several stages.
-- The accessible name identifies kind, 1-based ordinal/count, human label/ID, selected state, and
-  available keys. The confirm target identifies either the selected IDs or an incomplete state.
-- `canvas.removeAttribute("aria-hidden")` makes that name and focus state available after FLY mount.
-- The guide still moves focus to the depart control and makes canvas/flight controls inert.
+The framing assist is camera-only and never edits basket/envelope pose, velocity, controls, or
+physics. `window.__FLY__.cameras` distinguishes requested and effective angles and reports whether
+assistance is active.
 
-### Pointer and touch targeting
+### World and clear weather
 
 ```text
-registry entry wrapper world position
-  → configTargetPixels.{weatherById, vehicleById, confirm}
-  → nearest projected target inside responsive CSS-pixel radius
-  → tagged {configKind, configId}
-  → selectConfig / confirmConfig
-fallback outside target radius
-  → existing THREE.Raycaster mesh/line hit
+near domain: world.chunks (5×5)
+  → detailed terrain + collision-linked obstacles
+
+logical basket position
+  → 512 m quantized far-render center
+  → world.surfaceAt vertices/cells
+  → colored FIELD/FOREST/ROAD/WATER terrain
+  → WATER-only optical overlay + FOREST-only remote scale instances
+
+atmosphere.sample(position, simTime)
+  → wind vector → exact cloud advection + wind tracer direction/rate
+  → humidity + vertical wind → cloud optical density/form
+  → thermal vertical velocity → mote rise/color
+  → humidity → clear-air fog/horizon color
 ```
 
-- Actual pointer and touch events use the same handler and state controller.
-- Blank lower-corner input remains outside the target radius and leaves selection unchanged.
-- All target work is registry-derived; adding an entry does not add a new input branch.
+Cloud advection is `windVelocityMps × simTime × 0.58` before deterministic field wrapping. The test
+suite compares this equation with the same atmosphere sample exactly; renderer debug snapshots
+record every cloud's sample, wind, density, advection, logical position, and particle count.
 
 ## 5. Deliberate abstractions and open gaps
 
-The two-by-two regression/evidence fixture clones the accepted clear-weather and C-100 factories
-under test-only IDs and gives them mutually exclusive A/A and B/B compatibility. It proves registry
-expansion and interaction without displaying or claiming nonexistent production assets. Its source
-and build files live only under ignored `.agent/artifacts/fly-evidence/r4-fixture/`; the final browser
-route serves its built output from `dist/r4-fixture/` at the synthetic origin.
-
-The first-slice gap IDs remain open:
-
-- `FLY-GAP-001` — Public product data does not provide a complete serial lower-system mass/inertia
+- `FLY-GAP-001` — Public product data still lacks a complete serial lower-system mass/inertia
   schedule; manifest proxy values remain explicit.
-- `FLY-GAP-002` — Air, suspension, basket, and fabric dynamics remain bounded low-DOF/lumped models;
-  no CFD, rope FEM, wicker deformation, or full fabric FEM is claimed.
-- `FLY-GAP-003` — Obstacles are deterministic analytic collision proxies without geospatial or
+- `FLY-GAP-002` — Air, suspension, basket, and fabric dynamics remain bounded low-DOF/lumped
+  models; no CFD, rope FEM, wicker deformation, or full fabric FEM is claimed.
+- `FLY-GAP-003` — Obstacles remain deterministic analytic collision proxies without geospatial or
   destructive-response fidelity.
-- `FLY-GAP-004` — Sky, clouds, sun, haze, and local wind remain atmospheric/art proxies rather than
-  a spectral or mesoscale solve.
-- `FLY-GAP-005` — The production JS bundle is `843.95 kB / 234.26 kB gzip`; Vite reports the existing
-  non-fatal `>500 kB` warning. Code splitting remains an optimization opportunity.
-- `FLY-GAP-006` — WebAudio state/lifecycle is verified, but loudspeaker timbre, spatial mix, and
+- `FLY-GAP-004` — Narrowed but open: clouds now have a verifiable 3D density/optical particle
+  representation and all clear-weather feedback is state-driven, but this is not a spectral
+  atmosphere, mesoscale weather solve, or fluid cloud simulation. Far water/forest are LOD proxies.
+- `FLY-GAP-005` — Production JS is `859.18 kB / 239.35 kB gzip`; Vite retains the non-fatal
+  `>500 kB` warning. Code splitting remains an optimization opportunity.
+- `FLY-GAP-006` — WebAudio state/lifecycle is verified; loudspeaker timbre, spatial mix, and
   loudness remain unverified.
 - `FLY-GAP-007` — Full WebGL context loss/restoration was not replayed this round.
 
+The far renderer deliberately keeps the authoritative collision/safety domain at 25 chunks. Its
+128 m surface cells, broad water overlays, and sparse forest cones are altitude-scale LOD, not added
+physics or geospatial claims. No fake precipitation, storm, multi-weather entry, or unavailable
+aircraft was introduced.
+
 ## 6. Performance and lifecycle
 
-- The physical clock remains `1/120 s`; no physics, weather, or recovery loop changed.
-- Selection compatibility is constant-time registry lookup plus two list membership checks.
-- Keyboard navigation is constant-time except a bounded registry-ID lookup when focus is set.
-- Pointer resolution is `O(weather + vehicle)` over projected slots. Production evaluates only two
-  entries plus confirm; the two-by-two fixture evaluates five targets.
-- Only one focus marker is visible, so production adds at most one small 64-segment torus draw to the
-  configuration view. Marker geometry/material are disposed with each catalog entry.
-- Final production build transforms 45 modules and emits `843.95 kB / 234.26 kB gzip` JS. Relative
-  to the prior report (`840.40 / 233.06`), this round adds about `3.55 kB / 1.20 kB gzip`.
-- After every recovered production journey, a newly entered FLY reported one RAF, zero physics
-  worlds, 30 scoped listeners, zero audio voices, zero chunks, null selection, and null session.
-- Fixture scenes were explicitly disposed after each viewport; their real one-second burner input
-  reduced fuel from 76 kg to `75.80179`, `75.79859`, and `75.79220` kg respectively.
+- Physics remains fixed at `1/120 s`; no session/vehicle/recovery equation changed.
+- Near physics remains 25 active chunks. Near terrain is about 7,200 triangles.
+- Far ground is 18,432 triangles and rebuilds only after crossing a 512 m logical recenter cell.
+  A rebuild samples 9,216 surface cells plus 9,409 vertices; it does not create rigid bodies.
+- Typical seed/current-center water is about 2,470 transparent triangles; far forest uses one
+  instanced draw for about 410–414 markers.
+- Far-forest and rebuilt near-obstacle `InstancedMesh` objects explicitly dispatch `dispose()` so
+  their per-instance GPU buffers do not accumulate across origin/LOD rebuilds.
+- Weather feedback uses 2,400 cloud particles in 10 draws, 84 wind points in one draw, and 120
+  thermal points in one draw. Point sizes are shader-clamped to prevent near-camera square/oversize
+  artifacts. World debug reports an estimated 48 core render meshes/draw groups before variable
+  near obstacles.
+- Camera and UI state derivation are constant-time. Physical pointer resolution examines four
+  small hit meshes and two action anchors only on pointer down.
+- Final build transforms 45 modules and emits `859.18 kB / 239.35 kB gzip` JS plus `9.09 kB /
+  2.84 kB gzip` CSS. Relative to the reviewed build (`843.95 / 234.26` JS), the round adds about
+  `15.23 kB / 5.09 kB gzip` for far rendering, optical weather shaders, cockpit geometry, UI state,
+  and evidence/debug contracts.
+- Every browser journey returned to SITE_SELECT with `window.__FLY__` removed, zero physics worlds,
+  zero audio voices, and one selector RAF. A final post-disposal browser probe crossed five floating-
+  origin shifts, returned cleanly, and logged no page/WebGL/shader error. No extra simulation loop
+  or server was introduced.
 
 ## 7. Verification
 
@@ -192,98 +203,98 @@ Final standalone command: `./scripts/run-validation.sh`
 | Check | Result |
 | --- | --- |
 | Dependency check | PASS |
-| Build | PASS — Vite 8.1.0, 45 modules, `843.95 kB / 234.26 kB gzip`; existing non-blocking chunk warning |
-| Tests | PASS — 403/403 |
+| Build | PASS — Vite 8.1.0, 45 modules, JS `859.18 kB / 239.35 kB gzip`; existing chunk warning only |
+| Tests | PASS — 432/432 |
 | Lint | NOT CONFIGURED |
 | Type check | NOT CONFIGURED |
 | Browser / visual in script | MANUAL REQUIRED; completed with Playwright MCP below |
 
-`git diff --check` is PASS. The logic suite covers mutually exclusive pair switching in both
-directions, incomplete confirmation rejection, second-entry keyboard focus, projected overlap
-resolution, blank rejection, final selected session IDs, and all prior SOURCE/FLY physics,
-determinism, recovery, resource, and authenticity checks.
+`git diff --check` is PASS. No configured check failed.
 
-### Consolidated Playwright MCP pass — PASS
+The added logic checks cover:
 
-The final built `dist/` was served only through `page.route('**/*')` at
-`http://source.local/index.html`. The route accepted only the exact synthetic origin, decoded paths,
-rejected `.` / `..` segments, backslashes and NULs, joined only beneath the fixed absolute `dist/`
-prefix, returned `index.html` for entry directories, preserved MIME types, and aborted missing files.
-No Bash Playwright script, Vite server, preview server, background process, or HTTP server was used.
+- exact six-action guide identity plus burner/vent physical mappings;
+- MANUAL/AUTO_RECOVERY/RECOVERED UI state derivation;
+- default PILOT horizon/basket/burner/vent/rope projections at all three viewports;
+- all four yaw/pitch boundary combinations retaining both physical control centers;
+- 12.288 km far coverage, 128 m sampling, and nonzero FIELD/FOREST/ROAD/WATER;
+- exact far-cell surface identity against `terrainAt`;
+- exact atmosphere-wind-to-cloud-advection causality and bounded 3D density state;
+- all prior SOURCE and FLY physics, origin, collision, determinism, and recovery checks.
+
+### Consolidated Playwright MCP evidence — PASS
+
+The built `dist/` was served only by `browser_run_code_unsafe` plus `page.route('**/*')` at
+`http://source.local/index.html`. The route accepted only the fixed synthetic origin, decoded the
+path, rejected traversal/backslash/NUL segments, joined only beneath the absolute `dist/` prefix,
+returned `index.html` for the entry URL, preserved asset MIME types, and aborted missing files. No
+Bash Playwright script, Vite/preview/HTTP server, or background process was used.
 
 | Evidence | Result |
 | --- | --- |
-| Responsive production and fixture | Canvases exactly matched `390×844`, `768×1024`, and `1440×900`; overflow was `0/0` in all six views. Guide boxes were `370×581.531`, `680×417.156`, and `680×478.125`, each contained. |
-| Production configuration | Every viewport began null/null/false with `aria-hidden` absent; blank input stayed unchanged. Touch, pointer, and keyboard produced `clear / hotAirBalloonC100 / true`. Production exposed no fixture IDs. |
-| Mutually exclusive fixture | At every viewport/input mode: A/A succeeded; selecting weather B produced B/null; confirmation left `confirmed:false` and guide hidden; vehicle B produced B/B; switching back produced A/A; switching again produced B/B. |
-| Keyboard accessibility | At desktop, ArrowRight reached `weather option 2 of 2: Fixture weather 2`; arrows reached vehicle B and confirm; incomplete confirm announced the incomplete state; the focus marker followed the cursor. |
-| Pointer-overlap regression | At `768×1024`, actual mouse clicks at projected target coordinates now selected weather B despite adjacent A geometry, completed B/B, switched back to A/A, and returned to B/B. |
-| Session propagation | All three fixture journeys departed with `snapshot.selection = clearFixtureB / balloonFixtureB`; a real one-second burner hold then consumed fuel. |
-| Guide and first activation | Focus was `Confirm selection and begin flight`; canvas and flight controls were inert. Before depart audio was `NONE`, unlocked false, 0 voices; after the depart click it was `running`, unlocked true, 4 voices. |
-| Active production controls | A 22 s actual burner hold reduced fuel from 76 kg to `71.77685 / 71.76886 / 71.76726`; a 2 s vent hold reduced internal temperature to `343.221 / 343.251 / 343.429 K`; touch/pointer/keyboard releases ended at burner/vent `0/0` with no active class. |
-| Physical recovery | Touch recovered in 291 simulated seconds, pointer in 114, keyboard in 116. All ended RECOVERED with zero unsafe contacts. Plan/first-contact/completion ordering was `285.283 < 312.650 < 315.650`, `105.292 < 136.417 < 139.417`, and `128.025 < 138.825 < 141.825`; landing errors were `30.58`, `40.75`, and `36.37 m`. |
-| Session reset | After each recovery and Escape, re-entered FLY had null selection/session, zero physics worlds, voices, and chunks. |
-| SOURCE regression | Fresh SOURCE was `NONE / INTERLOCKED_RESET / unlocked:false` with both audio chains `NONE`; first pointer input produced `AUTO / INTERLOCKED_RESET / unlocked:true` with both chains running; return removed state/audio/navigation hooks. |
-| Browser console | PASS — 0 page errors, 0 application errors/warnings, and 0 driver warnings in the final exact-build pass. |
+| Fresh session / first interaction | At each viewport, real selector keyboard input chose FLY. Every FLY began `null/null/false`, `session:null`, owner `NONE`; keyboard selected weather, vehicle, and guide/depart. |
+| Guide | Six ordered screen mappings and two physical mappings present. `390×844` scroll/bottom evidence retains the End flight row and safety copy with 64 px launch clearance; tablet/desktop show all rows and safety together. |
+| Six control visuals | For burner, vent, recovery, camera, help, and return at all viewports: hover differed from normal, focus had a nonzero solid outline, and pointer-down differed by scale/background. All six stayed within the viewport with zero pair overlap. |
+| Shared controls | Screen burner/vent holds and visible physical canvas targets each produced authoritative `0→1→0`. Final matrix used mouse for burner and touch PointerEvent for vent; the post-shader pass also used touch on the physical burner. |
+| PILOT | Immediate and stressed/tipped frames retain visible burner/vent targets. Default and all four yaw/pitch boundary combinations passed at all viewports. Near plane/FOV were `0.035 m / 84°`; screenshots preserve horizon, basket edge, burners, handles, frame, and ropes. |
+| High clear world | Browser heights were about `359.59–362.11 m AGL`, with 2–3 floating-origin shifts. PILOT/CHASE/ORBIT screenshots retain continuous ground/horizon and visible water/forest/road/field differentiation. Far domain remained 12,288 m with all four surface classes. |
+| Weather causality | Runtime reported 2,400 3D density particles; every cloud exposed finite authoritative wind state. Wind tracer direction and thermal vertical state were finite. Final optical shaders rendered without square near-camera artifacts. |
+| Automatic ownership | After actual recovery click, burner/vent/recovery were native-disabled with `aria-disabled=true`; recovery was `aria-pressed=true`, `status=automatic`; camera/help/return remained enabled. Desktop reached real `RECOVERED` after 300 simulated seconds and changed recovery status to `recovered`, `aria-pressed=false`. |
+| Lifecycle | Return/confirmation removed `window.__FLY__`; selector reported zero physics worlds and audio voices at every viewport. |
+| Browser console | PASS — zero application/page errors and zero WebGL/shader errors in the consolidated and final shader passes. |
 
-Useful ignored screenshots:
+Useful ignored screenshots are under `.agent/artifacts/playwright/r5/`, including per-viewport
+`final-pilot-immediate`, `final-high-pilot`, `final-high-chase`, `final-guide-bottom`, the full
+three-camera high-altitude matrix, automatic-disabled states, and desktop recovered state.
 
-- `.agent/artifacts/fly-evidence/r4-390-production-guide.png`
-- `.agent/artifacts/fly-evidence/r4-390-fixture-touch-bb-guide.png`
-- `.agent/artifacts/fly-evidence/r4-1440-fixture-keyboard-bb.png`
-- `.agent/artifacts/fly-evidence/r4-1440-production-recovered.png`
+### Evidence-pass issues encountered and resolved
 
-## 8. Failures, unverified areas, and remaining risks
+- The first physical burner pass exposed a real ambiguity: overlapping hit volumes selected the
+  nearer vent. Nearest projected visible-hardware resolution fixed it; a 40 s tipped-basket probe
+  and final matrix independently passed burner and vent.
+- Early evidence harness assertions mistakenly used runner-side `innerWidth` and later counted
+  reserved CSS padding as guide content. These were harness-only errors; corrected assertions and
+  screenshots passed. They did not mask console, state, or layout failures.
+- Initial wind `PointsMaterial` could create large square sprites near the eye. Visual inspection
+  caught it; final circular size-clamped shaders removed the artifact and were rebuilt/rechecked.
 
-- Configured validation failures: none.
-- Final browser flow failures: none.
-- Lint: NOT CONFIGURED.
-- Type check: NOT CONFIGURED.
-- Three Playwright harness setup attempts stopped before loading application content because the MCP
-  VM exposes neither dynamic import, `process`, nor `URL`; the final strict route used supported
-  `route.fulfill({ path })` plus string-based exact-origin/path validation.
-- An intermediate real browser pass found the `768×1024` overlapping-preview pointer defect. That
-  pass failed the intended B/B transition, so it was not counted as final evidence. The defect was
-  fixed, added to the 403-check suite, rebuilt through standalone validation, and the complete final
-  matrix then passed.
-- Native screen-reader announcement quality, mobile switch-control behavior, and OS-level focus
-  narration remain UNVERIFIED; DOM accessibility state, ordinals, labels, focus, and inert boundaries
-  passed browser inspection.
-- Actual speaker output/spatial mix remains UNVERIFIED (`FLY-GAP-006`).
-- WebGL context loss/restoration remains UNVERIFIED (`FLY-GAP-007`).
-- SOURCE deep MANUAL commands, intentional glass fracture/debris, and underwater/underground camera
-  traversal were not replayed in this browser pass; protected logic tests remain green and SOURCE's
-  first-interaction/lifecycle path passed.
-- A real second weather or vehicle asset does not yet exist. The fixture proves architecture and
-  interaction only; reviewers must not interpret it as a production-content claim.
-- The recovery controller remains an explicit first-slice engineering proxy, not certification
-  software; `FLY-GAP-001…004` remain bounded risks.
+## 8. Unverified areas and remaining risks
+
+- Actual speaker timbre, spatial mix, and loudness (`FLY-GAP-006`).
+- Full WebGL context loss/restoration in one live flight (`FLY-GAP-007`).
+- Native screen-reader speech, mobile switch control, and real multi-contact touch hardware; DOM
+  semantics, focus, inert behavior, keyboard, pointer, and touch PointerEvent paths passed.
+- Low-end/mobile GPU frame-time and thermal throttling. Counts are bounded and lifecycle passed,
+  but no hardware profiler was available.
+- Subjective final art polish remains for owner hands-on round six. The environment is continuous
+  and state-causal, but far cell transitions and particle cloud art remain deliberate first-slice
+  LOD rather than photographic or fluid fidelity (`FLY-GAP-004`).
 
 ## 9. Exact handoff focus for the next REVIEWER
 
-1. Recreate the mutually exclusive graph: `weatherA ↔ balloonA` and `weatherB ↔ aircraftB`. Verify
-   A/A → select weather B gives B/null; confirm returns false; vehicle B completes B/B; then switch
-   B/B → A/A and back without rebuilding the controller.
-2. Instantiate the actual `createFlyScene` with that fixture. At `390×844` use touch, at `768×1024`
-   use pointer, and at `1440×900` use keyboard. Confirm every path reaches B/B, rejects the incomplete
-   state, opens the guide only when compatible, and passes B/B into the real session snapshot.
-3. Pay special attention to `768×1024`: click `configTargets.weatherById.clearFixtureB` while the two
-   weather previews overlap in projection. It must select B rather than the ray-nearer A. Verify a
-   blank lower-corner input still changes nothing.
-4. For keyboard, verify every registry item is reachable by arrows/Home/End, the canvas accessible
-   name reports the active ID and ordinal, the visible torus follows focus, held Enter does not skip
-   stages, and the guide restores the accepted focus/inert boundary.
-5. Confirm production exposes only `clear / hotAirBalloonC100`, then repeat one real production
-   select/depart/control/recovery/reset path and inspect console/resource counts. Confirm SOURCE still
-   starts locked, activates on its first interaction, and removes hooks on return.
+Review `R-006`, `R-007`, and `R-008` directly against their acceptance criteria, without reopening
+closed `R-005` unless there is new evidence:
 
-Treat `FLY-GAP-001…007` only as the explicitly bounded first-slice risks above. Do not reinterpret
-the ignored registry fixture or focus-marker geometry as a new aircraft/weather/source claim.
+1. At all three required viewports, inspect each of the six screen controls in normal, hover,
+   focus, press/hold, AUTO-disabled, and applicable recovered states; compare guide icon/key/screen
+   mapping and the highlighted yellow/red physical parts with actual behavior.
+2. In immediate and tipped PILOT, use `window.__FLY__.physicalControlTargets` only to locate the
+   visible geometry, then drive the canvas with real pointer/touch and confirm burner/vent
+   `0→1→0`; sample all yaw/pitch limits and inspect horizon, basket, burner, and rope clipping.
+3. Fly/advance through 0–500 m AGL in PILOT/CHASE/ORBIT and inspect the saved/fresh frames for any
+   terrain seam or background substitution. Compare WATER visuals with `terrainAt.surface`, and
+   compare cloud advection/wind tracers with the same `atmosphere.sample` vector.
+4. Inspect visual quality, especially particle cloud legibility, water-cell transitions, forest
+   scale cues, and cockpit comfort, as the likely round-six owner-polish focus. Treat these as
+   bounded rendering proxies, not grounds to demand unapproved weather categories or a CFD/FEM
+   rewrite.
+5. Re-run `./scripts/run-validation.sh`; expect 432/432, lint/typecheck NOT CONFIGURED, the existing
+   bundle warning, and no SOURCE business diff.
 
 ## Automation wrapper result
 
-- Process base commit: `cca4ee410a09d124d1984b042b2ea41a9f456a7a`
-- Round review base commit: `fc285a1c81363ea09341712c0fc4fd8db5f9a900`
+- Process base commit: `56e9dae3764959713aa40f551d1897a81eb23019`
+- Round review base commit: `a253ed1f5901e8428ef58c42696c65c0711e7e97`
 - Implementer runtime: `codex / gpt-5.6-sol / ultra`
 - Agent process: PASS (exit 0)
 - Unified validation: PASS (exit 0)

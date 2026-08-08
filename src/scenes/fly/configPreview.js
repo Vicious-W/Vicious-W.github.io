@@ -265,6 +265,7 @@ export function createC100ConfigPreview({ id = "hotAirBalloonC100" } = {}) {
       haloMaterial.opacity = selected ? 0.92 : 0.22;
       group.scale.setScalar(selected ? 1.025 : 1);
     },
+    setGuideHighlights(active) { model.setGuideHighlights(active); },
     update(time, reduceMotion = false) {
       if (!reduceMotion) group.rotation.y += 0.0014 + Math.sin(time * 0.35) * 0.00015;
     },

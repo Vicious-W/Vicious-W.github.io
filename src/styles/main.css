@@ -114,6 +114,10 @@ body {
 }
 
 .fly-guide dt {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
   color: #93d7ff;
   font-weight: 700;
 }
@@ -123,6 +127,67 @@ body {
   color: #e5f3fa;
   line-height: 1.45;
 }
+
+.fly-guide-mapping,
+.fly-guide-physical {
+  display: block;
+}
+
+.fly-guide-physical {
+  margin-top: 4px;
+  color: #ffe49b;
+  font-weight: 650;
+}
+
+.fly-guide-keys {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.fly-guide kbd {
+  min-width: 28px;
+  padding: 2px 6px;
+  color: #f4fbff;
+  font: 650 0.72rem/1.35 ui-monospace, "SFMono-Regular", Consolas, monospace;
+  text-align: center;
+  background: rgba(123, 200, 241, 0.14);
+  border: 1px solid rgba(153, 219, 255, 0.55);
+  border-radius: 6px;
+  box-shadow: inset 0 -2px rgba(0, 8, 19, 0.34);
+}
+
+.fly-guide-symbol {
+  position: relative;
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  color: #bfe9ff;
+  background: rgba(4, 27, 46, 0.82);
+  border: 1px solid rgba(153, 219, 255, 0.62);
+  border-radius: 9px;
+  box-shadow: inset 0 0 10px rgba(40, 150, 219, 0.16);
+}
+
+.fly-guide-symbol::before {
+  font: 700 1.15rem/1 system-ui, sans-serif;
+}
+
+.fly-guide-symbol-burner::before {
+  content: "";
+  width: 12px;
+  height: 18px;
+  background: linear-gradient(#fff5ad 0 18%, #ffad38 48%, #e85a20 100%);
+  border-radius: 55% 45% 62% 38% / 70% 55% 45% 30%;
+  clip-path: polygon(50% 0, 93% 52%, 82% 100%, 20% 100%, 4% 57%);
+  transform: rotate(9deg);
+}
+
+.fly-guide-symbol-vent::before { content: "↓"; color: #ff7180; }
+.fly-guide-symbol-recovery::before { content: "↻"; }
+.fly-guide-symbol-camera::before { content: "▣"; }
+.fly-guide-symbol-help::before { content: "?"; }
+.fly-guide-symbol-return::before { content: "←"; }
 
 .fly-guide p {
   margin: 22px 0 0;
@@ -153,6 +218,40 @@ body {
   pointer-events: auto;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+  scale: 1;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out,
+    box-shadow 120ms ease-out, opacity 120ms ease-out, scale 90ms ease-out,
+    filter 120ms ease-out;
+}
+
+@media (hover: hover) {
+  .fly-icon-control:not(:disabled):hover {
+    background: rgba(12, 67, 103, 0.88);
+    border-color: rgba(224, 246, 255, 0.98);
+    box-shadow: 0 10px 32px rgba(0, 11, 25, 0.48),
+      0 0 0 3px rgba(93, 196, 246, 0.18),
+      inset 0 0 22px rgba(75, 181, 238, 0.26);
+  }
+}
+
+.fly-icon-control:not(:disabled):active,
+.fly-icon-control.is-pressed:not(:disabled) {
+  background: rgba(9, 88, 133, 0.94);
+  border-color: #eefaff;
+  box-shadow: 0 3px 10px rgba(0, 11, 25, 0.52), inset 0 0 24px rgba(121, 215, 255, 0.34);
+  scale: 0.9;
+}
+
+.fly-icon-control:disabled,
+.fly-icon-control[aria-disabled="true"] {
+  opacity: 0.42;
+  filter: saturate(0.32) grayscale(0.3);
+  background: rgba(14, 24, 32, 0.76);
+  border-color: rgba(156, 177, 188, 0.48);
+  box-shadow: inset 0 0 12px rgba(107, 128, 139, 0.12);
+  cursor: not-allowed;
+  scale: 1;
 }
 
 .fly-icon-control:focus-visible {
@@ -189,7 +288,7 @@ body {
 .fly-burner.is-active {
   background: rgba(119, 50, 9, 0.82);
   box-shadow: 0 0 28px rgba(255, 137, 39, 0.78), inset 0 0 25px rgba(255, 187, 69, 0.32);
-  transform: scale(0.96);
+  scale: 0.94;
 }
 
 .fly-vent {
@@ -215,7 +314,8 @@ body {
 
 .fly-vent.is-active {
   background: rgba(94, 11, 27, 0.82);
-  transform: scale(0.96);
+  box-shadow: 0 0 24px rgba(255, 82, 105, 0.58), inset 0 0 22px rgba(255, 117, 133, 0.25);
+  scale: 0.94;
 }
 
 .fly-recovery {
@@ -240,6 +340,21 @@ body {
   transform: translate(-15px, -14px) rotate(18deg);
 }
 
+.fly-recovery.is-automatic:disabled {
+  opacity: 0.9;
+  filter: none;
+  background: rgba(14, 76, 91, 0.9);
+  border-color: #baf1ff;
+  box-shadow: 0 0 24px rgba(101, 219, 244, 0.5), inset 0 0 20px rgba(112, 218, 239, 0.24);
+}
+
+.fly-recovery.is-complete:disabled {
+  opacity: 0.78;
+  filter: none;
+  background: rgba(25, 86, 54, 0.9);
+  border-color: #a8ecc1;
+}
+
 .fly-camera {
   left: max(88px, calc(env(safe-area-inset-left) + 66px));
   bottom: max(24px, env(safe-area-inset-bottom));
@@ -257,6 +372,16 @@ body {
   height: 9px;
   border: 3px solid #a8ddfa;
   border-radius: 50%;
+}
+
+.fly-camera[data-mode="CHASE"] {
+  border-color: #ffe49b;
+  box-shadow: 0 8px 28px rgba(0, 11, 25, 0.38), inset 0 0 20px rgba(255, 197, 86, 0.24);
+}
+
+.fly-camera[data-mode="ORBIT"] {
+  border-color: #d6baff;
+  box-shadow: 0 8px 28px rgba(0, 11, 25, 0.38), inset 0 0 20px rgba(180, 123, 255, 0.27);
 }
 
 .fly-help {
@@ -369,6 +494,11 @@ body {
   .fly-guide dd {
     margin: 0 0 9px;
     font-size: 0.92rem;
+  }
+
+  .fly-guide dd:last-of-type {
+    min-height: 58px;
+    padding-right: 64px;
   }
 
   .fly-guide p {

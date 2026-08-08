@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { createResourceScope } from "../../core/resourceScope.js";
 import { createFlySession } from "./flySession.js";
-import { createBalloonModel } from "./balloonModel.js";
+import { C100_PILOT_ANCHORS, createBalloonModel } from "./balloonModel.js";
 import { createWorldView } from "./worldView.js";
 import { createFlyAudio } from "./audio/flyAudio.js";
 import { FLY_REGISTRIES } from "./registry.js";
@@ -16,6 +16,51 @@ import {
 const MAX_DPR = 1.5;
 const CAMERA_MODES = ["PILOT", "CHASE", "ORBIT"];
 const clamp = THREE.MathUtils.clamp;
+const PILOT_CONSOLE_CENTER = Object.freeze({
+  x: (C100_PILOT_ANCHORS.burner.x + C100_PILOT_ANCHORS.vent.x) * 0.5,
+  y: (C100_PILOT_ANCHORS.burner.y + C100_PILOT_ANCHORS.vent.y) * 0.5,
+  z: (C100_PILOT_ANCHORS.burner.z + C100_PILOT_ANCHORS.vent.z) * 0.5
+});
+
+export const PILOT_VIEW_CONFIG = Object.freeze({
+  fovDeg: 84,
+  nearM: 0.035,
+  farM: 16000,
+  defaultYawRad: 0,
+  defaultPitchRad: 0.29,
+  minYawRad: -0.3,
+  maxYawRad: 0.3,
+  minPitchRad: 0.1,
+  maxPitchRad: 0.72,
+  eye: C100_PILOT_ANCHORS.eye
+});
+
+export function deriveFlightControlState(snapshot, cameraMode = "PILOT") {
+  const owner = snapshot?.controlOwner || "NONE";
+  const manual = owner === "MANUAL";
+  const manualControls = snapshot?.manualControls || { burner: 0, vent: 0 };
+  const vehicle = snapshot?.vehicle || {};
+  return {
+    burner: {
+      disabled: !manual || vehicle.fuelKg <= 1e-8 || !!vehicle.temperatureLimited,
+      pressed: manual && manualControls.burner > 0.5,
+      status: !manual ? "automatic-owner" : vehicle.temperatureLimited ? "temperature-limited" : "available"
+    },
+    vent: {
+      disabled: !manual,
+      pressed: manual && manualControls.vent > 0.5,
+      status: manual ? "available" : "automatic-owner"
+    },
+    recovery: {
+      disabled: !manual,
+      pressed: owner === "AUTO_RECOVERY",
+      status: owner === "RECOVERED" ? "recovered" : owner === "AUTO_RECOVERY" ? "automatic" : "available"
+    },
+    camera: { disabled: false, pressed: false, status: String(cameraMode).toLowerCase() },
+    help: { disabled: false, pressed: false, status: "available" },
+    return: { disabled: false, pressed: false, status: "available" }
+  };
+}
 
 function iconButton(action, label) {
   const button = document.createElement("button");
@@ -92,7 +137,7 @@ export function createFlyScene({
   renderer.toneMappingExposure = 1.05;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x77bde8);
-  const camera = new THREE.PerspectiveCamera(56, 1, 0.08, 2600);
+  const camera = new THREE.PerspectiveCamera(56, 1, 0.08, PILOT_VIEW_CONFIG.farM);
   const audio = createFlyAudio();
   let session = null;
   let worldView = null;
@@ -109,8 +154,8 @@ export function createFlyScene({
   let guideWasFlight = false;
   let returnConfirming = false;
   let cameraModeIndex = 0;
-  let lookYaw = 0;
-  let lookPitch = -0.08;
+  let lookYaw = PILOT_VIEW_CONFIG.defaultYawRad;
+  let lookPitch = PILOT_VIEW_CONFIG.defaultPitchRad;
   let lookPointer = null;
   const pointerControlActions = new Map();
   const controlOwners = { burner: new Set(), vent: new Set() };
@@ -130,6 +175,12 @@ export function createFlyScene({
   const pointer = new THREE.Vector2();
   const desiredCamera = new THREE.Vector3();
   const desiredTarget = new THREE.Vector3();
+  const pilotEyeOffset = new THREE.Vector3();
+  const pilotConsoleOffset = new THREE.Vector3();
+  const pilotBasketRotation = new THREE.Euler();
+  let pilotEffectiveYaw = lookYaw;
+  let pilotEffectivePitch = lookPitch;
+  let pilotFramingAssisted = false;
 
   scene.add(new THREE.HemisphereLight(0xd8f2ff, 0x485f31, 2.3));
   const previewLight = new THREE.DirectionalLight(0xffefdc, 3.5);
@@ -151,6 +202,8 @@ export function createFlyScene({
   guideTitle.id = "fly-guide-title";
   const guideList = document.createElement("dl");
   const guideSafety = document.createElement("p");
+  guideSafety.id = "fly-guide-safety";
+  guide.setAttribute("aria-describedby", guideSafety.id);
   const guideLaunch = iconButton("depart", "Confirm and begin flight");
   guide.append(guideTitle, guideList, guideSafety, guideLaunch);
   overlay.appendChild(guide);
@@ -164,6 +217,12 @@ export function createFlyScene({
   const cameraButton = iconButton("camera", "Change camera");
   const helpButton = iconButton("help", "Open vehicle guide");
   const returnButton = iconButton("return", "Return to scene selection");
+  burnerButton.setAttribute("aria-keyshortcuts", "Space");
+  ventButton.setAttribute("aria-keyshortcuts", "V");
+  recoveryButton.setAttribute("aria-keyshortcuts", "R");
+  cameraButton.setAttribute("aria-keyshortcuts", "C");
+  helpButton.setAttribute("aria-keyshortcuts", "H");
+  returnButton.setAttribute("aria-keyshortcuts", "Escape");
   flightControls.append(burnerButton, ventButton, recoveryButton, cameraButton, helpButton, returnButton);
   overlay.appendChild(flightControls);
 
@@ -176,6 +235,39 @@ export function createFlyScene({
   const cancelReturnButton = iconButton("cancel-return", "Continue flight");
   returnConfirm.append(confirmReturnButton, cancelReturnButton);
   overlay.appendChild(returnConfirm);
+
+  const flightButtons = Object.freeze({
+    burner: burnerButton,
+    vent: ventButton,
+    recovery: recoveryButton,
+    camera: cameraButton,
+    help: helpButton,
+    return: returnButton
+  });
+
+  const syncFlightControlState = snapshot => {
+    const presentation = deriveFlightControlState(snapshot, CAMERA_MODES[cameraModeIndex]);
+    for (const [action, button] of Object.entries(flightButtons)) {
+      const state = presentation[action];
+      button.disabled = state.disabled;
+      button.setAttribute("aria-disabled", String(state.disabled));
+      button.dataset.status = state.status;
+      button.classList.toggle("is-active", state.pressed);
+      button.classList.toggle("is-automatic", action === "recovery" && state.status === "automatic");
+      button.classList.toggle("is-complete", action === "recovery" && state.status === "recovered");
+      if (["burner", "vent", "recovery"].includes(action)) {
+        button.setAttribute("aria-pressed", String(state.pressed));
+      }
+    }
+    cameraButton.dataset.mode = CAMERA_MODES[cameraModeIndex];
+    cameraButton.setAttribute("aria-label", `Change camera; current view ${CAMERA_MODES[cameraModeIndex]}`);
+    return presentation;
+  };
+
+  const setGuidePhysicalHighlights = active => {
+    balloonModel?.setGuideHighlights(active);
+    previewCatalog?.vehicles.get(configSelection.vehicleId)?.preview.setGuideHighlights?.(active);
+  };
 
   const buildPreview = () => {
     previewCatalog = createConfigPreviewCatalog({
@@ -289,8 +381,9 @@ export function createFlyScene({
     pointerControlActions.clear();
     controlOwners.burner.clear();
     controlOwners.vent.clear();
-    burnerButton.classList.remove("is-active");
-    ventButton.classList.remove("is-active");
+    burnerButton.classList.remove("is-pressed");
+    ventButton.classList.remove("is-pressed");
+    if (session) syncFlightControlState(session.snapshot());
   };
 
   const startFlight = () => {
@@ -304,11 +397,17 @@ export function createFlyScene({
     worldView = createWorldView({ scene, world: session.world, atmosphere: session.atmosphere });
     balloonModel = createBalloonModel();
     scene.add(balloonModel.group);
+    lookYaw = PILOT_VIEW_CONFIG.defaultYawRad;
+    lookPitch = PILOT_VIEW_CONFIG.defaultPitchRad;
+    cameraModeIndex = 0;
     session.resume();
     audio.unlock();
     flightControls.hidden = false;
     canvas.setAttribute("aria-label", "FLY three-dimensional flight scene");
     phase = "READY_ON_FIELD";
+    const snapshot = session.snapshot();
+    syncFlightControlState(snapshot);
+    updateCamera(snapshot, 1);
     return true;
   };
 
@@ -316,9 +415,33 @@ export function createFlyScene({
     const definition = activeVehicleRegistry[configSelection.vehicleId].guideDefinition;
     guideTitle.textContent = definition.title;
     guideList.replaceChildren();
-    definition.controls.forEach(([term, description]) => {
-      const dt = document.createElement("dt"); dt.textContent = term;
-      const dd = document.createElement("dd"); dd.textContent = description;
+    definition.controls.forEach(control => {
+      const dt = document.createElement("dt");
+      dt.dataset.action = control.action;
+      const symbol = document.createElement("span");
+      symbol.className = `fly-guide-symbol fly-guide-symbol-${control.action}`;
+      symbol.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.textContent = control.label;
+      const keys = document.createElement("span");
+      keys.className = "fly-guide-keys";
+      control.keys.forEach(key => {
+        const keycap = document.createElement("kbd");
+        keycap.textContent = key;
+        keys.append(keycap);
+      });
+      dt.append(symbol, label, keys);
+      const dd = document.createElement("dd");
+      const mapping = document.createElement("span");
+      mapping.className = "fly-guide-mapping";
+      mapping.textContent = `Screen: ${control.screen}. ${control.description}`;
+      dd.append(mapping);
+      if (control.physical) {
+        const physical = document.createElement("span");
+        physical.className = "fly-guide-physical";
+        physical.textContent = `Physical control: ${control.physical}.`;
+        dd.append(physical);
+      }
       guideList.append(dt, dd);
     });
     guideSafety.textContent = definition.safety;
@@ -332,6 +455,7 @@ export function createFlyScene({
     if (session) session.pause("guide");
     audio.suspend();
     populateGuide();
+    setGuidePhysicalHighlights(true);
     guide.hidden = false;
     canvas.inert = true;
     flightControls.inert = true;
@@ -343,6 +467,7 @@ export function createFlyScene({
 
   const closeGuide = ({ depart = false } = {}) => {
     if (guide.hidden) return;
+    setGuidePhysicalHighlights(false);
     guide.hidden = true;
     canvas.inert = false;
     flightControls.inert = false;
@@ -363,7 +488,18 @@ export function createFlyScene({
     guideLaunch.focus();
   });
 
-  const cycleCamera = () => { cameraModeIndex = (cameraModeIndex + 1) % CAMERA_MODES.length; };
+  const cycleCamera = () => {
+    cameraModeIndex = (cameraModeIndex + 1) % CAMERA_MODES.length;
+    if (session) syncFlightControlState(session.snapshot());
+    return CAMERA_MODES[cameraModeIndex];
+  };
+
+  const requestRecovery = () => {
+    clearContinuousControls();
+    const accepted = session?.requestRecovery() || false;
+    if (session) syncFlightControlState(session.snapshot());
+    return accepted;
+  };
 
   const showReturnConfirm = () => {
     if (!session || session.state.controlOwner === "RECOVERED") { requestSelector(); return; }
@@ -372,6 +508,8 @@ export function createFlyScene({
     clearContinuousControls();
     session.pause("return-confirm");
     audio.suspend();
+    flightControls.inert = true;
+    canvas.inert = true;
     returnConfirm.hidden = false;
     confirmReturnButton.focus();
   };
@@ -379,6 +517,8 @@ export function createFlyScene({
     if (!returnConfirming) return;
     returnConfirming = false;
     returnConfirm.hidden = true;
+    flightControls.inert = false;
+    canvas.inert = false;
     session?.resume();
     audio.resume();
     canvas.focus({ preventScroll: true });
@@ -387,7 +527,7 @@ export function createFlyScene({
   const setControl = (action, active) => {
     if (!session || guide.hidden === false || returnConfirming) return false;
     const accepted = session.setControl(action, active);
-    if (accepted) (action === "burner" ? burnerButton : ventButton).classList.toggle("is-active", active);
+    if (accepted) syncFlightControlState(session.snapshot());
     return accepted;
   };
 
@@ -399,7 +539,7 @@ export function createFlyScene({
   const claimControl = (action, owner) => {
     if (!session || !setControl(action, true)) return false;
     controlOwners[action].add(owner);
-    (action === "burner" ? burnerButton : ventButton).classList.add("is-active");
+    (action === "burner" ? burnerButton : ventButton).classList.add("is-pressed");
     return true;
   };
 
@@ -428,18 +568,57 @@ export function createFlyScene({
   const bindHoldButton = (button, action) => {
     scope.listen(button, "pointerdown", event => {
       if (!claimPointerControl(event.pointerId, action)) return;
+      button.classList.add("is-pressed");
       try { button.setPointerCapture(event.pointerId); } catch (error) { /* synthetic pointer */ }
       event.preventDefault();
     });
-    const release = event => releasePointerControl(event.pointerId);
+    const release = event => {
+      releasePointerControl(event.pointerId);
+      button.classList.remove("is-pressed");
+    };
     scope.listen(button, "pointerup", release);
     scope.listen(button, "pointercancel", release);
     scope.listen(button, "lostpointercapture", release);
+    scope.listen(button, "keydown", event => {
+      if (![' ', "Enter"].includes(event.key) || event.repeat) return;
+      if (claimControl(action, `button-keyboard:${action}`)) button.classList.add("is-pressed");
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    scope.listen(button, "keyup", event => {
+      if (![' ', "Enter"].includes(event.key)) return;
+      releaseControl(action, `button-keyboard:${action}`);
+      button.classList.remove("is-pressed");
+      event.preventDefault();
+      event.stopPropagation();
+    });
   };
   bindHoldButton(burnerButton, "burner");
   bindHoldButton(ventButton, "vent");
 
-  scope.listen(recoveryButton, "click", () => { clearContinuousControls(); session?.requestRecovery(); });
+  for (const button of Object.values(flightButtons)) {
+    scope.listen(button, "pointerdown", () => { if (!button.disabled) button.classList.add("is-pressed"); });
+    const releaseFeedback = () => {
+      if (button !== burnerButton && button !== ventButton) button.classList.remove("is-pressed");
+    };
+    scope.listen(button, "pointerup", releaseFeedback);
+    scope.listen(button, "pointercancel", releaseFeedback);
+    scope.listen(button, "pointerleave", releaseFeedback);
+    if (button !== burnerButton && button !== ventButton) {
+      scope.listen(button, "keydown", event => {
+        if (![' ', "Enter"].includes(event.key) || button.disabled) return;
+        button.classList.add("is-pressed");
+        event.stopPropagation();
+      });
+      scope.listen(button, "keyup", event => {
+        if (![' ', "Enter"].includes(event.key)) return;
+        button.classList.remove("is-pressed");
+        event.stopPropagation();
+      });
+    }
+  }
+
+  scope.listen(recoveryButton, "click", requestRecovery);
   scope.listen(cameraButton, "click", cycleCamera);
   scope.listen(helpButton, "click", openGuide);
   scope.listen(returnButton, "click", showReturnConfirm);
@@ -476,8 +655,22 @@ export function createFlyScene({
     if (!guide.hidden || returnConfirming) return;
     canvasPoint(event);
     raycaster.setFromCamera(pointer, camera);
-    const hit = balloonModel ? raycaster.intersectObjects(balloonModel.controlMeshes, false)[0] : null;
-    if (hit?.object.userData.action && claimPointerControl(event.pointerId, hit.object.userData.action)) {
+    const hits = balloonModel ? raycaster.intersectObjects(balloonModel.controlMeshes, false) : [];
+    const hitActions = new Set(hits.map(hit => hit.object.userData.action).filter(Boolean));
+    let physicalAction = null;
+    let nearestControlDistance = Infinity;
+    for (const [action, anchor] of Object.entries(balloonModel?.controlAnchors || {})) {
+      if (!hitActions.has(action)) continue;
+      const projected = new THREE.Vector3();
+      anchor.getWorldPosition(projected);
+      projected.project(camera);
+      const distance = Math.hypot(pointer.x - projected.x, pointer.y - projected.y);
+      if (distance < nearestControlDistance) {
+        nearestControlDistance = distance;
+        physicalAction = action;
+      }
+    }
+    if (physicalAction && claimPointerControl(event.pointerId, physicalAction)) {
       try { canvas.setPointerCapture(event.pointerId); } catch (error) { /* synthetic pointer */ }
       event.preventDefault();
       return;
@@ -495,8 +688,16 @@ export function createFlyScene({
       if (selected) selected.preview.group.rotation.y += dx * 0.006;
       return;
     }
-    lookYaw -= dx * 0.003;
-    lookPitch = clamp(lookPitch - dy * 0.0025, -1.1, 0.85);
+    lookYaw = clamp(
+      lookYaw - dx * 0.003,
+      PILOT_VIEW_CONFIG.minYawRad,
+      PILOT_VIEW_CONFIG.maxYawRad
+    );
+    lookPitch = clamp(
+      lookPitch - dy * 0.0025,
+      PILOT_VIEW_CONFIG.minPitchRad,
+      PILOT_VIEW_CONFIG.maxPitchRad
+    );
   };
   const onPointerEnd = event => {
     releasePointerControl(event.pointerId);
@@ -531,7 +732,7 @@ export function createFlyScene({
     }
     if (key === " " || key === "spacebar") { claimControl("burner", "keyboard:burner"); event.preventDefault(); }
     else if (key === "v") { claimControl("vent", "keyboard:vent"); event.preventDefault(); }
-    else if (key === "r") { clearContinuousControls(); session?.requestRecovery(); }
+    else if (key === "r") requestRecovery();
     else if (key === "c") cycleCamera();
     else if (key === "h" && guide.hidden) openGuide();
   };
@@ -554,15 +755,57 @@ export function createFlyScene({
       : session.world.localOf(snapshot.vehicle.envelope.position);
     const mode = CAMERA_MODES[cameraModeIndex];
     if (mode === "PILOT") {
-      desiredCamera.set(basket.x, basket.y + 0.86, basket.z);
-      const cosPitch = Math.cos(lookPitch);
+      if (camera.fov !== PILOT_VIEW_CONFIG.fovDeg || camera.near !== PILOT_VIEW_CONFIG.nearM) {
+        camera.fov = PILOT_VIEW_CONFIG.fovDeg;
+        camera.near = PILOT_VIEW_CONFIG.nearM;
+        camera.far = PILOT_VIEW_CONFIG.farM;
+        camera.updateProjectionMatrix();
+      }
+      pilotBasketRotation.set(
+        snapshot.vehicle.basket.tilt.x,
+        0,
+        snapshot.vehicle.basket.tilt.z
+      );
+      pilotEyeOffset.set(
+        PILOT_VIEW_CONFIG.eye.x,
+        PILOT_VIEW_CONFIG.eye.y,
+        PILOT_VIEW_CONFIG.eye.z
+      ).applyEuler(pilotBasketRotation);
+      pilotConsoleOffset.set(
+        PILOT_CONSOLE_CENTER.x,
+        PILOT_CONSOLE_CENTER.y,
+        PILOT_CONSOLE_CENTER.z
+      ).applyEuler(pilotBasketRotation);
+      desiredCamera.set(
+        basket.x + pilotEyeOffset.x,
+        basket.y + pilotEyeOffset.y,
+        basket.z + pilotEyeOffset.z
+      );
+      const consoleX = pilotConsoleOffset.x - pilotEyeOffset.x;
+      const consoleY = pilotConsoleOffset.y - pilotEyeOffset.y;
+      const consoleZ = pilotConsoleOffset.z - pilotEyeOffset.z;
+      const consoleYaw = Math.atan2(consoleX, -consoleZ);
+      const consolePitch = Math.atan2(consoleY, Math.hypot(consoleX, consoleZ));
+      const verticalMargin = THREE.MathUtils.degToRad(camera.fov * 0.5) * 0.72;
+      const horizontalMargin = Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * camera.aspect) * 0.72;
+      pilotEffectiveYaw = clamp(lookYaw, consoleYaw - horizontalMargin, consoleYaw + horizontalMargin);
+      pilotEffectivePitch = clamp(lookPitch, consolePitch - verticalMargin, consolePitch + verticalMargin);
+      pilotFramingAssisted = Math.abs(pilotEffectiveYaw - lookYaw) > 1e-5
+        || Math.abs(pilotEffectivePitch - lookPitch) > 1e-5;
+      const cosPitch = Math.cos(pilotEffectivePitch);
       desiredTarget.set(
-        desiredCamera.x + Math.sin(lookYaw) * cosPitch * 20,
-        desiredCamera.y + Math.sin(lookPitch) * 20,
-        desiredCamera.z - Math.cos(lookYaw) * cosPitch * 20
+        desiredCamera.x + Math.sin(pilotEffectiveYaw) * cosPitch * 20,
+        desiredCamera.y + Math.sin(pilotEffectivePitch) * 20,
+        desiredCamera.z - Math.cos(pilotEffectiveYaw) * cosPitch * 20
       );
       camera.position.lerp(desiredCamera, Math.min(1, dt * 12));
     } else {
+      if (camera.fov !== 56 || camera.near !== 0.08) {
+        camera.fov = 56;
+        camera.near = 0.08;
+        camera.far = PILOT_VIEW_CONFIG.farM;
+        camera.updateProjectionMatrix();
+      }
       const centerY = (basket.y + envelope.y) * 0.5;
       const radius = mode === "CHASE" ? 31 : 27;
       const angle = mode === "CHASE" ? Math.atan2(snapshot.vehicle.basket.velocity.x + 0.1, snapshot.vehicle.basket.velocity.z + 0.1) + Math.PI : lookYaw;
@@ -570,6 +813,7 @@ export function createFlyScene({
       desiredTarget.set((basket.x + envelope.x) * 0.5, centerY, (basket.z + envelope.z) * 0.5);
       camera.position.lerp(desiredCamera, Math.min(1, dt * (reduceMotion ? 12 : 4.5)));
     }
+    camera.up.set(0, 1, 0);
     camera.lookAt(desiredTarget);
   };
 
@@ -611,9 +855,11 @@ export function createFlyScene({
         if (originCameraCorrections.length > 64) originCameraCorrections.shift();
       }
       phase = guide.hidden ? snapshot.stage : "FLY_GUIDE";
+      balloonModel.setControlState(snapshot.controlOwner === "MANUAL" ? snapshot.manualControls : snapshot.controls);
       balloonModel.update(renderVehicle, session.world.origin);
-      worldView.sync(snapshot.simTime);
+      worldView.sync(snapshot.simTime, snapshot.vehicle.basket.position);
       updateCamera({ ...snapshot, vehicle: renderVehicle }, dt);
+      syncFlightControlState(snapshot);
       audio.update(snapshot);
     }
     renderer.render(scene, camera);
@@ -645,6 +891,35 @@ export function createFlyScene({
     };
   };
 
+  const flightTargetPixels = () => {
+    if (!balloonModel) return null;
+    balloonModel.group.updateMatrixWorld(true);
+    camera.updateMatrixWorld(true);
+    const rect = canvas.getBoundingClientRect();
+    return Object.fromEntries(Object.entries(balloonModel.controlAnchors).map(([action, object]) => {
+      const worldPosition = new THREE.Vector3();
+      object.getWorldPosition(worldPosition);
+      const cameraPosition = worldPosition.clone().applyMatrix4(camera.matrixWorldInverse);
+      const ndc = worldPosition.clone().project(camera);
+      return [action, {
+        x: rect.left + (ndc.x + 1) * rect.width * 0.5,
+        y: rect.top + (1 - ndc.y) * rect.height * 0.5,
+        ndc: { x: ndc.x, y: ndc.y, z: ndc.z },
+        cameraDepthM: -cameraPosition.z,
+        visible: cameraPosition.z < -camera.near && Math.abs(ndc.x) <= 1 && Math.abs(ndc.y) <= 1
+      }];
+    }));
+  };
+
+  const controlDomSnapshot = () => Object.fromEntries(Object.entries(flightButtons).map(([action, button]) => [action, {
+    disabled: button.disabled,
+    ariaDisabled: button.getAttribute("aria-disabled"),
+    ariaPressed: button.getAttribute("aria-pressed"),
+    status: button.dataset.status,
+    mode: button.dataset.mode || null,
+    classes: [...button.classList]
+  }]));
+
   scope.listen(canvas, "webglcontextlost", event => {
     event.preventDefault();
     running = false; cancelAnimationFrame(raf);
@@ -664,7 +939,25 @@ export function createFlyScene({
     get originShiftCount() { return session?.world.originShiftCount || 0; },
     get activeChunkCount() { return session?.world.chunks.size || 0; },
     get audio() { return audio.status(); },
-    get cameras() { return { active: CAMERA_MODES[cameraModeIndex], modes: CAMERA_MODES.slice(), yaw: lookYaw, pitch: lookPitch }; },
+    get cameras() {
+      return {
+        active: CAMERA_MODES[cameraModeIndex],
+        modes: CAMERA_MODES.slice(),
+        yaw: lookYaw,
+        pitch: lookPitch,
+        effectiveYaw: pilotEffectiveYaw,
+        effectivePitch: pilotEffectivePitch,
+        framingAssisted: pilotFramingAssisted,
+        fovDeg: camera.fov,
+        nearM: camera.near,
+        farM: camera.far,
+        yawLimits: [PILOT_VIEW_CONFIG.minYawRad, PILOT_VIEW_CONFIG.maxYawRad],
+        pitchLimits: [PILOT_VIEW_CONFIG.minPitchRad, PILOT_VIEW_CONFIG.maxPitchRad]
+      };
+    },
+    get worldView() { return worldView?.snapshot() || null; },
+    get controls() { return controlDomSnapshot(); },
+    get physicalControlTargets() { return flightTargetPixels(); },
     get registries() {
       return {
         vehicles: Object.keys(activeVehicleRegistry),
@@ -689,8 +982,21 @@ export function createFlyScene({
     openGuide,
     closeGuide: () => closeGuide({ depart: false }),
     control: (name, active) => setControl(name, active),
-    requestRecovery: () => session?.requestRecovery() || false,
-    cycleCamera: () => { cycleCamera(); return CAMERA_MODES[cameraModeIndex]; },
+    requestRecovery,
+    cycleCamera,
+    setLook: (yaw, pitch) => {
+      lookYaw = clamp(
+        Number.isFinite(yaw) ? yaw : lookYaw,
+        PILOT_VIEW_CONFIG.minYawRad,
+        PILOT_VIEW_CONFIG.maxYawRad
+      );
+      lookPitch = clamp(
+        Number.isFinite(pitch) ? pitch : lookPitch,
+        PILOT_VIEW_CONFIG.minPitchRad,
+        PILOT_VIEW_CONFIG.maxPitchRad
+      );
+      return { yaw: lookYaw, pitch: lookPitch };
+    },
     advance: seconds => { const steps = session?.advance(seconds) || 0; return { steps, snapshot: session?.snapshot() || null }; },
     evidence: () => session ? {
       trajectory: session.state.trajectory.slice(),

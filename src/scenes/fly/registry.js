@@ -16,13 +16,56 @@ export const vehicleRegistry = Object.freeze({
     guideDefinition: Object.freeze({
       title: "Cameron C-100 reference balloon",
       controls: Object.freeze([
-        ["Space / flame handle", "Hold the main burner; release to close."],
-        ["V / red vent line", "Hold the top vent; release to close."],
-        ["R / recovery control", "Request automatic safe landing and recovery."],
-        ["C / camera control", "Switch PILOT, CHASE, and ORBIT views."],
-        ["Pointer / touch", "Look around or hold the physical burner and vent controls."]
+        Object.freeze({
+          action: "burner",
+          label: "Main burner",
+          keys: Object.freeze(["Space"]),
+          screen: "lower-right flame control",
+          physical: "yellow handle below the twin burners",
+          description: "Hold by key, pointer, or touch; release to close the same burner valve."
+        }),
+        Object.freeze({
+          action: "vent",
+          label: "Top vent",
+          keys: Object.freeze(["V"]),
+          screen: "lower-right red line control",
+          physical: "red ring and red overhead deflation line",
+          description: "Hold by key, pointer, or touch; release to close the same top vent."
+        }),
+        Object.freeze({
+          action: "recovery",
+          label: "Safe recovery",
+          keys: Object.freeze(["R"]),
+          screen: "lower-left circular-arrow control",
+          physical: null,
+          description: "Request automatic planning, landing, and recovery; manual flight controls then disable."
+        }),
+        Object.freeze({
+          action: "camera",
+          label: "Camera view",
+          keys: Object.freeze(["C"]),
+          screen: "lower-left camera control",
+          physical: null,
+          description: "Cycle PILOT, CHASE, and ORBIT; drag the scene to look around."
+        }),
+        Object.freeze({
+          action: "help",
+          label: "Vehicle guide",
+          keys: Object.freeze(["H"]),
+          screen: "top-right question control",
+          physical: null,
+          description: "Open this guide; flight pauses and held controls release."
+        }),
+        Object.freeze({
+          action: "return",
+          label: "End flight",
+          keys: Object.freeze(["Esc"]),
+          screen: "top-left return control",
+          physical: null,
+          description: "Open the confirmation step before returning to scene selection."
+        })
       ]),
-      safety: "There is no direct horizontal steering. Direction comes from wind layers reached by climbing or descending."
+      safety: "There is no direct horizontal steering. Direction comes from the visible wind and thermal layers reached by climbing or descending. Every circular screen control accepts pointer and touch; only the yellow burner handle and red vent ring in PILOT are direct physical hold controls."
     })
   })
 });

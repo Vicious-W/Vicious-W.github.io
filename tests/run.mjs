@@ -42,7 +42,18 @@ import { C100_MANIFEST } from "../src/scenes/fly/vehicles/c100Manifest.js";
 import { aerodynamicDragForce } from "../src/scenes/fly/vehicles/hotAirBalloon.js";
 import { createFlySession } from "../src/scenes/fly/flySession.js";
 import { planBalloonRecovery, recoveryControls } from "../src/scenes/fly/recovery/recoveryPlanner.js";
-import { applyOriginShiftToObserver } from "../src/scenes/fly/flyScene.js";
+import {
+  PILOT_VIEW_CONFIG,
+  applyOriginShiftToObserver,
+  deriveFlightControlState
+} from "../src/scenes/fly/flyScene.js";
+import { C100_PILOT_ANCHORS } from "../src/scenes/fly/balloonModel.js";
+import {
+  CLOUD_DENSITY_PROXY,
+  FAR_TERRAIN_CONFIG,
+  deriveCloudVisualState,
+  sampleFarTerrainCoverage
+} from "../src/scenes/fly/worldView.js";
 import { vehicleRegistry, weatherRegistry } from "../src/scenes/fly/registry.js";
 import {
   createConfigPreviewCatalog,
@@ -1359,6 +1370,126 @@ section("FLY fixed clock / atmosphere / deterministic world");
   const anchorAfter = new THREE.Vector3(30 - 128, 6, 4 + 128).sub(observer.cameraPosition).project(new THREE.PerspectiveCamera(56, 1.6, 0.1, 1000));
   assert(anchorBefore.distanceTo(anchorAfter) < 1e-12,
     "浮动原点事件对相机/目标应用同一平移，固定世界锚点的相对投影严格连续");
+}
+
+section("FLY control map / PILOT framing / far weather rendering contracts");
+{
+  const guideControls = vehicleRegistry.hotAirBalloonC100.guideDefinition.controls;
+  const guideActions = guideControls.map(control => control.action);
+  assert(JSON.stringify(guideActions) === JSON.stringify(["burner", "vent", "recovery", "camera", "help", "return"])
+    && new Set(guideActions).size === 6,
+  "车辆指南逐一映射六个实际画面控件，顺序和 action 身份无遗漏");
+  assert(guideControls.every(control => control.keys.length > 0 && control.screen && control.description)
+    && guideControls.find(control => control.action === "burner").physical.includes("yellow handle")
+    && guideControls.find(control => control.action === "vent").physical.includes("red"),
+  "每个指南项声明键盘/画面输入，burner 与 vent 另指向真实黄色手柄和红色拉环/绳");
+
+  const manualPresentation = deriveFlightControlState({
+    controlOwner: "MANUAL",
+    manualControls: { burner: 1, vent: 0 },
+    vehicle: { fuelKg: 40, temperatureLimited: false }
+  }, "PILOT");
+  const automaticPresentation = deriveFlightControlState({
+    controlOwner: "AUTO_RECOVERY",
+    manualControls: { burner: 0, vent: 0 },
+    vehicle: { fuelKg: 40, temperatureLimited: false }
+  }, "CHASE");
+  const recoveredPresentation = deriveFlightControlState({
+    controlOwner: "RECOVERED",
+    manualControls: { burner: 0, vent: 0 },
+    vehicle: { fuelKg: 40, temperatureLimited: false }
+  }, "ORBIT");
+  assert(manualPresentation.burner.pressed && !manualPresentation.burner.disabled
+    && !manualPresentation.vent.disabled && !manualPresentation.recovery.disabled,
+  "MANUAL 权威状态直接派生 burner 保持反馈和三个人工控件可用语义");
+  assert(["burner", "vent", "recovery"].every(action => automaticPresentation[action].disabled)
+    && automaticPresentation.recovery.pressed && automaticPresentation.recovery.status === "automatic"
+    && ["burner", "vent", "recovery"].every(action => recoveredPresentation[action].disabled)
+    && recoveredPresentation.recovery.status === "recovered",
+  "AUTO_RECOVERY / RECOVERED 同步派生人工控件 disabled 与回收进度状态");
+  assert(!automaticPresentation.camera.disabled && automaticPresentation.camera.status === "chase"
+    && !automaticPresentation.help.disabled && !automaticPresentation.return.disabled,
+  "相机、指南和安全返回在自动接管期间仍保持可用且相机模式可辨认");
+
+  for (const [width, height] of [[390, 844], [768, 1024], [1440, 900]]) {
+    const camera = new THREE.PerspectiveCamera(
+      PILOT_VIEW_CONFIG.fovDeg,
+      width / height,
+      PILOT_VIEW_CONFIG.nearM,
+      PILOT_VIEW_CONFIG.farM
+    );
+    camera.position.set(PILOT_VIEW_CONFIG.eye.x, PILOT_VIEW_CONFIG.eye.y, PILOT_VIEW_CONFIG.eye.z);
+    const pitch = PILOT_VIEW_CONFIG.defaultPitchRad;
+    const yaw = PILOT_VIEW_CONFIG.defaultYawRad;
+    camera.lookAt(
+      camera.position.x + Math.sin(yaw) * Math.cos(pitch) * 20,
+      camera.position.y + Math.sin(pitch) * 20,
+      camera.position.z - Math.cos(yaw) * Math.cos(pitch) * 20
+    );
+    camera.updateMatrixWorld(true);
+    const names = ["basketEdge", "burner", "burnerAssembly", "vent", "rope"];
+    const projected = names.map(name => new THREE.Vector3(
+      C100_PILOT_ANCHORS[name].x,
+      C100_PILOT_ANCHORS[name].y,
+      C100_PILOT_ANCHORS[name].z
+    ).project(camera));
+    const horizon = new THREE.Vector3(0, PILOT_VIEW_CONFIG.eye.y, -2000).project(camera);
+    assert(projected.every(point => Math.abs(point.x) < 0.98 && Math.abs(point.y) < 0.985)
+      && Math.abs(horizon.y) < 0.98,
+    `${width}×${height} 默认 PILOT 同框地平线、篮筐边、burner、vent 和真实绳索锚点`);
+    for (const yawBoundary of [PILOT_VIEW_CONFIG.minYawRad, PILOT_VIEW_CONFIG.maxYawRad]) {
+      for (const pitchBoundary of [PILOT_VIEW_CONFIG.minPitchRad, PILOT_VIEW_CONFIG.maxPitchRad]) {
+        camera.lookAt(
+          camera.position.x + Math.sin(yawBoundary) * Math.cos(pitchBoundary) * 20,
+          camera.position.y + Math.sin(pitchBoundary) * 20,
+          camera.position.z - Math.cos(yawBoundary) * Math.cos(pitchBoundary) * 20
+        );
+        camera.updateMatrixWorld(true);
+        const controls = ["burner", "vent"].map(name => new THREE.Vector3(
+          C100_PILOT_ANCHORS[name].x,
+          C100_PILOT_ANCHORS[name].y,
+          C100_PILOT_ANCHORS[name].z
+        ).project(camera));
+        assert(controls.every(point => Math.abs(point.x) < 0.98 && Math.abs(point.y) < 0.985),
+          `${width}×${height} yaw/pitch 边界 ${yawBoundary}/${pitchBoundary} 仍保留两个物理控件中心`);
+      }
+    }
+  }
+  assert(PILOT_VIEW_CONFIG.nearM <= 0.04
+    && PILOT_VIEW_CONFIG.minYawRad < PILOT_VIEW_CONFIG.defaultYawRad
+    && PILOT_VIEW_CONFIG.maxYawRad > PILOT_VIEW_CONFIG.defaultYawRad
+    && PILOT_VIEW_CONFIG.minPitchRad < PILOT_VIEW_CONFIG.defaultPitchRad
+    && PILOT_VIEW_CONFIG.maxPitchRad > PILOT_VIEW_CONFIG.defaultPitchRad,
+  "PILOT 近裁剪面与上下环视约束为篮筐内部取景保留有界余量");
+
+  const renderWorld = createProceduralWorld(0xc1002026);
+  const coverage = sampleFarTerrainCoverage(renderWorld, { x: 0, z: 0 });
+  assert(coverage.diameterM >= 12000 && coverage.cellSizeM <= CHUNK_SIZE_M
+    && FAR_TERRAIN_CONFIG.verifiedAltitudeM >= 500 && renderWorld.chunks.size === 25,
+  "12 km 远景域与 25 块近场物理域解耦，并以不粗于物理块宽度的采样覆盖 0–500 m");
+  assert(Object.entries(coverage.surfaceCounts).every(([, count]) => count > 0),
+    `远景域同时包含 FIELD/FOREST/ROAD/WATER: ${JSON.stringify(coverage.surfaceCounts)}`);
+  for (const surface of ["FIELD", "FOREST", "ROAD", "WATER"]) {
+    const cell = coverage.cells.find(candidate => candidate.surface === surface);
+    assert(renderWorld.terrainAt(cell.x, cell.z).surface === surface,
+      `${surface} 远景单元与 terrainAt 的权威 surface 分类一致`);
+  }
+
+  const renderWeather = createClearWeather(0xc1002026);
+  const cloudSamplePosition = { x: 120, y: 520, z: -340 };
+  const cloudTime = 37.5;
+  const cloudState = deriveCloudVisualState(renderWeather, cloudSamplePosition, cloudTime);
+  const authoritativeAir = renderWeather.sample(cloudSamplePosition, cloudTime);
+  assert(JSON.stringify(cloudState.windVelocityMps) === JSON.stringify(authoritativeAir.windVelocityMps)
+    && Math.abs(cloudState.advectionM.x
+      - authoritativeAir.windVelocityMps.x * cloudTime * CLOUD_DENSITY_PROXY.advectionScale) < 1e-12
+    && Math.abs(cloudState.advectionM.z
+      - authoritativeAir.windVelocityMps.z * cloudTime * CLOUD_DENSITY_PROXY.advectionScale) < 1e-12,
+  "云平流方向/强度可由同一次 atmosphere.sample 的权威风矢量精确预测");
+  assert(CLOUD_DENSITY_PROXY.representation.includes("THREE_DIMENSIONAL")
+    && CLOUD_DENSITY_PROXY.particlesPerCluster >= 200
+    && cloudState.density01 >= 0.18 && cloudState.density01 <= 0.92,
+  "云使用可验证的三维粒子密度/光学代理，密度由湿度与垂直气流有界派生");
 }
 
 section("FLY C-100 manifest / relative air / thermal causality");
