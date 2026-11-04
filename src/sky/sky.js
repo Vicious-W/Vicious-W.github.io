@@ -153,9 +153,10 @@ function bakeVolume(renderer, pass, mode, size, slicesPerChunk, equalizeChannels
  * the "sun" becomes the moon, the thunderstorm joins the clouds, and lightning is lit.
  */
 export function createSky(renderer, { cloudScale = 0.5, quality = "normal", night = null } = {}) {
-  // Moonlight: a thin crescent, bluish as night scenes look to the eye.
+  // Moonlight, bluish as night scenes look to the eye, and brighter than a real crescent's:
+  // like a night in a film, dark but readable.
   const sunIlluminance = night
-    ? new THREE.Vector3(0.55, 0.68, 1.0).multiplyScalar(0.0016)
+    ? new THREE.Vector3(0.55, 0.68, 1.0).multiplyScalar(0.06)
     : new THREE.Vector3(1.0, 1.0, 1.0);
   const wind = night ? { x: 0, z: 0 } : CLOUD.wind;
   const targets = night ? 3 : 2;
@@ -322,7 +323,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
             uFlashPos: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
             uFlashWeight: { value: new THREE.Vector3() },
             uFlashOn: { value: 0 },
-            uFog: { value: 0 }
+            uFog: { value: 0 },
+            uStormGlow: { value: 0 }
           }
         : {})
     }
@@ -499,6 +501,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         u.uStormCam.value.set(view.x - night.min[0], view.z - night.min[1]);
         u.uFog.value = view.fog ?? 0;
         u.uFlashOn.value = flash && flash.on ? 1 : 0;
+        u.uStormGlow.value = flash ? flash.glow : 0;
         if (flash && flash.on) {
           // Sources relative to the camera (y stays altitude, as in the cloud shader).
           flash.pos.forEach((q, k) => u.uFlashPos.value[k].set(q[0] - view.x, q[1], q[2] - view.z));

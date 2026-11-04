@@ -59,8 +59,8 @@ function makeStrokes(rand, kind) {
       t,
       a: i === 0 ? 1 : 0.35 + 0.5 * rand(),
       tau: 0.02 + 0.03 * rand(),
-      glow: rand() < 0.35 ? 0.12 + 0.12 * rand() : 0, // continuing current
-      hold: 0.04 + 0.1 * rand()
+      glow: rand() < 0.5 ? 0.12 + 0.14 * rand() : 0, // continuing current
+      hold: 0.06 + 0.2 * rand()
     });
     t += 0.04 + 0.11 * rand();
   }
@@ -87,7 +87,15 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
   let flash = null;
   let nextAt = 1.5;
   let id = 0;
-  const state = { on: false, id: -1, power: 0, pos: [[0, 0, 0], [0, 0, 0], [0, 0, 0]], weight: [0, 0, 0], color: COLOR_IC, bolt: null, boltPower: 0 };
+  const state = { on: false, id: -1, power: 0, pos: [[0, 0, 0], [0, 0, 0], [0, 0, 0]], weight: [0, 0, 0], color: COLOR_IC, bolt: null, boltPower: 0, glow: 0 };
+
+  // Background activity inside the storm: a slow, uneven flicker of distant lightning.
+  function glowAt(view, t) {
+    const d = coreDistance(view);
+    const activity = 1 - Math.min(Math.max((d - 6000) / 9000, 0), 1);
+    const wobble = 0.65 + 0.2 * Math.sin(t * 2.3) * Math.sin(t * 0.7 + 1.3) + 0.15 * Math.sin(t * 5.1 + Math.sin(t * 1.7) * 2);
+    return activity * wobble;
+  }
 
   const coreDistance = view => Math.hypot(view.x - 1500, view.z + 1500);
 
@@ -152,9 +160,9 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
   function rate(view) {
     // Flashes per second: a distant storm flickers, inside it is relentless.
     const d = coreDistance(view);
-    if (d < 9000) return 0.55;
-    if (d < 16000) return 0.35;
-    return 0.35 * Math.exp(-(d - 16000) / 12000);
+    if (d < 9000) return 0.9;
+    if (d < 16000) return 0.5;
+    return 0.5 * Math.exp(-(d - 16000) / 12000);
   }
 
   return {
@@ -162,6 +170,7 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
 
     /** Advance to time t (s) of the journey; dt is the frame length. */
     update(view, t, dt) {
+      state.glow = glowAt(view, t);
       if (!flash && t >= nextAt) {
         const inside = coreDistance(view) < 9500;
         const kind = rand() < (inside ? 0.25 : 0.4) ? "cg" : "ic";
@@ -204,6 +213,7 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
       return {
         update(v, t, dt) {
           flash = hold;
+          state.glow = glowAt(v, t);
           const p = strokePower(hold.strokes, ms / 1000);
           state.on = true;
           state.id = hold.id;

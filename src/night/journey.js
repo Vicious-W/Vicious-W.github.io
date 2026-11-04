@@ -25,7 +25,7 @@ export const PATH = [
 export const VOIDS = [0, 0, 1300, 1800, 3200, 2000, 650, 900, 0, 0, 0];
 
 const SPEED = 68;
-const MOON_ELEVATION = THREE.MathUtils.degToRad(9);
+const MOON_ELEVATION = THREE.MathUtils.degToRad(25);
 const MOON_AZIMUTH = THREE.MathUtils.degToRad(38); // clockwise from north (-z)
 
 function catmullRom(p0, p1, p2, p3, u) {

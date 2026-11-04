@@ -47,6 +47,7 @@ uniform vec3 uFlashPos[3];  // lightning sources, relative to the camera (m)
 uniform vec3 uFlashWeight;  // share of the flash at each source
 uniform float uFlashOn;     // 1 while a flash lights the scene
 uniform float uFog;         // rain and cloud haze around the aircraft inside the storm, 0..1
+uniform float uStormGlow;   // faint flicker of distant lightning inside the storm, 0..1
 // Light from the current flash per unit of its power; the flicker is applied in composite.frag,
 // so the temporal filter never smears it.
 layout(location = 2) out vec4 outFlash;
@@ -592,6 +593,13 @@ void main() {
         float powder = 1.0 - exp(-sigma * 140.0);
         sun *= mix(1.0, powder, powderAmount);
         vec3 amb = mix(ambBottom, ambTop, clamp(h, 0.0, 1.0));
+#ifdef NIGHT
+        // Inside a storm, distant lightning keeps the cloud faintly lit most of the time, so its
+        // shapes stay just visible between flashes.
+        vec3 suvA = stormUv(p, altitudeAt(p));
+        float stormy = 1.0 - smoothstep(9000.0, 16000.0, length(suvA.xz * STORM_SIZE.xz - 0.5 * STORM_SIZE.xz));
+        amb += vec3(0.0035, 0.0042, 0.006) * (uStormGlow * stormy);
+#endif
         vec3 S = (sunAtClouds * sun + amb) * ALBEDO;
         float tr = exp(-sigma * dtIn);
         float absorbed = T * (1.0 - tr);
