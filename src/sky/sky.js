@@ -212,7 +212,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
       uWeatherOffsetA: { value: new THREE.Vector2() },
       uWeatherOffsetB: { value: new THREE.Vector2() },
       uCoverage: { value: 0.42 },
-      uDensityScale: { value: 0.16 },
+      uDensityScale: { value: 0.19 },
       uMaxSteps: { value: quality === "high" ? 420 : 280 },
       uStepScale: { value: quality === "high" ? 0.6 : 1.0 }
     }

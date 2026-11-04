@@ -113,7 +113,8 @@ Weather weatherAt(vec2 xz, float lodLocal, float lodRegional) {
   return w;
 }
 
-float densityAt(vec3 p, Weather w, float lodB, float lodD, bool withDetail, out float h) {
+// detail: 0 = base shape only, 1 = detail erosion, 2 = detail plus a finer octave (close range).
+float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, out float h) {
   float alt = altitudeAt(p);
   h = (alt - CLOUD_BOTTOM) / max(w.top - CLOUD_BOTTOM, 200.0);
   if (h <= 0.0 || h >= 1.0 || w.coverage <= 0.0) return 0.0;
@@ -126,9 +127,15 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, bool withDetail, out 
   if (d <= 0.0) return 0.0;
   // Medium billows: erode between Worley cells, mostly at the thin edges.
   d = clamp(remap(d, (1.0 - n.g) * 0.3, 1.0, 0.0, 1.0), 0.0, 1.0);
-  if (!withDetail || d <= 0.0) return d;
-  vec3 dn = textureLod(uDetailNoise, (p + uDetailOffset) / DETAIL_PERIOD, lodD).rgb;
+  if (detail == 0 || d <= 0.0) return d;
+  vec3 q = (p + uDetailOffset) / DETAIL_PERIOD;
+  vec3 dn = textureLod(uDetailNoise, q, lodD).rgb;
   float dfbm = dn.r * 0.625 + dn.g * 0.25 + dn.b * 0.125;
+  if (detail > 1) {
+    // Integer frequency multiple keeps the wrapped detail offset continuous.
+    vec3 dn2 = textureLod(uDetailNoise, q * 3.0, lodD + 1.585).rgb;
+    dfbm = dfbm * 0.72 + (dn2.r * 0.625 + dn2.g * 0.25 + dn2.b * 0.125) * 0.28;
+  }
   // Wispy near the base, billowy towards the top.
   float erosion = mix(dfbm, 1.0 - dfbm, clamp(h * 5.0, 0.0, 1.0));
   return clamp(remap(d, erosion * 0.42, 1.0, 0.0, 1.0), 0.0, 1.0);
@@ -143,7 +150,7 @@ float lightDepth(vec3 p, Weather w, float lodB, float lodD, bool near) {
   for (int j = 0; j < 7; j++) {
     float seg = d - prev;
     vec3 q = p + uSunDir * (prev + 0.5 * seg);
-    od += densityAt(q, w, lodB + float(j) * 0.5, lodD + float(j) * 0.5, near && j < 2, h) * seg;
+    od += densityAt(q, w, lodB + float(j) * 0.5, lodD + float(j) * 0.5, (near && j < 2) ? 1 : 0, h) * seg;
     prev = d;
     d *= 2.1;
   }
@@ -170,7 +177,7 @@ float seaShadow(vec3 p, float jitter) {
   for (int i = 0; i < N; i++) {
     vec3 q = p + uSunDir * (s0 + (float(i) + jitter) * ds);
     Weather w = weatherAt(q.xz, 2.0, 1.0);
-    od += densityAt(q, w, 2.0, 0.0, false, h) * ds;
+    od += densityAt(q, w, 2.0, 0.0, 0, h) * ds;
   }
   return exp(-od * uDensityScale * 0.45);
 }
@@ -217,6 +224,7 @@ void main() {
   float ph1 = cloudPhase(cosTheta, 0.6);
   float ph2 = cloudPhase(cosTheta, 0.36);
   float ph3 = cloudPhase(cosTheta, 0.2);
+  float powderAmount = 0.55 * (1.0 - smoothstep(-0.2, 0.75, cosTheta));
 
   vec3 sunAtClouds = uSunIlluminance * transmittanceToSun(uTransmittance, RG + 3.0, uSunDir.y);
   vec3 skyZen = skyLookup(uSkyView, vec3(0.0, 1.0, 0.0), uSunDir, rCamKm);
@@ -257,7 +265,7 @@ void main() {
       float h;
       if (!fine) {
         // Coarse search through empty air with the cheap base shape only.
-        float probe = densityAt(p, w, lodB + 0.5, lodD, false, h);
+        float probe = densityAt(p, w, lodB + 0.5, lodD, 0, h);
         if (probe > 0.0) {
           fine = true;
           emptyRun = 0;
@@ -267,7 +275,8 @@ void main() {
         }
         continue;
       }
-      float dens = densityAt(p, w, lodB, lodD, t < DETAIL_DIST, h);
+      int detail = t < 2500.0 ? 2 : (t < DETAIL_DIST ? 1 : 0);
+      float dens = densityAt(p, w, lodB, lodD, detail, h);
       if (dens > 0.001) {
         emptyRun = 0;
         float sigma = dens * uDensityScale;
@@ -277,6 +286,10 @@ void main() {
                   + 1.2 * (0.85 * ph1 * exp(-od * 0.25)
                          + 0.65 * ph2 * exp(-od * 0.0625)
                          + 0.40 * ph3 * exp(-od * 0.021));
+        // "Powder": thin edges and crevices hold less multiply scattered light, so they read
+        // darker from the lit side. Fades out when looking towards the sun to keep silver linings.
+        float powder = 1.0 - exp(-sigma * 140.0);
+        sun *= mix(1.0, powder, powderAmount);
         vec3 amb = mix(ambBottom, ambTop, clamp(h, 0.0, 1.0));
         vec3 S = (sunAtClouds * sun + amb) * ALBEDO;
         float tr = exp(-sigma * dt);
