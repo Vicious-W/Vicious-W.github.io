@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a2440">
+  <link rel="icon" href="data:,">
+  <title></title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0a2440; }
+    #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+    #view.dragging { cursor: grabbing; }
+    #veil { position: fixed; inset: 0; background: #0a2440; pointer-events: none; transition: opacity 2.4s ease; }
+    #veil.gone { opacity: 0; }
+  </style>
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <div id="veil"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
