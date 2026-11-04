@@ -425,6 +425,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
 
   return {
     get cloudScale() { return scale; },
+    /** Illuminance of the sun (day) or the moon (night). */
+    get light() { return sunIlluminance; },
     /** The reconstructed cloud image of the last frame: rgb + sky visibility, and depth. */
     get scene() { return history[historyIndex]; },
     get frame() { return frame; },
@@ -450,9 +452,10 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
     /**
      * view: { right, up, forward (THREE.Vector3), tanHalf (THREE.Vector2), alt (m),
      *         x, z (world metres), time (s), sunDir (THREE.Vector3) }
-     * options: { still: average every frame without clamping (for converged captures) }
+     * options: { still: average every frame without clamping (for converged captures),
+     *            target: where the finished image goes (the screen when null) }
      */
-    render(view, { still = false } = {}) {
+    render(view, { still = false, target = null } = {}) {
       const camR = 6360 + view.alt / 1000;
 
       skyViewPass.uniforms.uCamR.value = camR;
@@ -564,7 +567,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
       } else {
         cu.uSunOnScreen.value = 0;
       }
-      compositePass.render(renderer, null);
+      compositePass.render(renderer, target);
 
       prev.right.copy(view.right);
       prev.up.copy(view.up);

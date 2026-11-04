@@ -86,7 +86,26 @@ export function createPath(points = PATH) {
   };
 }
 
-/** Same interface as createFlight in flight.js, driven by the path. */
+// Irregular, smooth wobble for turbulence: incommensurate sines.
+function wobble(t, seed) {
+  return (
+    Math.sin(t * 1.7 + seed) * 0.35 +
+    Math.sin(t * 3.1 + seed * 2.1) * 0.25 +
+    Math.sin(t * 5.3 + seed * 3.7) * 0.18 +
+    Math.sin(t * 8.9 + seed * 1.3) * 0.13 +
+    Math.sin(t * 13.7 + seed * 5.9) * 0.09
+  );
+}
+
+const window1 = (s, centre, half) => {
+  const x = Math.abs(s - centre) / half;
+  return x >= 1 ? 0 : 0.5 + 0.5 * Math.cos(Math.PI * x);
+};
+
+/**
+ * Same interface as createFlight in flight.js, driven by the path.
+ * options.cabin may hold fixed levels (0..1) of rain, hail, elmo and turb, for captures.
+ */
 export function createJourney(options = {}) {
   const path = createPath();
   const state = {
@@ -126,7 +145,11 @@ export function createJourney(options = {}) {
     x: 0,
     z: 0,
     time: 0,
-    sunDir
+    sunDir,
+    qAircraft,
+    qHead,
+    eye: new THREE.Vector3(),
+    cabin: null
   };
 
   function place() {
@@ -153,20 +176,43 @@ export function createJourney(options = {}) {
   }
   place();
 
-  // Rain and haze inside the storm: from where the path's clear spaces begin to where they end.
-  const inside = [];
-  for (let s = 0; s <= path.length; s += 100) {
-    const u = path.index(s);
-    if (VOIDS[Math.floor(u)] > 0 || VOIDS[Math.ceil(u)] > 0) inside.push(s);
+  // Distance along the path at each path point, to time events to places.
+  const pointAt = [];
+  for (let s = 0, i = 0; s <= path.length && i < PATH.length; s += 25) {
+    if (path.index(s) >= i) {
+      pointAt.push(s);
+      i++;
+    }
   }
-  const fogIn = inside.length ? inside[0] : Infinity;
-  const fogOut = inside.length ? inside[inside.length - 1] : -Infinity;
+  // Inside the storm: from its entrance (the canyon) to its exit (the points whose clear spaces
+  // are carved), with a short transition at each end.
+  const voided = VOIDS.map((r, i) => (r > 0 ? i : -1)).filter(i => i >= 0);
+  const fogIn = pointAt[voided[0]];
+  const fogOut = pointAt[voided[voided.length - 1]];
   const fogAt = s => {
-    const ramp = 1200;
+    const ramp = 900;
     return Math.min(
       THREE.MathUtils.smoothstep(s, fogIn - ramp, fogIn + ramp),
       1 - THREE.MathUtils.smoothstep(s, fogOut - ramp, fogOut + ramp)
     );
+  };
+  // The cabin through the storm: rain from the entrance, hail in the vault and the rear cell,
+  // St. Elmo's fire in the canyon and the rear cell, turbulence throughout, worst in the rear.
+  const cabinAt = (s, t) => {
+    const inside = fogAt(s);
+    const rain = inside * (0.75 + 0.25 * Math.sin(t * 0.13) * Math.sin(t * 0.07 + 1));
+    const hail = inside * Math.max(window1(s, pointAt[4] + 1500, 1800), window1(s, pointAt[6], 2200)) * (0.7 + 0.3 * Math.sin(t * 0.9));
+    const elmoWave = 0.55 + 0.45 * Math.sin(t * 0.8) * Math.sin(t * 0.31 + 2);
+    const elmo = inside * Math.max(window1(s, pointAt[3], 1600), window1(s, pointAt[6] - 300, 2600)) * elmoWave;
+    const turb = 0.12 + 0.6 * inside + 0.35 * window1(s, pointAt[6], 2500);
+    const fixed = options.cabin || {};
+    return {
+      inside,
+      rain: fixed.rain ?? rain,
+      hail: fixed.hail ?? hail,
+      elmo: fixed.elmo ?? elmo,
+      turb: fixed.turb ?? turb
+    };
   };
 
   function smoothLook(dt) {
@@ -204,8 +250,20 @@ export function createJourney(options = {}) {
         tanX = minTanX;
         tanY = tanX / aspect;
       }
-      euler.set(state.pitch, -state.heading, -state.roll, "YXZ");
+      // Turbulence: the aircraft jolts (the world shakes outside), the head bobs a little in
+      // the seat (the cockpit shakes in view).
+      const s = state.time * SPEED;
+      const cabin = cabinAt(s, state.time);
+      const k = cabin.turb;
+      const t = state.time;
+      const jolt = k > 0.5 ? Math.exp(-(((t % 3.7) - 0.4) ** 2) / 0.004) * (k - 0.5) * 2 : 0;
+      const dp = k * (0.006 * wobble(t * 1.3, 1.1) + 0.012 * jolt);
+      const dr = k * 0.012 * wobble(t * 1.1, 2.3);
+      const dh = k * 0.004 * wobble(t * 0.9, 3.7);
+      euler.set(state.pitch + dp, -state.heading + dh, -state.roll + dr, "YXZ");
       qAircraft.setFromEuler(euler);
+      view.eye.set(k * 0.006 * wobble(t * 2.1, 4.1), k * (0.012 * wobble(t * 2.6, 5.3) - 0.02 * jolt), 0);
+      view.cabin = cabin;
       euler.set(look.pitch, -look.yaw, 0, "YXZ");
       qHead.setFromEuler(euler);
       q.copy(qAircraft).multiply(qHead);

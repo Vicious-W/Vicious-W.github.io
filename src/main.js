@@ -5,6 +5,7 @@ import { createJourney } from "./night/journey.js";
 import { bakeStorm, STORM } from "./night/storm.js";
 import { createLightning } from "./night/lightning.js";
 import { createBolts } from "./night/bolts.js";
+import { createCockpit } from "./cockpit/cockpit.js";
 
 const canvas = document.getElementById("view");
 const veil = document.getElementById("veil");
@@ -47,8 +48,11 @@ function start() {
     night: storm && { storm: storm.texture, min: STORM.min, size: STORM.size, range: STORM.range, base: STORM.base }
   });
   // Capture aid: "night&free" flies the free day-style flight (x, z, alt, heading) at night.
+  // Capture aid: rain, hail, elmo, turb (0..1) hold the cabin's levels.
+  const cabin = {};
+  for (const key of ["rain", "hail", "elmo", "turb"]) if (params.has(key)) cabin[key] = num(key, 0);
   const flight = night && !params.has("free")
-    ? createJourney({ time: num("t", undefined), yaw: num("yaw", undefined), pitch: num("pitch", undefined) })
+    ? createJourney({ time: num("t", undefined), yaw: num("yaw", undefined), pitch: num("pitch", undefined), cabin })
     : createFlight({
         alt: num("alt", undefined),
         heading: num("heading", undefined),
@@ -59,9 +63,21 @@ function start() {
         z: num("z", undefined)
       });
 
+  // At night the outside is finished into a texture, then seen through the cockpit's glass.
+  const cockpit = night && !params.has("free") ? createCockpit(renderer) : null;
+  let frameTarget = null;
   function resize() {
     renderer.setSize(window.innerWidth, window.innerHeight, false);
     sky.resize(Math.round(window.innerWidth * dpr), Math.round(window.innerHeight * dpr));
+    if (cockpit) {
+      frameTarget?.dispose();
+      frameTarget = new THREE.WebGLRenderTarget(canvas.width, canvas.height, {
+        type: THREE.UnsignedByteType,
+        format: THREE.RGBAFormat,
+        depthBuffer: false,
+        stencilBuffer: false
+      });
+    }
   }
   resize();
   window.addEventListener("resize", resize);
@@ -137,8 +153,16 @@ function start() {
       if (!flashControl) flashControl = still && params.has("flash") ? lightning.force(view, params.get("flash"), num("ft", 15)) : lightning;
       view.flash = flashControl.update(view, flight.state.time, step || 1 / 60);
     }
-    sky.render(view, { still: still && !motion });
-    if (bolts) bolts.render(view, view.flash, sky.scene, canvas.width, canvas.height);
+    sky.render(view, { still: still && !motion, target: frameTarget });
+    if (bolts) bolts.render(view, view.flash, sky.scene, canvas.width, canvas.height, frameTarget);
+    if (cockpit) {
+      const light = sky.light;
+      const glow = view.flash ? view.flash.glow : 0;
+      cockpit.render(view, frameTarget.texture, canvas.width, canvas.height, {
+        skyLight: [light.x, light.y, light.z],
+        ambient: [light.x * 0.12 + 0.0012 * glow, light.y * 0.12 + 0.0014 * glow, light.z * 0.12 + 0.002 * glow]
+      });
+    }
     if (!revealed && sky.frame > 4) {
       veil.classList.add("gone");
       revealed = true;

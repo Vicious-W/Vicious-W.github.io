@@ -158,8 +158,8 @@ export function createBolts(renderer) {
   }
 
   return {
-    /** Draws the channel of the current flash (if any) over the frame. */
-    render(view, flash, sceneTarget, width, height) {
+    /** Draws the channel of the current flash (if any) over the frame in target (or the screen). */
+    render(view, flash, sceneTarget, width, height, target = null) {
       if (!flash || !flash.on || !flash.bolt || flash.boltPower <= 0.01) return;
       if (flash.bolt !== current) {
         upload(flash.bolt);
@@ -181,7 +181,7 @@ export function createBolts(renderer) {
       u.uColor.value.set(...flash.color);
       const autoClear = renderer.autoClear;
       renderer.autoClear = false;
-      renderer.setRenderTarget(null);
+      renderer.setRenderTarget(target);
       renderer.render(scene, camera);
       renderer.autoClear = autoClear;
     }
