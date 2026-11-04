@@ -95,6 +95,7 @@ function start() {
   if (still) {
     flight.snapLook();
     veil.style.transition = "none";
+    veil.classList.add("gone");
   }
   const stillFrames = num("frames", 24);
   let last = performance.now();

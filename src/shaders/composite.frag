@@ -14,8 +14,36 @@ uniform vec2 uSunUv;
 uniform float uSunOnScreen;
 uniform float uExposure;
 uniform float uFrame;
+uniform sampler2D uWeather;
+uniform vec2 uCirrusOffset;
 
 out vec4 outColor;
+
+const float CIRRUS_ALT = 9500.0;
+const mat2 CIRRUS_ROT = mat2(0.6, -0.8, 0.8, 0.6);
+const vec2 CIRRUS_STRETCH = vec2(0.28, 1.0);
+
+// Thin cirrus high above everything: a lit 2D layer over the sky, streaked along the wind.
+vec4 cirrusLayer(vec3 dir, float camAlt, float cosS, vec3 sunColor, vec3 ambient) {
+  if (dir.y < -0.01) return vec4(0.0);
+  float a = dot(dir.xz, dir.xz) * (0.5 / RG_M);
+  float b = dir.y;
+  float c = camAlt - CIRRUS_ALT;
+  float s = sqrt(max(b * b - 4.0 * a * c, 0.0));
+  float q = -0.5 * (b + (b >= 0.0 ? s : -s));
+  float t = b >= 0.0 ? c / q : q / a;
+  if (!(t > 0.0) || t > 320000.0) return vec4(0.0);
+  vec2 world = CIRRUS_STRETCH * (CIRRUS_ROT * (dir.xz * t)) + uCirrusOffset;
+  vec2 uv = world / CIRRUS_PERIOD;
+  vec4 broad = texture(uWeather, uv);
+  vec4 fine = texture(uWeather, uv * 5.0 + vec2(0.37, 0.11));
+  float patches = smoothstep(0.52, 0.8, broad.r) * smoothstep(0.3, 0.7, broad.b);
+  float streaks = smoothstep(0.4, 0.95, fine.g * 0.7 + broad.a * 0.3);
+  float fade = exp(-t / 160000.0) * smoothstep(-0.01, 0.04, dir.y);
+  float alpha = clamp(patches * streaks * 0.5, 0.0, 0.8) * fade;
+  vec3 light = sunColor * (0.55 * hgPhase(0.75, cosS) + 0.45 * hgPhase(0.1, cosS)) * 2.2 + ambient * 0.9;
+  return vec4(light * alpha, alpha);
+}
 
 // AgX (Troy Sobotka), polynomial fit by Benjamin Wrensch.
 vec3 agxContrast(vec3 x) {
@@ -41,7 +69,7 @@ vec3 agx(vec3 v) {
   float luma = dot(v, vec3(0.2126, 0.7152, 0.0722));
   v = pow(max(v, vec3(0.0)), vec3(1.12));
   luma = pow(max(luma, 0.0), 1.12);
-  v = luma + 1.28 * (v - luma);
+  v = luma + 1.32 * (v - luma);
   v = outset * v;
   return pow(max(v, vec3(0.0)), vec3(2.2));
 }
@@ -78,12 +106,23 @@ void main() {
     }
   }
 
+  float camAlt = (uCamR - RG) * 1000.0;
+  vec3 sunAtCirrus = uSunIlluminance * transmittanceToSun(uTransmittance, RG + 9.5, uSunDir.y);
+  vec4 ci = cirrusLayer(dir, camAlt, cosS, sunAtCirrus, sky);
+  sky = sky * (1.0 - ci.a) + ci.rgb;
+
   vec3 color = sky * scene.a + scene.rgb;
 
-  // Optical glare around the sun, dimmed when clouds cover the solar disc.
+  // Optical glare around the sun, dimmed when clouds cover the solar disc. The bright core
+  // over-exposes to white like the sun in a camera or to the eye, so it reads larger than
+  // the 0.53 degree disc itself.
   float sunVisible = uSunOnScreen > 0.5 ? texture(uScene, uSunUv).a : 1.0;
   vec3 tSun = transmittanceToTop(uTransmittance, uCamR, uSunDir.y);
   float glare = 0.00012 * hgPhase(0.994, cosS) + 0.004 * hgPhase(0.9, cosS);
+  if (cosS > 0.0) {
+    float ang = asin(min(length(cross(dir, uSunDir)), 1.0));
+    glare += 1.8 * exp(-(ang * ang) / (0.014 * 0.014));
+  }
   color += uSunIlluminance * tSun * glare * sunVisible;
 
   color = agx(color * uExposure);

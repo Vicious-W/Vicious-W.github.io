@@ -9,7 +9,7 @@ const float RG_M = 6360000.0;     // planet radius, m
 
 const vec3  RAYLEIGH_SCATTERING = vec3(5.802e-3, 13.558e-3, 33.1e-3); // 1/km
 const float RAYLEIGH_HEIGHT = 8.0;
-const float MIE_SCALE = 2.2;                       // a little marine haze
+const float MIE_SCALE = 1.0;                       // clear air: standard aerosol density
 const float MIE_SCATTERING = 3.996e-3 * MIE_SCALE;
 const float MIE_EXTINCTION = 4.440e-3 * MIE_SCALE;
 const float MIE_HEIGHT = 1.2;

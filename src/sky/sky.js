@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { createPass } from "./fullscreen.js";
+import { makeBlueNoise } from "./bluenoise.js";
 import vertexShader from "../shaders/fullscreen.vert?raw";
 import common from "../shaders/common.glsl?raw";
 import transmittanceSrc from "../shaders/transmittance.frag?raw";
@@ -29,10 +30,18 @@ export const CLOUD = Object.freeze({
   detailPeriod: 640,
   weatherPeriodA: 42000,
   weatherPeriodB: 11000,
-  wind: { x: 7.0, z: -3.0 }
+  weatherPeriodC: 17000,
+  cirrusPeriod: 26000,
+  wind: { x: 7.0, z: -3.0 },
+  cirrusWind: { x: 19.0, z: -5.0 }
 });
 
+// Rotations used in GLSL as mat2 (column-major): rotate(v) = (c*x - s*y, s*x + c*y).
 const WEATHER_ROT = { c: 0.8, s: 0.6 };
+const WEATHER_ROT2 = { c: 0.28, s: 0.96 };
+// Cirrus: rotate(v) = (0.6*x + 0.8*y, -0.8*x + 0.6*y), then stretch x by 0.28 into streaks.
+const CIRRUS_ROT = { c: 0.6, s: -0.8 };
+const CIRRUS_STRETCH = 0.28;
 const wrap = (v, p) => v - p * Math.floor(v / p);
 const glslFloat = v => (Number.isInteger(v) ? `${v}.0` : `${v}`);
 
@@ -145,6 +154,14 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
   const weather = bakeWeather(renderer, noisePass, 512);
   noisePass.dispose();
 
+  const blueNoise = new THREE.DataTexture(makeBlueNoise(64), 64, 64, THREE.RedFormat, THREE.UnsignedByteType);
+  blueNoise.minFilter = THREE.NearestFilter;
+  blueNoise.magFilter = THREE.NearestFilter;
+  blueNoise.wrapS = blueNoise.wrapT = THREE.RepeatWrapping;
+  blueNoise.generateMipmaps = false;
+  blueNoise.unpackAlignment = 1;
+  blueNoise.needsUpdate = true;
+
   const transmittance = floatTarget(256, 64);
   const transmittancePass = createPass({ vertexShader, fragmentShader: fragment(transmittanceSrc), uniforms: {} });
   transmittancePass.render(renderer, transmittance);
@@ -187,7 +204,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
     BASE_Y_SCALE: glslFloat(CLOUD.baseYScale),
     DETAIL_PERIOD: glslFloat(CLOUD.detailPeriod),
     WEATHER_PERIOD_A: glslFloat(CLOUD.weatherPeriodA),
-    WEATHER_PERIOD_B: glslFloat(CLOUD.weatherPeriodB)
+    WEATHER_PERIOD_B: glslFloat(CLOUD.weatherPeriodB),
+    WEATHER_PERIOD_C: glslFloat(CLOUD.weatherPeriodC)
   };
 
   const cloudPass = createPass({
@@ -202,15 +220,18 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
       uBaseNoise: { value: baseNoise },
       uDetailNoise: { value: detailNoise },
       uWeather: { value: weather },
+      uBlueNoise: { value: blueNoise },
       uCamAlt: { value: 3000 },
       uSunDir: { value: new THREE.Vector3(0, 1, 0) },
       uSunIlluminance: { value: sunIlluminance },
       uFrame: { value: 0 },
       uResolution: { value: new THREE.Vector2(1, 1) },
       uBaseOffset: { value: new THREE.Vector3() },
+      uBaseOffsetLarge: { value: new THREE.Vector3() },
       uDetailOffset: { value: new THREE.Vector3() },
       uWeatherOffsetA: { value: new THREE.Vector2() },
       uWeatherOffsetB: { value: new THREE.Vector2() },
+      uWeatherOffsetC: { value: new THREE.Vector2() },
       uCoverage: { value: 0.42 },
       uDensityScale: { value: 0.19 },
       uMaxSteps: { value: quality === "high" ? 420 : 280 },
@@ -241,7 +262,10 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
   const compositePass = createPass({
     vertexShader,
     fragmentShader: fragment(compositeSrc),
+    defines: { CIRRUS_PERIOD: glslFloat(CLOUD.cirrusPeriod) },
     uniforms: {
+      uWeather: { value: weather },
+      uCirrusOffset: { value: new THREE.Vector2() },
       ...camUniforms(),
       uScene: { value: null },
       uSkyView: { value: skyView.texture },
@@ -344,10 +368,26 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
         wrap(t * 2.2, CLOUD.detailPeriod),
         wrap(cz + t * 0.7, CLOUD.detailPeriod)
       );
+      const largePeriod = CLOUD.basePeriod * 3;
+      u.uBaseOffsetLarge.value.set(
+        wrap(cx, largePeriod),
+        wrap(t * 0.9, largePeriod / CLOUD.baseYScale),
+        wrap(cz, largePeriod)
+      );
       u.uWeatherOffsetA.value.set(wrap(cx, CLOUD.weatherPeriodA), wrap(cz, CLOUD.weatherPeriodA));
       const rx = WEATHER_ROT.c * cx - WEATHER_ROT.s * cz;
       const rz = WEATHER_ROT.s * cx + WEATHER_ROT.c * cz;
       u.uWeatherOffsetB.value.set(wrap(rx, CLOUD.weatherPeriodB), wrap(rz, CLOUD.weatherPeriodB));
+      const rx2 = WEATHER_ROT2.c * cx - WEATHER_ROT2.s * cz;
+      const rz2 = WEATHER_ROT2.s * cx + WEATHER_ROT2.c * cz;
+      u.uWeatherOffsetC.value.set(wrap(rx2, CLOUD.weatherPeriodC), wrap(rz2, CLOUD.weatherPeriodC));
+
+      // Cirrus drift faster in the stronger wind aloft.
+      const kx = view.x - CLOUD.cirrusWind.x * t;
+      const kz = view.z - CLOUD.cirrusWind.z * t;
+      const crx = (CIRRUS_ROT.c * kx - CIRRUS_ROT.s * kz) * CIRRUS_STRETCH;
+      const crz = CIRRUS_ROT.s * kx + CIRRUS_ROT.c * kz;
+      compositePass.uniforms.uCirrusOffset.value.set(wrap(crx, CLOUD.cirrusPeriod), wrap(crz, CLOUD.cirrusPeriod));
       setCamera(u, view);
       u.uCamAlt.value = view.alt;
       u.uSunDir.value.copy(view.sunDir);
