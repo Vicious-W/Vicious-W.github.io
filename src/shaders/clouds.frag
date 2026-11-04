@@ -1,7 +1,7 @@
 // Volumetric cumulus over the sea, one ray per pixel at reduced resolution.
 // Output 0: rgb = radiance of clouds and sea (aerial perspective included), a = sky visibility.
 // Output 1: r = representative depth in km, or -1 when the ray only sees sky.
-// BASE_PERIOD, DETAIL_PERIOD, WEATHER_PERIOD_A/B, CLOUD_BOTTOM and CLOUD_TOP_MAX come from defines.
+// Periods, cloud layer bounds and the giant grid come from defines (see sky.js).
 
 uniform sampler2D uTransmittance;
 uniform sampler2D uMultiScatter;
@@ -21,12 +21,14 @@ uniform vec3 uSunIlluminance;
 uniform float uFrame;
 uniform vec2 uResolution;
 uniform vec3 uBaseOffset;
-uniform vec3 uBaseOffsetLarge;
 uniform vec3 uDetailOffset;
 uniform vec2 uWeatherOffsetA;
 uniform vec2 uWeatherOffsetB;
 uniform vec2 uWeatherOffsetC;
-uniform float uCoverage;
+uniform sampler2D uCloudMap;
+uniform vec2 uCloudMapOffset;
+uniform sampler3D uGiantShape;
+uniform sampler2D uGiants; // GIANT_GRID^2 records, two texels each (see cumulus.js)
 uniform float uDensityScale;
 uniform int uMaxSteps;
 uniform float uStepScale;
@@ -39,6 +41,7 @@ const float DETAIL_DIST = 15000.0;
 const float ALBEDO = 0.985;
 const mat2 WEATHER_ROT = mat2(0.8, 0.6, -0.6, 0.8);
 const mat2 WEATHER_ROT2 = mat2(0.28, 0.96, -0.96, 0.28);
+const mat2 CLOUDMAP_ROT = mat2(0.96, 0.28, -0.28, 0.96);
 const float ALTO_BOTTOM = 6000.0;
 const float ALTO_TOP = 6700.0;
 
@@ -108,99 +111,161 @@ float seaHit(float y0, vec3 d) {
 }
 
 struct Weather {
-  float coverage;   // heaped-cloud coverage
-  float top;        // heaped-cloud top altitude (m)
-  float thickness;  // density multiplier: thin, translucent clouds near the low end
-  float bigness;    // 0 = small cells, 1 = large merged masses
-  float sheet;      // 0 = heaped cumulus, 1 = flat stratocumulus sheet
-  float alto;       // coverage of the thin altocumulus layer
+  float sheet;   // 0..1: flat stratocumulus sheets in this region
+  float alto;    // 0..1: patches of the thin altocumulus layer
+  vec2 warp;     // smooth large-scale warp of the cloud placement (m)
 };
 
 Weather weatherAt(vec2 xz, float lodLocal, float lodRegional) {
   vec2 ua = (xz + uWeatherOffsetA) / WEATHER_PERIOD_A;
-  vec2 ub = (WEATHER_ROT * xz + uWeatherOffsetB) / WEATHER_PERIOD_B;
   vec2 uc = (WEATHER_ROT2 * xz + uWeatherOffsetC) / WEATHER_PERIOD_C;
   vec4 wa = textureLod(uWeather, ua, max(lodRegional, 0.0));
-  vec4 wb = textureLod(uWeather, ub, max(lodLocal, 0.0));
   vec4 wc = textureLod(uWeather, uc, max(lodRegional + 1.3, 0.0));
   Weather w;
-  float tower = smoothstep(0.6, 0.86, wa.b) * smoothstep(0.45, 0.8, wb.g);
-  w.sheet = smoothstep(0.62, 0.84, wa.a) * (1.0 - tower);
-  float cov = uCoverage + (wa.r - 0.5) * 1.0 + (wb.g - 0.5) * 0.6 + tower * 0.08 + w.sheet * 0.24;
-  // Never let coverage approach 1: then the 2D map, not the 3D noise, would shape the clouds.
-  w.coverage = clamp(cov, 0.0, 0.8);
-  float heapedTop = mix(2400.0, 5600.0, tower) + (wb.a - 0.5) * 800.0;
-  w.top = mix(heapedTop, CLOUD_BOTTOM + 460.0 + wb.a * 320.0, w.sheet);
-  w.thickness = max(mix(0.2, 1.0, smoothstep(0.22, 0.72, wc.r)), tower);
-  w.bigness = smoothstep(0.4, 0.8, wc.g);
-  w.alto = clamp((wc.b - 0.62) * 1.5, 0.0, 0.38);
+  w.sheet = smoothstep(0.66, 0.86, wa.a);
+  w.alto = smoothstep(0.8, 0.94, wc.b);
+  w.warp = (wc.rg - 0.5) * 1600.0;
   return w;
 }
 
-// detail: 0 = base shape only, 1 = detail erosion, 2 = detail plus a finer octave (close range).
+// detail: 0 = shape only, 1 = detail erosion, 2 = detail plus a finer octave (close range).
 float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, out float h) {
   float alt = altitudeAt(p);
-  h = (alt - CLOUD_BOTTOM) / max(w.top - CLOUD_BOTTOM, 200.0);
-  // Slightly squashed vertically so thresholded features do not stretch into spikes.
-  vec3 bp = (p + uBaseOffset) * vec3(1.0, BASE_Y_SCALE, 1.0) / BASE_PERIOD;
-  float d = 0.0;
+  float z = alt - CLOUD_BOTTOM;
+  h = 1.0;
+  if (z < 0.0) return 0.0;
 
-  if (h > 0.0 && h < 1.0 && w.coverage > 0.0) {
-    // Heaped clouds: flat condensation level, rounded tops. Sheets: soft-edged flat slabs.
-    float cumulus = smoothstep(0.0, 0.05, h) * (1.0 - smoothstep(0.4, 1.0, h));
-    float slab = smoothstep(0.0, 0.18, h) * (1.0 - smoothstep(0.5, 1.0, h));
-    float profile = mix(cumulus, slab, w.sheet);
-    vec2 n = textureLod(uBaseNoise, bp, lodB).rg;
-    if (w.bigness > 0.02) {
-      // Three times larger cells, blended in regionally, give big merged cloud masses.
-      vec3 bpl = (p + uBaseOffsetLarge) * vec3(1.0, BASE_Y_SCALE, 1.0) / (BASE_PERIOD * 3.0);
-      n = mix(n, textureLod(uBaseNoise, bpl, max(lodB - 1.585, 0.0)).rg, w.bigness);
-    }
-    d = clamp(remap(n.r * profile, 1.0 - w.coverage, 1.0, 0.0, 1.0), 0.0, 1.0) * w.coverage;
-    if (d > 0.0) {
-      // Medium billows: erode between Worley cells, mostly at the thin edges.
-      d = clamp(remap(d, (1.0 - n.g) * 0.3, 1.0, 0.0, 1.0), 0.0, 1.0);
-      if (detail > 0 && d > 0.0) {
-        vec3 q = (p + uDetailOffset) / DETAIL_PERIOD;
-        vec3 dn = textureLod(uDetailNoise, q, lodD).rgb;
-        float dfbm = dn.r * 0.625 + dn.g * 0.25 + dn.b * 0.125;
-        if (detail > 1) {
-          // Integer frequency multiple keeps the wrapped detail offset continuous.
-          vec3 dn2 = textureLod(uDetailNoise, q * 3.0, lodD + 1.585).rgb;
-          dfbm = dfbm * 0.72 + (dn2.r * 0.625 + dn2.g * 0.25 + dn2.b * 0.125) * 0.28;
-        }
-        // Wispy near the base, billowy towards the top; thin clouds are frayed more.
-        float erosion = mix(dfbm, 1.0 - dfbm, clamp(h * 5.0, 0.0, 1.0));
-        d = clamp(remap(d, erosion * mix(0.62, 0.42, w.thickness), 1.0, 0.0, 1.0), 0.0, 1.0);
-      }
-      d *= w.thickness;
+  // Heaped clouds are looked up in cloud-map space: rotated, drifting with the wind, warped so
+  // footprints are irregular and change with height, and leaning downwind with height (wind
+  // shear). The fine part of the warp comes from the 3D noise further down.
+  vec2 mp = CLOUDMAP_ROT * (p.xz + w.warp - vec2(0.12, -0.05) * z) + uCloudMapOffset;
+
+  // Cheap tests first: most samples are in clear air and the 3D noise is the expensive part.
+  // A coarse map level (320 m texels) is non-zero wherever a cloud is within reach of the
+  // fine warp. Giants: at most one per grid cell, tested against its shape box.
+  bool mapNear = z < 4000.0 && textureLod(uCloudMap, mp / CLOUDMAP_PERIOD, max(lodB, 3.0)).r > 0.05;
+  vec2 gp = mod(mp, CLOUDMAP_PERIOD);
+  ivec2 gc = min(ivec2(gp / GIANT_CELL), ivec2(GIANT_GRID - 1));
+  vec4 ga = texelFetch(uGiants, ivec2(gc.x * 2, gc.y), 0);
+  vec4 gb = texelFetch(uGiants, ivec2(gc.x * 2 + 1, gc.y), 0);
+  float gr = max(ga.z, 1.0);
+  vec2 rel = (gp - ga.xy) / gr;
+  float qy = z / max(ga.w, 1.0);
+  bool giantNear = ga.z > 0.0 && max(abs(rel.x), abs(rel.y)) < GIANT_EXTENT * 1.42 && qy < 1.0;
+  bool sheetNear = w.sheet > 0.02 && z < 700.0;
+  bool altoNear = w.alto > 0.02 && alt > ALTO_BOTTOM && alt < ALTO_TOP;
+  if (!(mapNear || giantNear || sheetNear || altoNear)) {
+    h = -1.0; // nothing within reach: the caller may take a longer step
+    return 0.0;
+  }
+
+  // Slightly squashed vertically so features do not stretch into spikes. The altocumulus
+  // layer alone does not need this sample.
+  vec3 bp = (p + uBaseOffset) * vec3(1.0, BASE_Y_SCALE, 1.0) / BASE_PERIOD;
+  vec4 n = (mapNear || giantNear || sheetNear) ? textureLod(uBaseNoise, bp, lodB) : vec4(0.5);
+  vec2 fineWarp = CLOUDMAP_ROT * ((n.ba - 0.45) * 500.0);
+  float d = 0.0;
+  float shape = -1e4; // metres inside the surface, negative outside
+  float edge = 55.0;  // amplitude of the fine edge detail (m)
+  float thick = 1.0;
+
+  // Small to large cumulus from the placement map: flat-based domes roughened by noise whose
+  // amplitude follows the size of the cloud.
+  if (mapNear) {
+    vec4 cm = textureLod(uCloudMap, (mp + fineWarp) / CLOUDMAP_PERIOD, lodB);
+    if (cm.r > 1.0 && z < cm.r + 1400.0) {
+      float size = max(cm.b, 80.0);
+      shape = cm.r - z
+            + min(0.46 * size, 2300.0) * (n.r - 0.5)
+            + (0.22 * size + 40.0) * (n.g - 0.5)
+            + 0.12 * size * (n.a - 0.45);
+      edge = 55.0 + 0.03 * size;
+      thick = cm.g;
+      h = clamp(z / max(cm.r, 1.0), 0.0, 1.0);
     }
   }
 
-  // Thin, patchy altocumulus layer: small cells, translucent.
-  if (w.alto > 0.02 && alt > ALTO_BOTTOM && alt < ALTO_TOP) {
+  // Rare giants: towering cumulus from the baked 3D shapes. Their sides bulge and overhang,
+  // which no height field can do. Each giant sits inside its cell with room for the warp.
+  if (giantNear) {
+    vec2 r2 = rel + fineWarp / gr;
+    vec2 q = vec2(gb.x * r2.x + gb.y * r2.y, gb.x * r2.y - gb.y * r2.x);
+    if (max(abs(q.x), abs(q.y)) < GIANT_EXTENT) {
+      // One voxel is 1/40 of the footprint radius.
+      float lodG = max(lodB + log2(BASE_PERIOD / 128.0 * 40.0 / gr), 0.0);
+      vec3 uvw = vec3(q.x * (0.5 / GIANT_EXTENT) + 0.5, qy, q.y * (0.5 / GIANT_EXTENT) + 0.5);
+      vec4 s4 = textureLod(uGiantShape, uvw, lodG);
+      float sd = (dot(s4, vec4(equal(vec4(gb.z), vec4(0.0, 1.0, 2.0, 3.0)))) * 2.0 - 1.0) * GIANT_RANGE;
+      float gshape = gr * (sd + 0.13 * (n.r - 0.5) + 0.065 * (n.g - 0.5));
+      if (gshape > shape) {
+        shape = gshape;
+        edge = 0.022 * gr;
+        thick = gb.w;
+        h = clamp(qy * 1.3, 0.0, 1.0);
+      }
+    }
+  }
+
+  if (shape > -1e3) {
+    if (detail < 0) shape += edge * 2.6;
+    if (detail > 0 && shape > -2.2 * edge) {
+      vec3 dq = (p + uDetailOffset) / DETAIL_PERIOD;
+      vec3 dn = textureLod(uDetailNoise, dq, lodD).rgb;
+      float dfbm = dn.r * 0.625 + dn.g * 0.25 + dn.b * 0.125;
+      if (detail > 1) {
+        // Integer frequency multiple keeps the wrapped detail offset continuous.
+        vec3 dn2 = textureLod(uDetailNoise, dq * 3.0, lodD + 1.585).rgb;
+        dfbm = dfbm * 0.72 + (dn2.r * 0.625 + dn2.g * 0.25 + dn2.b * 0.125) * 0.28;
+      }
+      // Billowy towards the top, ragged near the base; thin clouds are frayed more.
+      float ragged = mix(1.7, 1.0, smoothstep(0.0, 140.0, z)) * mix(1.5, 1.0, thick);
+      shape += edge * ragged * (dfbm - 0.5) * 2.0;
+    }
+    float ramp = 35.0 + 0.4 * (edge - 55.0);
+    d = clamp(shape / ramp, 0.0, 1.0) * smoothstep(0.0, 30.0, z) * thick;
+  }
+
+  // Flat stratocumulus sheets in some regions: cells from the base noise within a low slab.
+  if (sheetNear) {
+    float hs = z / 700.0;
+    float prof = smoothstep(0.0, 0.2, hs) * (1.0 - smoothstep(0.45, 1.0, hs));
+    float cov = 0.3 + w.sheet * 0.42;
+    float ds = clamp(remap(n.r * prof, 1.0 - cov, 1.0, 0.0, 1.0), 0.0, 1.0) * cov;
+    ds = clamp(remap(ds, (1.0 - n.g) * 0.3, 1.0, 0.0, 1.0), 0.0, 1.0);
+    d = max(d, ds * 0.55);
+  }
+
+  // Thin altocumulus in patches: inside a patch, a layer of many small translucent cloudlets
+  // with gaps between them, thinning out towards the patch edge.
+  if (altoNear) {
     float ha = (alt - ALTO_BOTTOM) / (ALTO_TOP - ALTO_BOTTOM);
-    float prof = smoothstep(0.0, 0.35, ha) * (1.0 - smoothstep(0.55, 1.0, ha));
-    vec2 na = textureLod(uBaseNoise, bp * 2.0, lodB + 1.0).rg;
-    float da = clamp(remap(na.r * prof, 1.0 - w.alto, 1.0, 0.0, 1.0), 0.0, 1.0) * w.alto;
-    da = clamp(remap(da, (1.0 - na.g) * 0.25, 1.0, 0.0, 1.0), 0.0, 1.0);
-    d = max(d, da * 0.08);
+    float prof = smoothstep(0.0, 0.3, ha) * (1.0 - smoothstep(0.45, 0.9, ha));
+    vec2 na = textureLod(uBaseNoise, bp * 4.0, lodB + 2.0).rg;
+    float cover = 0.5 * w.alto;
+    float da = clamp(remap(na.r * prof, 1.0 - cover, 1.0, 0.0, 1.0), 0.0, 1.0);
+    da = clamp(remap(da, (1.0 - na.g) * 0.35, 1.0, 0.0, 1.0), 0.0, 1.0);
+    d = max(d, da * 0.03);
   }
   return d;
 }
 
-// Optical depth towards the sun with exponentially growing steps.
-float lightDepth(vec3 p, Weather w, float lodB, float lodD, bool near, float jitter) {
+// Optical depth towards the sun with exponentially growing steps. For distant clouds, five
+// longer steps cover about the same distance (4.8 km) as seven.
+float lightDepth(vec3 p, Weather w, float lodB, float lodD, bool near, bool far, float jitter) {
   float od = 0.0;
   float prev = 0.0;
-  float d = 30.0 * (0.7 + 0.6 * jitter);
+  int steps = far ? 5 : 7;
+  float growth = far ? 2.9 : 2.1;
+  float lodStep = far ? 0.75 : 0.5;
+  float d = (far ? 45.0 : 30.0) * (0.7 + 0.6 * jitter);
   float h;
   for (int j = 0; j < 7; j++) {
+    if (j >= steps) break;
     float seg = d - prev;
     vec3 q = p + uSunDir * (prev + 0.5 * seg);
-    od += densityAt(q, w, lodB + float(j) * 0.5, lodD + float(j) * 0.5, (near && j < 2) ? 1 : 0, h) * seg;
+    od += densityAt(q, w, lodB + float(j) * lodStep, lodD + float(j) * lodStep, (near && j < 2) ? 1 : 0, h) * seg;
     prev = d;
-    d *= 2.1;
+    d *= growth;
   }
   return od * uDensityScale;
 }
@@ -303,23 +368,20 @@ void main() {
       vec3 p = vec3(0.0, uCamAlt, 0.0) + dir * t;
       float fp = max(t * pixelAngle, 1.0);
       Weather w = weatherAt(p.xz, log2(fp / (WEATHER_PERIOD_B / 512.0)), log2(fp / (WEATHER_PERIOD_A / 512.0)));
-      if (w.coverage < 0.02 && w.alto < 0.02) {
-        fine = false;
-        t += dt * 2.5;
-        continue;
-      }
       float lodB = max(log2(fp / (BASE_PERIOD / 128.0)), 0.0);
       float lodD = max(log2(fp / (DETAIL_PERIOD / 32.0)), 0.0);
       float h;
       if (!fine) {
-        // Coarse search through empty air with the cheap base shape only.
-        float probe = densityAt(p, w, lodB + 0.5, lodD, 0, h);
+        // Coarse search through empty air with the cheap shape, inflated by the most that
+        // detail could add, so thin fringes are never skipped.
+        float probe = densityAt(p, w, lodB + 0.5, lodD, -1, h);
         if (probe > 0.0) {
           fine = true;
           emptyRun = 0;
           t = max(t - dt * 1.6, t0);
         } else {
-          t += dt * 2.0;
+          // Longer strides where no cloud is within reach at all.
+          t += dt * (h < 0.0 ? 2.6 : 2.0);
         }
         continue;
       }
@@ -328,7 +390,7 @@ void main() {
       if (dens > 0.001) {
         emptyRun = 0;
         float sigma = dens * uDensityScale;
-        float od = lightDepth(p, w, lodB, lodD, t < 6000.0, fract(jitter + 0.37));
+        float od = lightDepth(p, w, lodB, lodD, t < 6000.0, t > 9000.0, fract(jitter + 0.37));
         // Single scattering plus an energy-preserving approximation of multiple scattering.
         float sun = ph0 * exp(-od)
                   + 1.2 * (0.85 * ph1 * exp(-od * 0.25)

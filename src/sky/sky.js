@@ -1,12 +1,14 @@
 import * as THREE from "three";
 import { createPass } from "./fullscreen.js";
 import { makeBlueNoise } from "./bluenoise.js";
+import { bakeCumulusShapes, placeGiants, GIANTS, SHAPE } from "./cumulus.js";
 import vertexShader from "../shaders/fullscreen.vert?raw";
 import common from "../shaders/common.glsl?raw";
 import transmittanceSrc from "../shaders/transmittance.frag?raw";
 import multiScatterSrc from "../shaders/multiscatter.frag?raw";
 import skyViewSrc from "../shaders/skyview.frag?raw";
 import noiseSrc from "../shaders/noise.frag?raw";
+import cloudMapSrc from "../shaders/cloudmap.frag?raw";
 import cloudsSrc from "../shaders/clouds.frag?raw";
 import temporalSrc from "../shaders/temporal.frag?raw";
 import compositeSrc from "../shaders/composite.frag?raw";
@@ -31,6 +33,8 @@ export const CLOUD = Object.freeze({
   weatherPeriodA: 42000,
   weatherPeriodB: 11000,
   weatherPeriodC: 17000,
+  cloudMapPeriod: 81920,
+  cloudMapSize: 2048,
   cirrusPeriod: 26000,
   wind: { x: 7.0, z: -3.0 },
   cirrusWind: { x: 19.0, z: -5.0 }
@@ -39,10 +43,15 @@ export const CLOUD = Object.freeze({
 // Rotations used in GLSL as mat2 (column-major): rotate(v) = (c*x - s*y, s*x + c*y).
 const WEATHER_ROT = { c: 0.8, s: 0.6 };
 const WEATHER_ROT2 = { c: 0.28, s: 0.96 };
+const CLOUDMAP_ROT = { c: 0.96, s: 0.28 };
 // Cirrus: rotate(v) = (0.6*x + 0.8*y, -0.8*x + 0.6*y), then stretch x by 0.28 into streaks.
 const CIRRUS_ROT = { c: 0.6, s: -0.8 };
 const CIRRUS_STRETCH = 0.28;
 const wrap = (v, p) => v - p * Math.floor(v / p);
+
+// One giant is placed by hand ahead of the starting view, so the first minutes include one.
+// u: size, position in its cell (x, z), height, rotation, shape, thickness (all 0..1).
+const HERO_GIANT = { i: 0, j: 3, u: [0.62, 0.55, 0.75, 0.7, 0.15, 0.0, 0.9] };
 const glslFloat = v => (Number.isInteger(v) ? `${v}.0` : `${v}`);
 
 function floatTarget(width, height, extra = {}) {
@@ -154,6 +163,42 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
   const weather = bakeWeather(renderer, noisePass, 512);
   noisePass.dispose();
 
+  // Rare giant towering cumulus: baked 3D shapes, placed on a coarse grid in cloud-map space.
+  const giantShape = bakeCumulusShapes();
+  const giants = placeGiants({
+    tile: CLOUD.cloudMapPeriod,
+    depth: CLOUD.topMax - CLOUD.bottom - 300,
+    hero: HERO_GIANT
+  });
+  const giantDefines = {
+    GIANT_CELL: glslFloat(GIANTS.cell),
+    GIANT_GRID: `${GIANTS.grid}`,
+    GIANT_COUNT: `${GIANTS.grid * GIANTS.grid}`,
+    GIANT_RANGE: glslFloat(SHAPE.range),
+    GIANT_EXTENT: glslFloat(SHAPE.extent)
+  };
+
+  // Placement of the other heaped clouds (large cumulus to many fragments), kept on the GPU.
+  const cloudMap = new THREE.WebGLRenderTarget(CLOUD.cloudMapSize, CLOUD.cloudMapSize, {
+    type: THREE.HalfFloatType,
+    format: THREE.RGBAFormat,
+    wrapS: THREE.RepeatWrapping,
+    wrapT: THREE.RepeatWrapping,
+    minFilter: THREE.LinearMipmapLinearFilter,
+    magFilter: THREE.LinearFilter,
+    generateMipmaps: true,
+    depthBuffer: false,
+    stencilBuffer: false
+  });
+  const cloudMapPass = createPass({
+    vertexShader,
+    fragmentShader: fragment(cloudMapSrc),
+    defines: giantDefines,
+    uniforms: { uTile: { value: CLOUD.cloudMapPeriod }, uGiantA: { value: giants.a } }
+  });
+  cloudMapPass.render(renderer, cloudMap);
+  cloudMapPass.dispose();
+
   const blueNoise = new THREE.DataTexture(makeBlueNoise(64), 64, 64, THREE.RedFormat, THREE.UnsignedByteType);
   blueNoise.minFilter = THREE.NearestFilter;
   blueNoise.magFilter = THREE.NearestFilter;
@@ -205,7 +250,9 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
     DETAIL_PERIOD: glslFloat(CLOUD.detailPeriod),
     WEATHER_PERIOD_A: glslFloat(CLOUD.weatherPeriodA),
     WEATHER_PERIOD_B: glslFloat(CLOUD.weatherPeriodB),
-    WEATHER_PERIOD_C: glslFloat(CLOUD.weatherPeriodC)
+    WEATHER_PERIOD_C: glslFloat(CLOUD.weatherPeriodC),
+    CLOUDMAP_PERIOD: glslFloat(CLOUD.cloudMapPeriod),
+    ...giantDefines
   };
 
   const cloudPass = createPass({
@@ -221,18 +268,20 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
       uDetailNoise: { value: detailNoise },
       uWeather: { value: weather },
       uBlueNoise: { value: blueNoise },
+      uCloudMap: { value: cloudMap.texture },
+      uCloudMapOffset: { value: new THREE.Vector2() },
+      uGiantShape: { value: giantShape },
+      uGiants: { value: giants.texture },
       uCamAlt: { value: 3000 },
       uSunDir: { value: new THREE.Vector3(0, 1, 0) },
       uSunIlluminance: { value: sunIlluminance },
       uFrame: { value: 0 },
       uResolution: { value: new THREE.Vector2(1, 1) },
       uBaseOffset: { value: new THREE.Vector3() },
-      uBaseOffsetLarge: { value: new THREE.Vector3() },
       uDetailOffset: { value: new THREE.Vector3() },
       uWeatherOffsetA: { value: new THREE.Vector2() },
       uWeatherOffsetB: { value: new THREE.Vector2() },
       uWeatherOffsetC: { value: new THREE.Vector2() },
-      uCoverage: { value: 0.42 },
       uDensityScale: { value: 0.19 },
       uMaxSteps: { value: quality === "high" ? 420 : 280 },
       uStepScale: { value: quality === "high" ? 0.6 : 1.0 }
@@ -368,12 +417,6 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
         wrap(t * 2.2, CLOUD.detailPeriod),
         wrap(cz + t * 0.7, CLOUD.detailPeriod)
       );
-      const largePeriod = CLOUD.basePeriod * 3;
-      u.uBaseOffsetLarge.value.set(
-        wrap(cx, largePeriod),
-        wrap(t * 0.9, largePeriod / CLOUD.baseYScale),
-        wrap(cz, largePeriod)
-      );
       u.uWeatherOffsetA.value.set(wrap(cx, CLOUD.weatherPeriodA), wrap(cz, CLOUD.weatherPeriodA));
       const rx = WEATHER_ROT.c * cx - WEATHER_ROT.s * cz;
       const rz = WEATHER_ROT.s * cx + WEATHER_ROT.c * cz;
@@ -381,6 +424,9 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
       const rx2 = WEATHER_ROT2.c * cx - WEATHER_ROT2.s * cz;
       const rz2 = WEATHER_ROT2.s * cx + WEATHER_ROT2.c * cz;
       u.uWeatherOffsetC.value.set(wrap(rx2, CLOUD.weatherPeriodC), wrap(rz2, CLOUD.weatherPeriodC));
+      const mx = CLOUDMAP_ROT.c * cx - CLOUDMAP_ROT.s * cz;
+      const mz = CLOUDMAP_ROT.s * cx + CLOUDMAP_ROT.c * cz;
+      u.uCloudMapOffset.value.set(wrap(mx, CLOUD.cloudMapPeriod), wrap(mz, CLOUD.cloudMapPeriod));
 
       // Cirrus drift faster in the stronger wind aloft.
       const kx = view.x - CLOUD.cirrusWind.x * t;
