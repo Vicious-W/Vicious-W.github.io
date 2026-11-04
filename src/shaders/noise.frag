@@ -1,6 +1,6 @@
 // Tileable procedural noise, baked once at startup.
-// Mode 0: cloud base shape (Perlin-Worley + Worley FBMs), 3D.
-// Mode 1: cloud detail erosion (Worley FBMs), 3D.
+// Mode 0: cloud base shape (Perlin-Worley, billowy turbulence, smooth warp vectors), 3D.
+// Mode 1: cloud edge detail (billowy turbulence at three scales), 3D.
 // Mode 2: weather map (coverage, clumps, tower regions, top variation), 2D.
 // 3D volumes are rendered as stacks of slices: x = column, y = row within slice + slice * size.
 
@@ -86,6 +86,30 @@ float perlinFbm(vec3 p, float freq, int octaves, uint seed) {
   return clamp((sum / norm) * 0.85 + 0.5, 0.0, 1.0);
 }
 
+// Three independent tileable Perlin noises, used as a smooth warp vector.
+vec3 perlinVec(vec3 p, float freq, uint seed) {
+  return vec3(perlin(p, freq, seed), perlin(p, freq, seed + 101u), perlin(p, freq, seed + 202u));
+}
+
+// Billowy turbulence: rounded bulges with sharp creases between them, like the boiling surface
+// of a cumulus, rather than the identical round cells of Worley noise. The domain is warped
+// by a smooth vector field (baked in, so free at run time) so the bulges stretch and curl like
+// a fluid. freq must be even so the warp field tiles.
+float billow(vec3 p, float freq, int octaves, uint seed, float warp) {
+  vec3 q = p + warp * perlinVec(p, freq * 0.5, seed + 7u) / freq;
+  float sum = 0.0;
+  float amp = 1.0;
+  float norm = 0.0;
+  for (int i = 0; i < 6; i++) {
+    if (i >= octaves) break;
+    sum += amp * abs(perlin(q, freq, seed + uint(i) * 17u));
+    norm += amp;
+    amp *= 0.5;
+    freq *= 2.0;
+  }
+  return sum / norm;
+}
+
 float contrast(float v, float k) {
   return clamp((v - 0.5) * k + 0.5, 0.0, 1.0);
 }
@@ -114,23 +138,17 @@ void main() {
     float w1 = worleyInv(p, 4.0, 11u);
     float w2 = worleyInv(p, 8.0, 12u);
     float w3 = worleyInv(p, 16.0, 13u);
-    float w4 = worleyInv(p, 32.0, 14u);
-    float w5 = worleyInv(p, 64.0, 15u);
     float wfbm = w1 * 0.625 + w2 * 0.25 + w3 * 0.125;
     float perlinWorley = remap(pf, 0.0, 1.0, wfbm, 1.0);
-    // R: low-frequency Perlin-Worley body. Eroding the whole body with higher frequencies here
-    //    turns tall towers into vertical flutes, so medium billows are applied only at edges.
-    // G: medium Worley FBM used for edge billows. Both are equalised on the CPU.
-    float g = w2 * 0.625 + w3 * 0.25 + w4 * 0.125;
-    outColor = vec4(perlinWorley, g, w3 * 0.625 + w4 * 0.25 + w5 * 0.125, w4 * 0.75 + w5 * 0.25);
+    // R: low-frequency Perlin-Worley body (1200 m lumps).
+    // G: warped billowy turbulence for the medium bulges (600 and 300 m).
+    // B, A: smooth Perlin (600, 300, 150 m), a warp vector that moves cloud sides sideways
+    //       and differently at each height, so no side is a wall extruded straight up.
+    // R and G are equalised on the CPU.
+    float g = billow(p, 8.0, 2, 31u, 1.1);
+    outColor = vec4(perlinWorley, g, perlinFbm(p, 8.0, 3, 41u), perlinFbm(p, 8.0, 3, 51u));
   } else {
-    float w1 = worleyInv(p, 2.0, 21u);
-    float w2 = worleyInv(p, 4.0, 22u);
-    float w3 = worleyInv(p, 8.0, 23u);
-    float w4 = worleyInv(p, 16.0, 24u);
-    outColor = vec4(w1 * 0.625 + w2 * 0.25 + w3 * 0.125,
-                    w2 * 0.625 + w3 * 0.25 + w4 * 0.125,
-                    w3 * 0.75 + w4 * 0.25,
-                    1.0);
+    // Edge detail: billowy turbulence at 320, 160 and 80 m, combined as an FBM in the shader.
+    outColor = vec4(billow(p, 2.0, 2, 61u, 1.2), billow(p, 4.0, 2, 71u, 1.2), billow(p, 8.0, 1, 81u, 1.0), 1.0);
   }
 }

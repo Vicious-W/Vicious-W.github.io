@@ -6,6 +6,9 @@ const canvas = document.getElementById("view");
 const veil = document.getElementById("veil");
 const params = new URLSearchParams(location.search);
 const still = params.has("still");
+// Capture aid: "still&motion" flies 1/60 s per frame with the live temporal filter, to see
+// what a viewer sees in flight rather than a converged average.
+const motion = still && params.has("motion");
 const num = (key, fallback) => (params.has(key) ? Number(params.get(key)) : fallback);
 
 function start() {
@@ -105,7 +108,8 @@ function start() {
     const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
     last = now;
     if (!still) flight.update(dt);
-    sky.render(flight.view(window.innerWidth / window.innerHeight), { still });
+    else if (motion) flight.update(1 / 60);
+    sky.render(flight.view(window.innerWidth / window.innerHeight), { still: still && !motion });
     if (!revealed && sky.frame > 4) {
       veil.classList.add("gone");
       revealed = true;

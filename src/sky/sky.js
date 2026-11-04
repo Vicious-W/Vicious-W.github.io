@@ -9,6 +9,7 @@ import multiScatterSrc from "../shaders/multiscatter.frag?raw";
 import skyViewSrc from "../shaders/skyview.frag?raw";
 import noiseSrc from "../shaders/noise.frag?raw";
 import cloudMapSrc from "../shaders/cloudmap.frag?raw";
+import cloudSlopeSrc from "../shaders/cloudslope.frag?raw";
 import cloudsSrc from "../shaders/clouds.frag?raw";
 import temporalSrc from "../shaders/temporal.frag?raw";
 import compositeSrc from "../shaders/composite.frag?raw";
@@ -178,26 +179,39 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
     GIANT_EXTENT: glslFloat(SHAPE.extent)
   };
 
-  // Placement of the other heaped clouds (large cumulus to many fragments), kept on the GPU.
-  const cloudMap = new THREE.WebGLRenderTarget(CLOUD.cloudMapSize, CLOUD.cloudMapSize, {
-    type: THREE.HalfFloatType,
-    format: THREE.RGBAFormat,
-    wrapS: THREE.RepeatWrapping,
-    wrapT: THREE.RepeatWrapping,
-    minFilter: THREE.LinearMipmapLinearFilter,
-    magFilter: THREE.LinearFilter,
-    generateMipmaps: true,
-    depthBuffer: false,
-    stencilBuffer: false
-  });
+  // Placement of the other heaped clouds (large cumulus to many fragments), kept on the GPU:
+  // baked, then a second pass adds the slope of the envelope (see cloudslope.frag).
+  const mapTarget = mipmaps =>
+    new THREE.WebGLRenderTarget(CLOUD.cloudMapSize, CLOUD.cloudMapSize, {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      wrapS: THREE.RepeatWrapping,
+      wrapT: THREE.RepeatWrapping,
+      minFilter: mipmaps ? THREE.LinearMipmapLinearFilter : THREE.NearestFilter,
+      magFilter: mipmaps ? THREE.LinearFilter : THREE.NearestFilter,
+      generateMipmaps: mipmaps,
+      depthBuffer: false,
+      stencilBuffer: false
+    });
+  const rawMap = mapTarget(false);
   const cloudMapPass = createPass({
     vertexShader,
     fragmentShader: fragment(cloudMapSrc),
     defines: giantDefines,
     uniforms: { uTile: { value: CLOUD.cloudMapPeriod }, uGiantA: { value: giants.a } }
   });
-  cloudMapPass.render(renderer, cloudMap);
+  cloudMapPass.render(renderer, rawMap);
   cloudMapPass.dispose();
+  const cloudMap = mapTarget(true);
+  const cloudSlopePass = createPass({
+    vertexShader,
+    fragmentShader: fragment(cloudSlopeSrc),
+    defines: { TEXEL_METRES: glslFloat(CLOUD.cloudMapPeriod / CLOUD.cloudMapSize) },
+    uniforms: { uMap: { value: rawMap.texture } }
+  });
+  cloudSlopePass.render(renderer, cloudMap);
+  cloudSlopePass.dispose();
+  rawMap.dispose();
 
   const blueNoise = new THREE.DataTexture(makeBlueNoise(64), 64, 64, THREE.RedFormat, THREE.UnsignedByteType);
   blueNoise.minFilter = THREE.NearestFilter;
@@ -277,6 +291,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
       uSunIlluminance: { value: sunIlluminance },
       uFrame: { value: 0 },
       uResolution: { value: new THREE.Vector2(1, 1) },
+      uParity: { value: 0 },
       uBaseOffset: { value: new THREE.Vector3() },
       uDetailOffset: { value: new THREE.Vector3() },
       uWeatherOffsetA: { value: new THREE.Vector2() },
@@ -302,9 +317,10 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
       uPrevForward: { value: new THREE.Vector3(0, 0, -1) },
       uPrevTanHalf: { value: new THREE.Vector2(1, 1) },
       uPrevCamPos: { value: new THREE.Vector3() },
-      uTexel: { value: new THREE.Vector2() },
+      uParity: { value: 0 },
       uBlend: { value: 1 },
-      uClampHistory: { value: 1 }
+      uClampHistory: { value: 1 },
+      uHistoryValid: { value: 0 }
     }
   });
 
@@ -353,10 +369,10 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
     history.forEach(target => target?.dispose());
     const w = Math.max(1, Math.round(width * scale));
     const h = Math.max(1, Math.round(height * scale));
-    cloudTarget = floatTarget(w, h, { count: 2 });
+    // Checkerboard: the cloud pass renders half the pixels each frame into a half-width target.
+    cloudTarget = floatTarget(Math.ceil(w / 2), h, { count: 2 });
     history = [floatTarget(w, h, { count: 2 }), floatTarget(w, h, { count: 2 })];
     cloudPass.uniforms.uResolution.value.set(w, h);
-    temporalPass.uniforms.uTexel.value.set(1 / w, 1 / h);
     historyValid = false;
     accumulated = 0;
   }
@@ -438,6 +454,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
       u.uCamAlt.value = view.alt;
       u.uSunDir.value.copy(view.sunDir);
       u.uFrame.value = frame;
+      u.uParity.value = frame & 1;
       cloudPass.render(renderer, cloudTarget);
 
       const read = history[historyIndex];
@@ -453,14 +470,12 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
       tu.uPrevForward.value.copy(prev.forward);
       tu.uPrevTanHalf.value.copy(prev.tanHalf);
       tu.uPrevCamPos.value.set(prev.x - view.x, prev.alt, prev.z - view.z);
-      if (!historyValid) {
-        tu.uBlend.value = 1;
-        accumulated = 0;
-      } else if (still) {
-        tu.uBlend.value = 1 / (accumulated + 1);
-      } else {
-        tu.uBlend.value = 0.14;
-      }
+      tu.uParity.value = frame & 1;
+      if (!historyValid) accumulated = 0;
+      tu.uHistoryValid.value = historyValid ? 1 : 0;
+      // Each pixel gets a new sample every other frame: a still capture averages all of them;
+      // in flight, a moving average over about five samples.
+      tu.uBlend.value = !historyValid ? 1 : still ? 1 / (Math.floor(accumulated / 2) + 1) : 0.22;
       tu.uClampHistory.value = still ? 0 : 1;
       temporalPass.render(renderer, write);
       historyIndex = 1 - historyIndex;

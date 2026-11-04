@@ -1,4 +1,12 @@
 // Temporal accumulation of the jittered cloud rays, reprojected with the cloud depth.
+// The cloud pass renders half the pixels each frame in a checkerboard that alternates every
+// frame: pixel (x, y) is fresh when x + y + parity is even, and its value is stored at
+// (x / 2, y) of the half-width current target. A fresh pixel blends its new sample into the
+// reprojected history; the others keep the reprojected history, clamped to their fresh
+// neighbours (all four direct neighbours of a pixel have the other parity), or take the
+// neighbours' average where there is no history. The clamp is relaxed where the neighbourhood
+// is (almost) only sea or sky: their reprojection is exact, so the history can be trusted,
+// and clamping their noisy shading (cloud shadows on the glitter) would leave dark blocks.
 
 uniform sampler2D uCurScene;
 uniform sampler2D uCurDepth;
@@ -13,12 +21,15 @@ uniform vec3 uPrevUp;
 uniform vec3 uPrevForward;
 uniform vec2 uPrevTanHalf;
 uniform vec3 uPrevCamPos;
-uniform vec2 uTexel;
+uniform int uParity;
 uniform float uBlend;
 uniform float uClampHistory;
+uniform float uHistoryValid;
 
 layout(location = 0) out vec4 outScene;
 layout(location = 1) out vec4 outDepth;
+
+ivec2 gFull;
 
 vec2 projectPrev(vec3 v) {
   float z = dot(v, uPrevForward);
@@ -27,11 +38,73 @@ vec2 projectPrev(vec3 v) {
   return ndc * 0.5 + 0.5;
 }
 
-void main() {
-  vec4 cur = textureLod(uCurScene, vUv, 0.0);
-  float depthKm = textureLod(uCurDepth, vUv, 0.0).r;
-  vec3 dir = cameraRay(vUv, uCamRight, uCamUp, uCamForward, uTanHalf);
+// Only valid for fresh pixels. Off-screen neighbours are mirrored back inside: a step of two
+// keeps the parity.
+ivec2 inside(ivec2 q) {
+  if (q.x < 0) q.x += 2;
+  if (q.x >= gFull.x) q.x -= 2;
+  if (q.y < 0) q.y += 2;
+  if (q.y >= gFull.y) q.y -= 2;
+  return q;
+}
 
+vec4 freshScene(ivec2 q) {
+  q = inside(q);
+  return texelFetch(uCurScene, ivec2(q.x >> 1, q.y), 0);
+}
+
+// r = depth (km), g = cloud opacity.
+vec2 freshDepth(ivec2 q) {
+  q = inside(q);
+  return texelFetch(uCurDepth, ivec2(q.x >> 1, q.y), 0).rg;
+}
+
+void main() {
+  gFull = ivec2(textureSize(uHistScene, 0));
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  bool fresh = ((p.x + p.y + uParity) & 1) == 0;
+
+  vec4 cur;
+  float depthKm;
+  float cloud;
+  vec4 mn;
+  vec4 mx;
+  if (fresh) {
+    cur = freshScene(p);
+    vec2 dc = freshDepth(p);
+    depthKm = dc.x;
+    cloud = dc.y;
+    mn = cur;
+    mx = cur;
+    // The diagonal neighbours are fresh too.
+    for (int k = 0; k < 4; k++) {
+      ivec2 o = ivec2((k & 1) * 2 - 1, (k >> 1) * 2 - 1);
+      vec4 c = freshScene(p + o);
+      mn = min(mn, c);
+      mx = max(mx, c);
+      cloud = max(cloud, freshDepth(p + o).y);
+    }
+  } else {
+    vec4 c0 = freshScene(p + ivec2(-1, 0));
+    vec4 c1 = freshScene(p + ivec2(1, 0));
+    vec4 c2 = freshScene(p + ivec2(0, -1));
+    vec4 c3 = freshScene(p + ivec2(0, 1));
+    cur = 0.25 * (c0 + c1 + c2 + c3);
+    mn = min(min(c0, c1), min(c2, c3));
+    mx = max(max(c0, c1), max(c2, c3));
+    // Reproject with the neighbours' depth (sky where none of them sees cloud or sea).
+    vec2 e0 = freshDepth(p + ivec2(-1, 0));
+    vec2 e1 = freshDepth(p + ivec2(1, 0));
+    vec2 e2 = freshDepth(p + ivec2(0, -1));
+    vec2 e3 = freshDepth(p + ivec2(0, 1));
+    vec4 d = vec4(e0.x, e1.x, e2.x, e3.x);
+    vec4 hit = step(0.0, d);
+    float n = dot(hit, vec4(1.0));
+    depthKm = n > 0.0 ? dot(d * hit, vec4(1.0)) / n : -1.0;
+    cloud = max(max(e0.y, e1.y), max(e2.y, e3.y));
+  }
+
+  vec3 dir = cameraRay(vUv, uCamRight, uCamUp, uCamForward, uTanHalf);
   vec2 prevUv;
   if (depthKm > 0.0) {
     vec3 P = vec3(0.0, uCamAlt, 0.0) + dir * (depthKm * 1000.0);
@@ -41,24 +114,15 @@ void main() {
   }
 
   vec4 result = cur;
-  bool inside = prevUv.x >= 0.0 && prevUv.y >= 0.0 && prevUv.x <= 1.0 && prevUv.y <= 1.0;
-  if (uBlend < 1.0 && inside) {
+  bool onScreen = prevUv.x >= 0.0 && prevUv.y >= 0.0 && prevUv.x <= 1.0 && prevUv.y <= 1.0;
+  if (uHistoryValid > 0.5 && onScreen) {
     vec4 hist = textureLod(uHistScene, prevUv, 0.0);
     if (uClampHistory > 0.5) {
-      vec4 mn = cur;
-      vec4 mx = cur;
-      for (int y = -1; y <= 1; y++) {
-        for (int x = -1; x <= 1; x++) {
-          vec4 c = textureLod(uCurScene, vUv + vec2(float(x), float(y)) * uTexel, 0.0);
-          mn = min(mn, c);
-          mx = max(mx, c);
-        }
-      }
-      vec4 slack = (mx - mn) * 0.25;
+      vec4 slack = (mx - mn) * mix(2.0, 0.25, smoothstep(0.15, 0.6, cloud));
       hist = clamp(hist, mn - slack, mx + slack);
     }
-    result = mix(hist, cur, uBlend);
+    result = fresh ? mix(hist, cur, uBlend) : hist;
   }
   outScene = result;
-  outDepth = vec4(depthKm, 0.0, 0.0, 1.0);
+  outDepth = vec4(depthKm, cloud, 0.0, 1.0);
 }

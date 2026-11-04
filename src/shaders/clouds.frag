@@ -1,6 +1,8 @@
-// Volumetric cumulus over the sea, one ray per pixel at reduced resolution.
+// Volumetric cumulus over the sea, one ray per pixel at reduced resolution. Each frame renders
+// half the pixels in a checkerboard that alternates every frame (the target is half as wide;
+// temporal.frag rebuilds the full image), which halves the cost.
 // Output 0: rgb = radiance of clouds and sea (aerial perspective included), a = sky visibility.
-// Output 1: r = representative depth in km, or -1 when the ray only sees sky.
+// Output 1: r = representative depth in km, or -1 when the ray only sees sky; g = cloud opacity.
 // Periods, cloud layer bounds and the giant grid come from defines (see sky.js).
 
 uniform sampler2D uTransmittance;
@@ -19,7 +21,8 @@ uniform float uCamAlt;
 uniform vec3 uSunDir;
 uniform vec3 uSunIlluminance;
 uniform float uFrame;
-uniform vec2 uResolution;
+uniform vec2 uResolution; // full cloud resolution (the target is half as wide)
+uniform int uParity;      // which half of the checkerboard this frame renders
 uniform vec3 uBaseOffset;
 uniform vec3 uDetailOffset;
 uniform vec2 uWeatherOffsetA;
@@ -37,7 +40,6 @@ layout(location = 0) out vec4 outScene;
 layout(location = 1) out vec4 outDepth;
 
 const float MAX_DIST = 64000.0;
-const float DETAIL_DIST = 15000.0;
 const float ALBEDO = 0.985;
 const mat2 WEATHER_ROT = mat2(0.8, 0.6, -0.6, 0.8);
 const mat2 WEATHER_ROT2 = mat2(0.28, 0.96, -0.96, 0.28);
@@ -128,8 +130,11 @@ Weather weatherAt(vec2 xz, float lodLocal, float lodRegional) {
   return w;
 }
 
-// detail: 0 = shape only, 1 = detail erosion, 2 = detail plus a finer octave (close range).
-float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, out float h) {
+// detail: -1 = coarse probe (inflated), 0 = shape only, 1 = edge detail, 2 = detail plus a
+// finer octave (close range). soft: the least depth (m) over which the surface turns opaque.
+// Far away it is about half a march step, so a step landing in the edge gets part of the
+// density instead of all or nothing, which would flicker.
+float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, float soft, out float h) {
   float alt = altitudeAt(p);
   float z = alt - CLOUD_BOTTOM;
   h = 1.0;
@@ -163,7 +168,7 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, out float
   // layer alone does not need this sample.
   vec3 bp = (p + uBaseOffset) * vec3(1.0, BASE_Y_SCALE, 1.0) / BASE_PERIOD;
   vec4 n = (mapNear || giantNear || sheetNear) ? textureLod(uBaseNoise, bp, lodB) : vec4(0.5);
-  vec2 fineWarp = CLOUDMAP_ROT * ((n.ba - 0.45) * 500.0);
+  vec2 fineWarp = CLOUDMAP_ROT * ((n.ba - 0.5) * 700.0);
   float d = 0.0;
   float shape = -1e4; // metres inside the surface, negative outside
   float edge = 55.0;  // amplitude of the fine edge detail (m)
@@ -175,10 +180,14 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, out float
     vec4 cm = textureLod(uCloudMap, (mp + fineWarp) / CLOUDMAP_PERIOD, lodB);
     if (cm.r > 1.0 && z < cm.r + 1400.0) {
       float size = max(cm.b, 80.0);
-      shape = cm.r - z
+      // Inside a dome, the height below its surface becomes roughly the distance along the
+      // surface normal (the slope is in alpha), so the noise carves the sides as well as the
+      // top instead of leaving smooth vertical walls. Above the surface the plain height is
+      // kept: there the slope says nothing about how far the cloud is.
+      float below = cm.r - z;
+      shape = (below > 0.0 ? below * inversesqrt(1.0 + cm.a * cm.a) : below)
             + min(0.46 * size, 2300.0) * (n.r - 0.5)
-            + (0.22 * size + 40.0) * (n.g - 0.5)
-            + 0.12 * size * (n.a - 0.45);
+            + (0.26 * size + 40.0) * (n.g - 0.5);
       edge = 55.0 + 0.03 * size;
       thick = cm.g;
       h = clamp(z / max(cm.r, 1.0), 0.0, 1.0);
@@ -196,7 +205,7 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, out float
       vec3 uvw = vec3(q.x * (0.5 / GIANT_EXTENT) + 0.5, qy, q.y * (0.5 / GIANT_EXTENT) + 0.5);
       vec4 s4 = textureLod(uGiantShape, uvw, lodG);
       float sd = (dot(s4, vec4(equal(vec4(gb.z), vec4(0.0, 1.0, 2.0, 3.0)))) * 2.0 - 1.0) * GIANT_RANGE;
-      float gshape = gr * (sd + 0.13 * (n.r - 0.5) + 0.065 * (n.g - 0.5));
+      float gshape = gr * (sd + 0.13 * (n.r - 0.5) + 0.09 * (n.g - 0.5));
       if (gshape > shape) {
         shape = gshape;
         edge = 0.022 * gr;
@@ -207,7 +216,7 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, out float
   }
 
   if (shape > -1e3) {
-    if (detail < 0) shape += edge * 2.6;
+    if (detail < 0) shape += edge * 2.6 + soft;
     if (detail > 0 && shape > -2.2 * edge) {
       vec3 dq = (p + uDetailOffset) / DETAIL_PERIOD;
       vec3 dn = textureLod(uDetailNoise, dq, lodD).rgb;
@@ -221,7 +230,7 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, out float
       float ragged = mix(1.7, 1.0, smoothstep(0.0, 140.0, z)) * mix(1.5, 1.0, thick);
       shape += edge * ragged * (dfbm - 0.5) * 2.0;
     }
-    float ramp = 35.0 + 0.4 * (edge - 55.0);
+    float ramp = max(35.0 + 0.4 * (edge - 55.0), soft);
     d = clamp(shape / ramp, 0.0, 1.0) * smoothstep(0.0, 30.0, z) * thick;
   }
 
@@ -241,17 +250,19 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, out float
     float ha = (alt - ALTO_BOTTOM) / (ALTO_TOP - ALTO_BOTTOM);
     float prof = smoothstep(0.0, 0.3, ha) * (1.0 - smoothstep(0.45, 0.9, ha));
     vec2 na = textureLod(uBaseNoise, bp * 4.0, lodB + 2.0).rg;
-    float cover = 0.5 * w.alto;
+    float cover = 0.62 * w.alto;
     float da = clamp(remap(na.r * prof, 1.0 - cover, 1.0, 0.0, 1.0), 0.0, 1.0);
-    da = clamp(remap(da, (1.0 - na.g) * 0.35, 1.0, 0.0, 1.0), 0.0, 1.0);
-    d = max(d, da * 0.03);
+    da = clamp(remap(da, (1.0 - na.g) * 0.2, 1.0, 0.0, 1.0), 0.0, 1.0);
+    d = max(d, da * 0.02);
   }
   return d;
 }
 
 // Optical depth towards the sun with exponentially growing steps. For distant clouds, five
-// longer steps cover about the same distance (4.8 km) as seven.
-float lightDepth(vec3 p, Weather w, float lodB, float lodD, bool near, bool far, float jitter) {
+// longer steps cover about the same distance (4.8 km) as seven. The density is sampled one
+// level smoother than the view ray sees it: light diffuses inside a cloud, so small bulges
+// do not cast sharp shadows of their own (which made clouds look like piles of balls).
+float lightDepth(vec3 p, Weather w, float lodB, float lodD, bool far, float jitter) {
   float od = 0.0;
   float prev = 0.0;
   int steps = far ? 5 : 7;
@@ -263,7 +274,7 @@ float lightDepth(vec3 p, Weather w, float lodB, float lodD, bool near, bool far,
     if (j >= steps) break;
     float seg = d - prev;
     vec3 q = p + uSunDir * (prev + 0.5 * seg);
-    od += densityAt(q, w, lodB + float(j) * lodStep, lodD + float(j) * lodStep, (near && j < 2) ? 1 : 0, h) * seg;
+    od += densityAt(q, w, lodB + 1.0 + float(j) * lodStep, lodD + 1.0 + float(j) * lodStep, 0, 0.0, h) * seg;
     prev = d;
     d *= growth;
   }
@@ -278,19 +289,23 @@ float stepAt(float t) {
   return clamp(t * 0.016, 28.0, 650.0) * uStepScale;
 }
 
-// Fraction of sunlight reaching a point on the sea through the clouds.
+// Fraction of sunlight reaching a point on the sea through the clouds. Eight samples along
+// the sun ray, denser low down where most clouds are (quadratic spacing). Shadows on the sea
+// are soft, so the clouds are smoothed here (edges about half a sample deep): sharp ones are
+// hit by a sample in some frames and missed in others, which speckles the glitter.
 float seaShadow(vec3 p, float jitter) {
   float sy = max(uSunDir.y, 0.08);
   float s0 = CLOUD_BOTTOM / sy;
-  float s1 = CLOUD_TOP_MAX / sy;
+  float span = (CLOUD_TOP_MAX - CLOUD_BOTTOM) / sy;
   const int N = 8;
-  float ds = (s1 - s0) / float(N);
   float od = 0.0;
   float h;
   for (int i = 0; i < N; i++) {
-    vec3 q = p + uSunDir * (s0 + (float(i) + jitter) * ds);
+    float u = (float(i) + jitter) / float(N);
+    float ds = span * 2.0 * u / float(N);
+    vec3 q = p + uSunDir * (s0 + span * u * u);
     Weather w = weatherAt(q.xz, 2.0, 1.0);
-    od += densityAt(q, w, 2.0, 0.0, 0, h) * ds;
+    od += densityAt(q, w, 3.0, 0.0, 0, max(0.5 * ds, 150.0), h) * ds;
   }
   return exp(-od * uDensityScale * 0.45);
 }
@@ -329,7 +344,9 @@ vec3 shadeSea(vec3 dir, float tSea, float rCamKm, vec3 skyAvg, float jitter) {
 }
 
 void main() {
-  vec3 dir = cameraRay(vUv, uCamRight, uCamUp, uCamForward, uTanHalf);
+  ivec2 fc = ivec2(gl_FragCoord.xy);
+  vec2 pixel = vec2(float(fc.x * 2 + ((fc.y + uParity) & 1)), float(fc.y)) + 0.5;
+  vec3 dir = cameraRay(pixel / uResolution, uCamRight, uCamUp, uCamForward, uTanHalf);
   float rCamKm = RG + uCamAlt * 1e-3;
   float pixelAngle = 2.0 * uTanHalf.y / uResolution.y;
   float cosTheta = dot(dir, uSunDir);
@@ -337,7 +354,7 @@ void main() {
   float ph1 = cloudPhase(cosTheta, 0.6);
   float ph2 = cloudPhase(cosTheta, 0.36);
   float ph3 = cloudPhase(cosTheta, 0.2);
-  float powderAmount = 0.55 * (1.0 - smoothstep(-0.2, 0.75, cosTheta));
+  float powderAmount = 0.35 * (1.0 - smoothstep(-0.2, 0.75, cosTheta));
 
   vec3 sunAtClouds = uSunIlluminance * transmittanceToSun(uTransmittance, RG + 3.0, uSunDir.y);
   vec3 skyZen = skyLookup(uSkyView, vec3(0.0, 1.0, 0.0), uSunDir, rCamKm);
@@ -357,26 +374,51 @@ void main() {
   float dsum = 0.0;
   float wsum = 0.0;
   // Per-pixel noise, advanced along a golden-ratio sequence every frame.
-  float jitter = blueNoise(gl_FragCoord.xy, uFrame);
+  float jitter = blueNoise(pixel, uFrame);
   if (hasLayer && t1 > t0) {
+    // The march is a small state machine with one density evaluation per iteration (the
+    // density function is large, and every call site is a copy of it in the compiled shader):
+    // SEARCH strides through clear air with an inflated shape; MARCH steps through cloud;
+    // REFINE bisects for the surface when MARCH enters a cloud with a long step, so the cloud
+    // is shaded at its surface rather than at a random depth, which shows as speckles and
+    // shimmer on distant clouds.
+    const int SEARCH = 0;
+    const int MARCH = 1;
+    const int REFINE = 2;
+    int mode = SEARCH;
     float t = t0 + stepAt(t0) * jitter;
-    bool fine = false;
+    bool inside = false;  // the previous MARCH sample had density
+    bool settled = false; // t sits on a surface just found by REFINE
+    int shortSteps = 0;
     int emptyRun = 0;
+    int refineLeft = 0;
+    float ra = 0.0;
+    float rb = 0.0;
+    vec3 origin = vec3(0.0, uCamAlt, 0.0);
     for (int i = 0; i < 512; i++) {
-      if (i >= uMaxSteps || t >= t1 || T < 0.01) break;
-      float dt = stepAt(t);
-      vec3 p = vec3(0.0, uCamAlt, 0.0) + dir * t;
-      float fp = max(t * pixelAngle, 1.0);
+      float ts = mode == REFINE ? 0.5 * (ra + rb) : t;
+      if (i >= uMaxSteps || ts >= t1 || T < 0.01) break;
+      float dt = stepAt(ts);
+      // Near clouds the march takes finer steps far away, and the surface is softened to half a
+      // step: edges thinner than a step would otherwise be hit in some frames and missed in others.
+      float dtF = min(dt, 28.0 + 0.008 * ts);
+      vec3 p = origin + dir * ts;
+      float fp = max(ts * pixelAngle, 1.0);
       Weather w = weatherAt(p.xz, log2(fp / (WEATHER_PERIOD_B / 512.0)), log2(fp / (WEATHER_PERIOD_A / 512.0)));
       float lodB = max(log2(fp / (BASE_PERIOD / 128.0)), 0.0);
       float lodD = max(log2(fp / (DETAIL_PERIOD / 32.0)), 0.0);
+      // Edge detail at every distance, so far clouds have the same character as near ones; its
+      // mip levels fade it out where it becomes smaller than a pixel. SEARCH uses the shape
+      // inflated by the most that detail could add, so thin fringes are never skipped.
+      int detail = mode == SEARCH ? -1 : (mode == REFINE ? 0 : (ts < 2500.0 ? 2 : 1));
       float h;
-      if (!fine) {
-        // Coarse search through empty air with the cheap shape, inflated by the most that
-        // detail could add, so thin fringes are never skipped.
-        float probe = densityAt(p, w, lodB + 0.5, lodD, -1, h);
-        if (probe > 0.0) {
-          fine = true;
+      float dens = densityAt(p, w, mode == SEARCH ? lodB + 0.5 : lodB, lodD, detail,
+                             mode == SEARCH ? 0.5 * dt : 0.5 * dtF, h);
+
+      if (mode == SEARCH) {
+        if (dens > 0.0) {
+          mode = MARCH;
+          inside = false;
           emptyRun = 0;
           t = max(t - dt * 1.6, t0);
         } else {
@@ -385,12 +427,38 @@ void main() {
         }
         continue;
       }
-      int detail = t < 2500.0 ? 2 : (t < DETAIL_DIST ? 1 : 0);
-      float dens = densityAt(p, w, lodB, lodD, detail, h);
+      if (mode == REFINE) {
+        if (dens > 0.001) {
+          rb = ts;
+        } else {
+          ra = ts;
+        }
+        if (--refineLeft == 0) {
+          mode = MARCH;
+          t = rb;
+          settled = true;
+          shortSteps = 6;
+        }
+        continue;
+      }
+
       if (dens > 0.001) {
+        if (!inside && !settled && dtF > 40.0) {
+          mode = REFINE;
+          ra = max(t - dtF, t0);
+          rb = t;
+          refineLeft = 3;
+          continue;
+        }
+        settled = false;
+        inside = true;
         emptyRun = 0;
+        // Short steps through the dense outer layer, where nearly all the light we see comes
+        // from; thin cloud keeps the long steps.
+        float dtIn = (shortSteps > 0 || dens > 0.05) ? min(dtF, 12.0 + 0.002 * t) : dtF;
+        shortSteps--;
         float sigma = dens * uDensityScale;
-        float od = lightDepth(p, w, lodB, lodD, t < 6000.0, t > 9000.0, fract(jitter + 0.37));
+        float od = lightDepth(p, w, lodB, lodD, t > 9000.0, fract(jitter + 0.37));
         // Single scattering plus an energy-preserving approximation of multiple scattering.
         float sun = ph0 * exp(-od)
                   + 1.2 * (0.85 * ph1 * exp(-od * 0.25)
@@ -402,16 +470,19 @@ void main() {
         sun *= mix(1.0, powder, powderAmount);
         vec3 amb = mix(ambBottom, ambTop, clamp(h, 0.0, 1.0));
         vec3 S = (sunAtClouds * sun + amb) * ALBEDO;
-        float tr = exp(-sigma * dt);
+        float tr = exp(-sigma * dtIn);
         float absorbed = T * (1.0 - tr);
         L += S * absorbed;
         dsum += t * absorbed;
         wsum += absorbed;
         T *= tr;
-      } else if (++emptyRun > 6) {
-        fine = false;
+        t += dtIn;
+      } else {
+        settled = false;
+        inside = false;
+        if (++emptyRun > 6) mode = SEARCH;
+        t += dtF;
       }
-      t += dt;
     }
   }
 
@@ -439,5 +510,5 @@ void main() {
     if (depthKm < 0.0) depthKm = tSea * 1e-3;
   }
   outScene = vec4(radiance, visibility);
-  outDepth = vec4(depthKm, 0.0, 0.0, 1.0);
+  outDepth = vec4(depthKm, 1.0 - T, 0.0, 1.0); // g: how much of the pixel is cloud
 }

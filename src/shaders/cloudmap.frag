@@ -1,9 +1,10 @@
 // Cloud placement map, baked once. Individual heaped clouds are scattered on four nested
 // jittered grids, from large cumulus to many small fragments, clustered by a regional field
 // and gathered around the giants (which are separate 3D shapes, see cumulus.js).
-// Each cloud is a flat-based superellipse dome. The union of domes is stored per texel:
-// r = envelope height above the cloud base (m), g = thickness (density multiplier),
-// b = height of the dominant cloud (m, sets the scale of its noise), a = 1.
+// Each cloud is a flat-based half-ellipsoid dome. The smooth union of domes is stored per
+// texel: r = envelope height above the cloud base (m), g = thickness (density multiplier),
+// b = height of the dominant cloud (m, sets the scale of its noise); a is filled in by
+// cloudslope.frag with the slope of the envelope.
 // The map tiles seamlessly: cell hashes use coordinates wrapped by the tile.
 
 uniform float uTile;
@@ -35,6 +36,12 @@ float valueNoise(vec2 uv, float freq, uint seed) {
   float c = hash4(mod(i0 + vec2(0.0, 1.0), freq), seed).x;
   float d = hash4(mod(i0 + vec2(1.0, 1.0), freq), seed).x;
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Smooth maximum: overlapping domes flow into one body instead of reading as separate buns.
+float smax(float a, float b, float k) {
+  float h = max(k - abs(a - b), 0.0);
+  return max(a, b) + h * h * 0.25 / max(k, 1e-3);
 }
 
 float regionField(vec2 uv, uint seed) {
@@ -102,8 +109,8 @@ void main() {
         if (dist >= (L <= 1 ? 1.85 : 1.3)) continue;
         vec4 h2 = hash4(cw + 37.0, uint(L) + 12u);
         float height = clamp(radius * mix(AMIN[L], AMAX[L], h2.x), 70.0, 2400.0);
-        // Steep sides, rounded top, and a low skirt so noise can push edges outwards.
-        float dome = dist < 1.0 ? pow(1.0 - pow(dist, 2.4), 1.0 / 2.4) : 0.0;
+        // Rounded (half-ellipsoid) dome, and a low skirt so noise can push edges outwards.
+        float dome = dist < 1.0 ? sqrt(1.0 - dist * dist) : 0.0;
         float skirt = 0.16 * (1.0 - smoothstep(0.8, 1.3, dist));
         float e = height * max(dome, skirt);
         // Larger clouds are clusters: four lobes of varied size and height around the main
@@ -117,14 +124,15 @@ void main() {
           float ld = length(p - lc) / lr;
           if (ld >= 1.3) continue;
           float lh = height * mix(0.45, 0.95, hk.w);
-          float ldome = ld < 1.0 ? pow(1.0 - pow(ld, 2.4), 1.0 / 2.4) : 0.0;
-          e = max(e, lh * max(ldome, 0.16 * (1.0 - smoothstep(0.8, 1.3, ld))));
+          float ldome = ld < 1.0 ? sqrt(1.0 - ld * ld) : 0.0;
+          float le = lh * max(ldome, 0.16 * (1.0 - smoothstep(0.8, 1.3, ld)));
+          e = smax(e, le, 0.3 * min(e, le));
         }
         if (e > envelope) {
-          envelope = e;
           thickness = mix(TMIN[L], 1.0, h2.y);
           scaleH = height;
         }
+        envelope = smax(envelope, e, 0.3 * min(envelope, e));
       }
     }
   }

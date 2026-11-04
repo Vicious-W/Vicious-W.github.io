@@ -131,12 +131,10 @@ export function buildCloud(rand, style) {
     }
   }
 
-  // Cauliflower: two generations of smaller bubbles sitting on the exposed surface, mostly
-  // facing up and outwards; some sit low on the flanks and overhang.
-  const generations = [
-    { count: 190, r: [0.065, 0.11] },
-    { count: 340, r: [0.035, 0.06] }
-  ];
+  // Bulges: one generation of smaller bubbles of varied size on the exposed surface, mostly
+  // facing up and outwards; some sit low on the flanks and overhang. Finer cauliflower comes
+  // from the billowy noise in the shader, which is less regular than packed spheres.
+  const generations = [{ count: 120, r: [0.06, 0.15] }];
   for (const g of generations) {
     const core = spheres.slice();
     let weight = 0;
@@ -174,7 +172,8 @@ export function buildCloud(rand, style) {
         z = p.z + dz * s;
       }
       // Bigger bubbles high up, smaller ones on the lower flanks.
-      const r = range(g.r[0], g.r[1]) * (0.75 + 0.35 * Math.min(y / top, 1));
+      // Mostly small, some large; bigger high up, smaller on the lower flanks.
+      const r = (g.r[0] + (g.r[1] - g.r[0]) * Math.pow(rand(), 2)) * (0.75 + 0.35 * Math.min(y / top, 1));
       const cx = x - dx * r * 0.35;
       const cy = y - dy * r * 0.35;
       const cz = z - dz * r * 0.35;
@@ -190,7 +189,7 @@ export function rasterise(spheres) {
   const { nx, ny, nz, extent, range } = SHAPE;
   const vox = (2 * extent) / nx;
   const field = new Float32Array(nx * ny * nz).fill(-range);
-  const k = 0.025; // blend radius between bubbles
+  const k = 0.11; // blend radius: neighbouring bubbles flow into each other
   for (const s of spheres) {
     const reach = s.r + range;
     const reach2 = reach * reach;
