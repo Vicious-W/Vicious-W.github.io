@@ -149,9 +149,16 @@ function bakeVolume(renderer, pass, mode, size, slicesPerChunk, equalizeChannels
 /**
  * Physically based sky (Hillaire 2020 LUTs), raymarched cumulus at reduced resolution with
  * temporal accumulation, an ocean below, and a full-resolution composite.
+ * night: { storm (texture), min [x, z], size [x, y, z], range, base } for the night journey:
+ * the "sun" becomes the moon, the thunderstorm joins the clouds, and lightning is lit.
  */
-export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {}) {
-  const sunIlluminance = new THREE.Vector3(1.0, 1.0, 1.0);
+export function createSky(renderer, { cloudScale = 0.5, quality = "normal", night = null } = {}) {
+  // Moonlight: a thin crescent, bluish as night scenes look to the eye.
+  const sunIlluminance = night
+    ? new THREE.Vector3(0.55, 0.68, 1.0).multiplyScalar(0.0016)
+    : new THREE.Vector3(1.0, 1.0, 1.0);
+  const wind = night ? { x: 0, z: 0 } : CLOUD.wind;
+  const targets = night ? 3 : 2;
 
   // ---- one-off bakes ---------------------------------------------------------------
   const noisePass = createPass({
@@ -256,9 +263,11 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
     uTanHalf: { value: new THREE.Vector2(1, 1) }
   });
 
+  const nightDefines = night ? { NIGHT: "1" } : {};
   const cloudDefines = {
-    CLOUD_BOTTOM: glslFloat(CLOUD.bottom),
-    CLOUD_TOP_MAX: glslFloat(CLOUD.topMax),
+    ...nightDefines,
+    CLOUD_BOTTOM: glslFloat(night ? night.base : CLOUD.bottom),
+    CLOUD_TOP_MAX: glslFloat(night ? 13500 : CLOUD.topMax),
     BASE_PERIOD: glslFloat(CLOUD.basePeriod),
     BASE_Y_SCALE: glslFloat(CLOUD.baseYScale),
     DETAIL_PERIOD: glslFloat(CLOUD.detailPeriod),
@@ -266,7 +275,13 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
     WEATHER_PERIOD_B: glslFloat(CLOUD.weatherPeriodB),
     WEATHER_PERIOD_C: glslFloat(CLOUD.weatherPeriodC),
     CLOUDMAP_PERIOD: glslFloat(CLOUD.cloudMapPeriod),
-    ...giantDefines
+    ...giantDefines,
+    ...(night
+      ? {
+          STORM_SIZE: `vec3(${night.size.map(glslFloat).join(", ")})`,
+          STORM_RANGE: glslFloat(night.range)
+        }
+      : {})
   };
 
   const cloudPass = createPass({
@@ -299,14 +314,26 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
       uWeatherOffsetC: { value: new THREE.Vector2() },
       uDensityScale: { value: 0.19 },
       uMaxSteps: { value: quality === "high" ? 420 : 280 },
-      uStepScale: { value: quality === "high" ? 0.6 : 1.0 }
+      uStepScale: { value: quality === "high" ? 0.6 : 1.0 },
+      ...(night
+        ? {
+            uStorm: { value: night.storm },
+            uStormCam: { value: new THREE.Vector2() },
+            uFlashPos: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
+            uFlashWeight: { value: new THREE.Vector3() },
+            uFlashOn: { value: 0 },
+            uFog: { value: 0 }
+          }
+        : {})
     }
   });
 
   const temporalPass = createPass({
     vertexShader,
     fragmentShader: fragment(temporalSrc),
+    defines: nightDefines,
     uniforms: {
+      ...(night ? { uCurFlash: { value: null }, uHistFlash: { value: null }, uFlashReset: { value: 0 } } : {}),
       ...camUniforms(),
       uCurScene: { value: null },
       uCurDepth: { value: null },
@@ -327,8 +354,17 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
   const compositePass = createPass({
     vertexShader,
     fragmentShader: fragment(compositeSrc),
-    defines: { CIRRUS_PERIOD: glslFloat(CLOUD.cirrusPeriod) },
+    defines: { ...nightDefines, CIRRUS_PERIOD: glslFloat(CLOUD.cirrusPeriod) },
     uniforms: {
+      ...(night
+        ? {
+            uFlash: { value: null },
+            uFlashPower: { value: 0 },
+            uFlashColor: { value: new THREE.Vector3(0.8, 0.88, 1.0) },
+            uTime: { value: 0 },
+            uScreen: { value: new THREE.Vector2(1, 1) }
+          }
+        : {}),
       uWeather: { value: weather },
       uCirrusOffset: { value: new THREE.Vector2() },
       ...camUniforms(),
@@ -354,6 +390,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
   let scale = cloudScale;
   let frame = 0;
   let accumulated = 0;
+  let lastFlashId = -1;
   const prev = {
     right: new THREE.Vector3(1, 0, 0),
     up: new THREE.Vector3(0, 1, 0),
@@ -370,8 +407,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
     const w = Math.max(1, Math.round(width * scale));
     const h = Math.max(1, Math.round(height * scale));
     // Checkerboard: the cloud pass renders half the pixels each frame into a half-width target.
-    cloudTarget = floatTarget(Math.ceil(w / 2), h, { count: 2 });
-    history = [floatTarget(w, h, { count: 2 }), floatTarget(w, h, { count: 2 })];
+    cloudTarget = floatTarget(Math.ceil(w / 2), h, { count: targets });
+    history = [floatTarget(w, h, { count: targets }), floatTarget(w, h, { count: targets })];
     cloudPass.uniforms.uResolution.value.set(w, h);
     historyValid = false;
     accumulated = 0;
@@ -386,6 +423,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
 
   return {
     get cloudScale() { return scale; },
+    /** The reconstructed cloud image of the last frame: rgb + sky visibility, and depth. */
+    get scene() { return history[historyIndex]; },
     get frame() { return frame; },
     get accumulated() { return accumulated; },
 
@@ -420,8 +459,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
 
       // Cloud field offsets: wrapped per period so world coordinates never lose precision.
       const t = view.time;
-      const cx = view.x - CLOUD.wind.x * t;
-      const cz = view.z - CLOUD.wind.z * t;
+      const cx = view.x - wind.x * t;
+      const cz = view.z - wind.z * t;
       const u = cloudPass.uniforms;
       u.uBaseOffset.value.set(
         wrap(cx, CLOUD.basePeriod),
@@ -455,6 +494,17 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
       u.uSunDir.value.copy(view.sunDir);
       u.uFrame.value = frame;
       u.uParity.value = frame & 1;
+      const flash = night ? view.flash : null;
+      if (night) {
+        u.uStormCam.value.set(view.x - night.min[0], view.z - night.min[1]);
+        u.uFog.value = view.fog ?? 0;
+        u.uFlashOn.value = flash && flash.on ? 1 : 0;
+        if (flash && flash.on) {
+          // Sources relative to the camera (y stays altitude, as in the cloud shader).
+          flash.pos.forEach((q, k) => u.uFlashPos.value[k].set(q[0] - view.x, q[1], q[2] - view.z));
+          u.uFlashWeight.value.set(flash.weight[0], flash.weight[1], flash.weight[2]);
+        }
+      }
       cloudPass.render(renderer, cloudTarget);
 
       const read = history[historyIndex];
@@ -477,6 +527,13 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
       // in flight, a moving average over about five samples.
       tu.uBlend.value = !historyValid ? 1 : still ? 1 / (Math.floor(accumulated / 2) + 1) : 0.22;
       tu.uClampHistory.value = still ? 0 : 1;
+      if (night) {
+        tu.uCurFlash.value = cloudTarget.textures[2];
+        tu.uHistFlash.value = read.textures[2];
+        const id = flash && flash.on ? flash.id : -1;
+        tu.uFlashReset.value = id !== lastFlashId ? 1 : 0;
+        lastFlashId = id;
+      }
       temporalPass.render(renderer, write);
       historyIndex = 1 - historyIndex;
       historyValid = true;
@@ -488,6 +545,13 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal" } = {
       cu.uCamR.value = camR;
       cu.uSunDir.value.copy(view.sunDir);
       cu.uFrame.value = frame;
+      if (night) {
+        cu.uFlash.value = write.textures[2];
+        cu.uFlashPower.value = flash && flash.on ? flash.power : 0;
+        if (flash && flash.color) cu.uFlashColor.value.set(...flash.color);
+        cu.uTime.value = view.time;
+        cu.uScreen.value.set(width, height);
+      }
       const sz = view.sunDir.dot(view.forward);
       if (sz > 0) {
         const sx = view.sunDir.dot(view.right) / (sz * view.tanHalf.x);

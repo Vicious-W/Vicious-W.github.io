@@ -29,6 +29,15 @@ uniform float uHistoryValid;
 layout(location = 0) out vec4 outScene;
 layout(location = 1) out vec4 outDepth;
 
+#ifdef NIGHT
+// The flash channel (light per unit flash power) is rebuilt the same way, but its history is
+// dropped when a new flash starts: that light came from somewhere else.
+uniform sampler2D uCurFlash;
+uniform sampler2D uHistFlash;
+uniform float uFlashReset;
+layout(location = 2) out vec4 outFlash;
+#endif
+
 ivec2 gFull;
 
 vec2 projectPrev(vec3 v) {
@@ -52,6 +61,13 @@ vec4 freshScene(ivec2 q) {
   q = inside(q);
   return texelFetch(uCurScene, ivec2(q.x >> 1, q.y), 0);
 }
+
+#ifdef NIGHT
+float freshFlash(ivec2 q) {
+  q = inside(q);
+  return texelFetch(uCurFlash, ivec2(q.x >> 1, q.y), 0).r;
+}
+#endif
 
 // r = depth (km), g = cloud opacity.
 vec2 freshDepth(ivec2 q) {
@@ -125,4 +141,35 @@ void main() {
   }
   outScene = result;
   outDepth = vec4(depthKm, cloud, 0.0, 1.0);
+
+#ifdef NIGHT
+  float fcur;
+  float fmn;
+  float fmx;
+  if (fresh) {
+    fcur = freshFlash(p);
+    fmn = fcur;
+    fmx = fcur;
+    for (int k = 0; k < 4; k++) {
+      float c = freshFlash(p + ivec2((k & 1) * 2 - 1, (k >> 1) * 2 - 1));
+      fmn = min(fmn, c);
+      fmx = max(fmx, c);
+    }
+  } else {
+    float c0 = freshFlash(p + ivec2(-1, 0));
+    float c1 = freshFlash(p + ivec2(1, 0));
+    float c2 = freshFlash(p + ivec2(0, -1));
+    float c3 = freshFlash(p + ivec2(0, 1));
+    fcur = 0.25 * (c0 + c1 + c2 + c3);
+    fmn = min(min(c0, c1), min(c2, c3));
+    fmx = max(max(c0, c1), max(c2, c3));
+  }
+  float flash = fcur;
+  if (uHistoryValid > 0.5 && uFlashReset < 0.5 && onScreen) {
+    float fh = textureLod(uHistFlash, prevUv, 0.0).r;
+    if (uClampHistory > 0.5) fh = clamp(fh, fmn - (fmx - fmn) * 0.25, fmx + (fmx - fmn) * 0.25);
+    flash = fresh ? mix(fh, fcur, uBlend) : fh;
+  }
+  outFlash = vec4(flash, 0.0, 0.0, 1.0);
+#endif
 }

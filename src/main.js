@@ -1,6 +1,10 @@
 import * as THREE from "three";
 import { createSky } from "./sky/sky.js";
 import { createFlight } from "./flight.js";
+import { createJourney } from "./night/journey.js";
+import { bakeStorm, STORM } from "./night/storm.js";
+import { createLightning } from "./night/lightning.js";
+import { createBolts } from "./night/bolts.js";
 
 const canvas = document.getElementById("view");
 const veil = document.getElementById("veil");
@@ -9,6 +13,8 @@ const still = params.has("still");
 // Capture aid: "still&motion" flies 1/60 s per frame with the live temporal filter, to see
 // what a viewer sees in flight rather than a converged average.
 const motion = still && params.has("motion");
+// Scene two, the night journey through the thunderstorm.
+const night = params.has("night");
 const num = (key, fallback) => (params.has(key) ? Number(params.get(key)) : fallback);
 
 function start() {
@@ -34,16 +40,24 @@ function start() {
   const baseScale = num("scale", coarsePointer ? 0.35 : 0.5);
   renderer.setPixelRatio(dpr);
 
-  const sky = createSky(renderer, { cloudScale: baseScale, quality: params.get("q") || "normal" });
-  const flight = createFlight({
-    alt: num("alt", undefined),
-    heading: num("heading", undefined),
-    yaw: num("yaw", undefined),
-    pitch: num("pitch", undefined),
-    time: num("t", undefined),
-    x: num("x", undefined),
-    z: num("z", undefined)
+  const storm = night ? bakeStorm() : null;
+  const sky = createSky(renderer, {
+    cloudScale: baseScale,
+    quality: params.get("q") || "normal",
+    night: storm && { storm: storm.texture, min: STORM.min, size: STORM.size, range: STORM.range, base: STORM.base }
   });
+  // Capture aid: "night&free" flies the free day-style flight (x, z, alt, heading) at night.
+  const flight = night && !params.has("free")
+    ? createJourney({ time: num("t", undefined), yaw: num("yaw", undefined), pitch: num("pitch", undefined) })
+    : createFlight({
+        alt: num("alt", undefined),
+        heading: num("heading", undefined),
+        yaw: num("yaw", undefined),
+        pitch: num("pitch", undefined),
+        time: num("t", undefined),
+        x: num("x", undefined),
+        z: num("z", undefined)
+      });
 
   function resize() {
     renderer.setSize(window.innerWidth, window.innerHeight, false);
@@ -95,21 +109,36 @@ function start() {
     }
   }
 
+  if (night) {
+    // The night opens out of black.
+    document.body.style.background = "#000";
+    veil.style.background = "#000";
+  }
   if (still) {
     flight.snapLook();
     veil.style.transition = "none";
     veil.classList.add("gone");
   }
   const stillFrames = num("frames", 24);
+  const lightning = night ? createLightning({ stormSD: storm.sample }) : null;
+  const bolts = night ? createBolts(renderer) : null;
+  let flashControl = null;
   let last = performance.now();
   let revealed = false;
 
   function tick(now) {
     const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
     last = now;
-    if (!still) flight.update(dt);
-    else if (motion) flight.update(1 / 60);
-    sky.render(flight.view(window.innerWidth / window.innerHeight), { still: still && !motion });
+    const step = still ? (motion ? 1 / 60 : 0) : dt;
+    if (step > 0) flight.update(step);
+    const view = flight.view(window.innerWidth / window.innerHeight);
+    if (lightning) {
+      // Capture aid: "flash=ic|near|cg&ft=ms" holds one flash, ft milliseconds after its first stroke.
+      if (!flashControl) flashControl = still && params.has("flash") ? lightning.force(view, params.get("flash"), num("ft", 15)) : lightning;
+      view.flash = flashControl.update(view, flight.state.time, step || 1 / 60);
+    }
+    sky.render(view, { still: still && !motion });
+    if (bolts) bolts.render(view, view.flash, sky.scene, canvas.width, canvas.height);
     if (!revealed && sky.frame > 4) {
       veil.classList.add("gone");
       revealed = true;

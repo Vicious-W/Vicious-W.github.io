@@ -39,6 +39,31 @@ uniform float uStepScale;
 layout(location = 0) out vec4 outScene;
 layout(location = 1) out vec4 outDepth;
 
+#ifdef NIGHT
+// The night journey's thunderstorm (see night/storm.js) and its lightning.
+uniform sampler3D uStorm;
+uniform vec2 uStormCam;     // camera position in the storm volume, from its corner (m)
+uniform vec3 uFlashPos[3];  // lightning sources, relative to the camera (m)
+uniform vec3 uFlashWeight;  // share of the flash at each source
+uniform float uFlashOn;     // 1 while a flash lights the scene
+uniform float uFog;         // rain and cloud haze around the aircraft inside the storm, 0..1
+// Light from the current flash per unit of its power; the flicker is applied in composite.frag,
+// so the temporal filter never smears it.
+layout(location = 2) out vec4 outFlash;
+
+// Set by densityAt: a distance along any direction that is certainly free of cloud (m), for
+// the march to skip. Only the storm knows one: its baked shape is a distance field.
+float gSafe = 0.0;
+
+float stormSD(vec3 suv, float lod) {
+  return (textureLod(uStorm, suv, lod).r * 2.0 - 1.0) * STORM_RANGE;
+}
+
+vec3 stormUv(vec3 p, float alt) {
+  return vec3(p.x + uStormCam.x, alt, p.z + uStormCam.y) / STORM_SIZE;
+}
+#endif
+
 const float MAX_DIST = 64000.0;
 const float ALBEDO = 0.985;
 const mat2 WEATHER_ROT = mat2(0.8, 0.6, -0.6, 0.8);
@@ -159,7 +184,27 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, float sof
   bool giantNear = ga.z > 0.0 && max(abs(rel.x), abs(rel.y)) < GIANT_EXTENT * 1.42 && qy < 1.0;
   bool sheetNear = w.sheet > 0.02 && z < 700.0;
   bool altoNear = w.alto > 0.02 && alt > ALTO_BOTTOM && alt < ALTO_TOP;
-  if (!(mapNear || giantNear || sheetNear || altoNear)) {
+  bool stormNear = false;
+  float calm = 1.0;
+#ifdef NIGHT
+  gSafe = 0.0;
+  // The storm volume, tested at a coarse level first (its distances are clamped, so anything
+  // above the floor means the storm is within reach). Fair-weather clouds keep away from it.
+  vec3 suv = stormUv(p, alt);
+  bool inBox = all(greaterThan(suv, vec3(0.0))) && all(lessThan(suv, vec3(1.0)));
+  float coarse = inBox ? stormSD(suv, 2.0) : -STORM_RANGE;
+  stormNear = coarse > -STORM_RANGE + 60.0;
+  calm = smoothstep(15000.0, 23000.0, length(suv.xz * STORM_SIZE.xz - 0.5 * STORM_SIZE.xz));
+  mapNear = mapNear && calm > 0.0;
+  giantNear = giantNear && calm > 0.0;
+  sheetNear = sheetNear && calm > 0.0;
+  altoNear = altoNear && calm > 0.0;
+  // Near the storm no other cloud can be in the way, so its distance bounds a safe skip,
+  // less the most that noise, detail and the soft surface could add (the coarse level is an
+  // average over about a kilometre, so it keeps a wider margin).
+  if (calm <= 0.0 && inBox && coarse < -1000.0) gSafe = -coarse - 1000.0;
+#endif
+  if (!(mapNear || giantNear || sheetNear || altoNear || stormNear)) {
     h = -1.0; // nothing within reach: the caller may take a longer step
     return 0.0;
   }
@@ -167,12 +212,13 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, float sof
   // Slightly squashed vertically so features do not stretch into spikes. The altocumulus
   // layer alone does not need this sample.
   vec3 bp = (p + uBaseOffset) * vec3(1.0, BASE_Y_SCALE, 1.0) / BASE_PERIOD;
-  vec4 n = (mapNear || giantNear || sheetNear) ? textureLod(uBaseNoise, bp, lodB) : vec4(0.5);
+  vec4 n = (mapNear || giantNear || sheetNear || stormNear) ? textureLod(uBaseNoise, bp, lodB) : vec4(0.5);
   vec2 fineWarp = CLOUDMAP_ROT * ((n.ba - 0.5) * 700.0);
   float d = 0.0;
   float shape = -1e4; // metres inside the surface, negative outside
   float edge = 55.0;  // amplitude of the fine edge detail (m)
   float thick = 1.0;
+  float softEdge = 0.0; // least depth over which this cloud's surface turns opaque (m)
 
   // Small to large cumulus from the placement map: flat-based domes roughened by noise whose
   // amplitude follows the size of the cloud.
@@ -189,7 +235,7 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, float sof
             + min(0.46 * size, 2300.0) * (n.r - 0.5)
             + (0.26 * size + 40.0) * (n.g - 0.5);
       edge = 55.0 + 0.03 * size;
-      thick = cm.g;
+      thick = cm.g * calm;
       h = clamp(z / max(cm.r, 1.0), 0.0, 1.0);
     }
   }
@@ -209,11 +255,31 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, float sof
       if (gshape > shape) {
         shape = gshape;
         edge = 0.022 * gr;
-        thick = gb.w;
+        thick = gb.w * calm;
         h = clamp(qy * 1.3, 0.0, 1.0);
       }
     }
   }
+
+#ifdef NIGHT
+  // The thunderstorm: its baked shape (one voxel is about 300 m) roughened by the same noise
+  // as every other cloud, at the scale of its towers.
+  if (stormNear) {
+    float sdFine = stormSD(suv, max(lodB - 3.0, 0.0));
+    if (calm <= 0.0 && sdFine < -900.0) gSafe = -sdFine - 900.0;
+    // A storm's structure is at the scale of kilometres and its surfaces are soft: small
+    // bumps and hard edges make it read as rock. The anvil is a smooth, flat shelf.
+    float billows = mix(1.0, 0.3, smoothstep(10000.0, 11500.0, alt));
+    float sshape = sdFine + billows * (650.0 * (n.r - 0.5) + 220.0 * (n.g - 0.5));
+    if (sshape > shape) {
+      shape = sshape;
+      edge = 90.0;
+      thick = 1.0;
+      softEdge = 280.0;
+      h = clamp(z / 9000.0, 0.0, 1.0);
+    }
+  }
+#endif
 
   if (shape > -1e3) {
     if (detail < 0) shape += edge * 2.6 + soft;
@@ -230,7 +296,7 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, int detail, float sof
       float ragged = mix(1.7, 1.0, smoothstep(0.0, 140.0, z)) * mix(1.5, 1.0, thick);
       shape += edge * ragged * (dfbm - 0.5) * 2.0;
     }
-    float ramp = max(35.0 + 0.4 * (edge - 55.0), soft);
+    float ramp = max(max(35.0 + 0.4 * (edge - 55.0), soft), softEdge);
     d = clamp(shape / ramp, 0.0, 1.0) * smoothstep(0.0, 30.0, z) * thick;
   }
 
@@ -280,6 +346,52 @@ float lightDepth(vec3 p, Weather w, float lodB, float lodD, bool far, float jitt
   }
   return od * uDensityScale;
 }
+
+#ifdef NIGHT
+// Falloff of the current flash's light at p per unit of its power (power = irradiance at
+// 1 km in clear air): inverse square from each source, a little lost to rain and haze.
+float flashFalloff(vec3 p) {
+  float e = 0.0;
+  for (int k = 0; k < 3; k++) {
+    float dKm = length(uFlashPos[k] - p) * 1e-3;
+    e += uFlashWeight[k] * exp(-dKm / 8.0) / (dKm * dKm + 0.04);
+  }
+  return e;
+}
+
+vec3 flashCentre() {
+  return uFlashPos[0] * uFlashWeight.x + uFlashPos[1] * uFlashWeight.y + uFlashPos[2] * uFlashWeight.z;
+}
+
+// Is the moon hidden behind the storm from p? Two taps of the storm shape towards it; deep in
+// the storm this saves the whole moonlight march.
+bool moonBlocked(vec3 p) {
+  vec3 a = p + uSunDir * 1500.0;
+  vec3 b = p + uSunDir * 4500.0;
+  return stormSD(stormUv(a, altitudeAt(a)), 1.0) > 250.0 && stormSD(stormUv(b, altitudeAt(b)), 1.0) > 250.0;
+}
+#endif
+
+#ifdef NIGHT
+// Optical depth from p towards the flash (direction l, distance dist), like lightDepth: five
+// growing steps over smoothed density.
+float flashDepth(vec3 p, vec3 l, float dist, Weather w, float lodB, float jitter) {
+  float od = 0.0;
+  float prev = 0.0;
+  float d = 25.0 * (0.7 + 0.6 * jitter);
+  float h;
+  for (int j = 0; j < 5; j++) {
+    float next = min(d, dist);
+    float seg = next - prev;
+    if (seg <= 0.0) break;
+    vec3 q = p + l * (prev + 0.5 * seg);
+    od += densityAt(q, w, lodB + 1.0 + float(j) * 0.6, 0.0, 0, 0.0, h) * seg;
+    prev = next;
+    d *= 2.6;
+  }
+  return od * uDensityScale;
+}
+#endif
 
 float cloudPhase(float c, float k) {
   return mix(hgPhase(0.85 * k, c), hgPhase(-0.25 * k, c), 0.22);
@@ -371,6 +483,9 @@ void main() {
 
   vec3 L = vec3(0.0);
   float T = 1.0;
+#ifdef NIGHT
+  float Lf = 0.0; // flash light per unit power (scattered isotropically: multiple scattering)
+#endif
   float dsum = 0.0;
   float wsum = 0.0;
   // Per-pixel noise, advanced along a golden-ratio sequence every frame.
@@ -423,7 +538,11 @@ void main() {
           t = max(t - dt * 1.6, t0);
         } else {
           // Longer strides where no cloud is within reach at all.
+#ifdef NIGHT
+          t += max(dt * (h < 0.0 ? 2.6 : 2.0), gSafe);
+#else
           t += dt * (h < 0.0 ? 2.6 : 2.0);
+#endif
         }
         continue;
       }
@@ -458,7 +577,11 @@ void main() {
         float dtIn = (shortSteps > 0 || dens > 0.05) ? min(dtF, 12.0 + 0.002 * t) : dtF;
         shortSteps--;
         float sigma = dens * uDensityScale;
+#ifdef NIGHT
+        float od = moonBlocked(p) ? 60.0 : lightDepth(p, w, lodB, lodD, t > 9000.0, fract(jitter + 0.37));
+#else
         float od = lightDepth(p, w, lodB, lodD, t > 9000.0, fract(jitter + 0.37));
+#endif
         // Single scattering plus an energy-preserving approximation of multiple scattering.
         float sun = ph0 * exp(-od)
                   + 1.2 * (0.85 * ph1 * exp(-od * 0.25)
@@ -473,6 +596,24 @@ void main() {
         float tr = exp(-sigma * dtIn);
         float absorbed = T * (1.0 - tr);
         L += S * absorbed;
+#ifdef NIGHT
+        if (uFlashOn > 0.5) {
+          // Lightning lights the cloud like the sun does: shadowed through the cloud, bright
+          // single scattering towards the viewer around its edges, softer multiple scattering
+          // a little deeper in, and diffusion through kilometres of cloud, so a flash buried in
+          // a cloud makes the whole of it glow from within.
+          vec3 lc = flashCentre() - p;
+          float dl = length(lc);
+          vec3 l = lc / max(dl, 1.0);
+          float odF = flashDepth(p, l, min(dl, 6000.0), w, lodB, fract(jitter + 0.71));
+          float cosF = dot(dir, l);
+          float lit = cloudPhase(cosF, 1.0) * exp(-odF)
+                    + 1.1 * (0.85 * cloudPhase(cosF, 0.6) * exp(-odF * 0.25)
+                           + 0.65 * cloudPhase(cosF, 0.36) * exp(-odF * 0.0625))
+                    + 0.3 / (4.0 * PI) / (1.0 + 0.1 * odF);
+          Lf += absorbed * flashFalloff(p) * lit * ALBEDO;
+        }
+#endif
         dsum += t * absorbed;
         wsum += absorbed;
         T *= tr;
@@ -496,19 +637,70 @@ void main() {
                                    depth * 1e-3, 8, apT);
     radiance = L * apT + apL * (1.0 - T);
     depthKm = depth * 1e-3;
+#ifdef NIGHT
+    Lf *= dot(apT, vec3(1.0 / 3.0));
+#endif
   }
   float visibility = T;
+#ifdef NIGHT
+  if (uFog > 0.0) {
+    // Inside the storm, rain and cloud haze: distant walls fade into black, and a flash lights
+    // the haze itself (single scattering of its point sources, integrated along the ray).
+    float sigmaF = 2.5e-4 * uFog;
+    float far = wsum > 1e-5 ? dsum / wsum : (tSea > 0.0 ? tSea : 20000.0);
+    float Tf = exp(-sigmaF * far);
+    radiance *= Tf;
+    Lf *= Tf;
+    visibility *= exp(-sigmaF * 20000.0);
+    if (uFlashOn > 0.5) {
+      float len = min(far, 9000.0);
+      float acc = 0.0;
+      for (int k = 0; k < 8; k++) {
+        float sx = len * (float(k) + fract(jitter + 0.13 * float(k))) / 8.0;
+        acc += exp(-sigmaF * sx) * flashFalloff(dir * sx + vec3(0.0, uCamAlt, 0.0));
+      }
+      Lf += acc * len / 8.0 * sigmaF * (0.25 / (4.0 * PI));
+    }
+  }
+#endif
   if (tSea > 0.0) {
+#ifdef NIGHT
+    T *= exp(-2.5e-4 * uFog * tSea);
+#endif
     if (T > 0.003) {
       vec3 seaL = shadeSea(dir, tSea, rCamKm, skyAvg, fract(jitter + 0.5));
       vec3 apT;
       vec3 apL = integrateScattering(uTransmittance, uMultiScatter, camKm, dir, uSunDir, uSunIlluminance,
                                      tSea * 1e-3, 12, apT);
       radiance += T * (seaL * apT + apL);
+#ifdef NIGHT
+      if (uFlashOn > 0.5) {
+        // The sea under a flash: its dark body, and the flash mirrored in the water.
+        vec3 ps = vec3(0.0, uCamAlt, 0.0) + dir * tSea;
+        vec3 ns = normalize(vec3(ps.x, RG_M, ps.z));
+        float e = 0.0;
+        for (int k = 0; k < 3; k++) {
+          vec3 l = uFlashPos[k] - ps;
+          float dKm = length(l) * 1e-3;
+          l = normalize(l);
+          vec3 hv = normalize(l - dir);
+          float NoH = max(dot(ns, hv), 1e-3);
+          float sigma2 = 0.035;
+          float cos2 = NoH * NoH;
+          float D = exp(-(1.0 - cos2) / (cos2 * sigma2)) / (PI * sigma2 * cos2 * cos2);
+          e += uFlashWeight[k] * exp(-dKm / 8.0) / (dKm * dKm + 0.25)
+             * (0.004 * max(dot(ns, l), 0.0) + 0.003 * D / (4.0 * max(dot(ns, -dir), 0.05)));
+        }
+        Lf += T * e * apT.g;
+      }
+#endif
     }
     visibility = 0.0;
     if (depthKm < 0.0) depthKm = tSea * 1e-3;
   }
   outScene = vec4(radiance, visibility);
   outDepth = vec4(depthKm, 1.0 - T, 0.0, 1.0); // g: how much of the pixel is cloud
+#ifdef NIGHT
+  outFlash = vec4(Lf, 0.0, 0.0, 1.0);
+#endif
 }
