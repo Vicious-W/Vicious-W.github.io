@@ -36,15 +36,16 @@ function start() {
     return;
   }
 
-  const coarsePointer = matchMedia("(pointer: coarse)").matches;
-  const dpr = Math.min(window.devicePixelRatio || 1, coarsePointer ? 1.25 : 1.5);
-  const baseScale = num("scale", coarsePointer ? 0.35 : 0.5);
+  // Desktop only, and the best look first: clouds at full resolution with the finer march.
+  // The resolution gives way only if the frame rate falls below 30.
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const baseScale = num("scale", 1);
   renderer.setPixelRatio(dpr);
 
   const storm = night ? bakeStorm() : null;
   const sky = createSky(renderer, {
     cloudScale: baseScale,
-    quality: params.get("q") || "normal",
+    quality: params.get("q") || "high",
     maxSteps: num("steps", 0),
     night: storm && { storm: storm.texture, min: STORM.min, size: STORM.size, range: STORM.range, base: STORM.base, calm: STORM.calm }
   });
@@ -108,7 +109,7 @@ function start() {
   canvas.addEventListener("pointercancel", endDrag);
   canvas.addEventListener("contextmenu", event => event.preventDefault());
 
-  // Lower the cloud resolution on slower GPUs, raise it back when there is headroom.
+  // A safety net only: lower the cloud resolution if frames take too long, raise it back after.
   let timeAcc = 0;
   let frameCount = 0;
   let cooldown = 2;
@@ -122,8 +123,8 @@ function start() {
     frameCount = 0;
     if (cooldown > 0) return;
     let next = sky.cloudScale;
-    if (avg > 1 / 45) next = Math.max(0.28, next - 0.05);
-    else if (avg < 1 / 57 && next < baseScale) next = Math.min(baseScale, next + 0.05);
+    if (avg > 1 / 30) next = Math.max(0.5, next - 0.05);
+    else if (avg < 1 / 45 && next < baseScale) next = Math.min(baseScale, next + 0.05);
     if (next !== sky.cloudScale) {
       sky.setCloudScale(next);
       cooldown = 3;
