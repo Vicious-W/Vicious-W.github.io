@@ -30,11 +30,12 @@ layout(location = 0) out vec4 outScene;
 layout(location = 1) out vec4 outDepth;
 
 #ifdef NIGHT
-// The flash channel (light per unit flash power) is rebuilt the same way, but its history is
-// dropped when a new flash starts: that light came from somewhere else.
+// The lightning channels (r: the flash, g: the flicker; light per unit of their power) are
+// rebuilt the same way, but the history of one is dropped when its lightning strikes anew:
+// that light came from somewhere else.
 uniform sampler2D uCurFlash;
 uniform sampler2D uHistFlash;
-uniform float uFlashReset;
+uniform vec2 uFlashReset;
 layout(location = 2) out vec4 outFlash;
 #endif
 
@@ -63,9 +64,9 @@ vec4 freshScene(ivec2 q) {
 }
 
 #ifdef NIGHT
-float freshFlash(ivec2 q) {
+vec2 freshFlash(ivec2 q) {
   q = inside(q);
-  return texelFetch(uCurFlash, ivec2(q.x >> 1, q.y), 0).r;
+  return texelFetch(uCurFlash, ivec2(q.x >> 1, q.y), 0).rg;
 }
 #endif
 
@@ -143,33 +144,33 @@ void main() {
   outDepth = vec4(depthKm, cloud, 0.0, 1.0);
 
 #ifdef NIGHT
-  float fcur;
-  float fmn;
-  float fmx;
+  vec2 fcur;
+  vec2 fmn;
+  vec2 fmx;
   if (fresh) {
     fcur = freshFlash(p);
     fmn = fcur;
     fmx = fcur;
     for (int k = 0; k < 4; k++) {
-      float c = freshFlash(p + ivec2((k & 1) * 2 - 1, (k >> 1) * 2 - 1));
+      vec2 c = freshFlash(p + ivec2((k & 1) * 2 - 1, (k >> 1) * 2 - 1));
       fmn = min(fmn, c);
       fmx = max(fmx, c);
     }
   } else {
-    float c0 = freshFlash(p + ivec2(-1, 0));
-    float c1 = freshFlash(p + ivec2(1, 0));
-    float c2 = freshFlash(p + ivec2(0, -1));
-    float c3 = freshFlash(p + ivec2(0, 1));
+    vec2 c0 = freshFlash(p + ivec2(-1, 0));
+    vec2 c1 = freshFlash(p + ivec2(1, 0));
+    vec2 c2 = freshFlash(p + ivec2(0, -1));
+    vec2 c3 = freshFlash(p + ivec2(0, 1));
     fcur = 0.25 * (c0 + c1 + c2 + c3);
     fmn = min(min(c0, c1), min(c2, c3));
     fmx = max(max(c0, c1), max(c2, c3));
   }
-  float flash = fcur;
-  if (uHistoryValid > 0.5 && uFlashReset < 0.5 && onScreen) {
-    float fh = textureLod(uHistFlash, prevUv, 0.0).r;
+  vec2 flash = fcur;
+  if (uHistoryValid > 0.5 && onScreen) {
+    vec2 fh = textureLod(uHistFlash, prevUv, 0.0).rg;
     if (uClampHistory > 0.5) fh = clamp(fh, fmn - (fmx - fmn) * 0.25, fmx + (fmx - fmn) * 0.25);
-    flash = fresh ? mix(fh, fcur, uBlend) : fh;
+    flash = mix(fresh ? mix(fh, fcur, uBlend) : fh, fcur, step(0.5, uFlashReset));
   }
-  outFlash = vec4(flash, 0.0, 0.0, 1.0);
+  outFlash = vec4(flash, 0.0, 1.0);
 #endif
 }

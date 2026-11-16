@@ -1,13 +1,21 @@
-// The view through the cockpit glass. The outside (the finished image) is refracted by
-// raindrops that the airflow drives back over the bubble from the point straight ahead; hail
-// strikes it; St. Elmo's fire crawls along the frame and across the glass; the instrument glow
-// reflects faintly in it. Then the cockpit itself goes on top (linear light, tone-mapped here
-// the same way as the outside).
-// Bubble, frame planes: defines from cockpit.js. Aircraft frame: -z ahead, +y up.
+// The finished frame of the night journey: the outside seen through the cockpit's glass, what
+// the glass and the air just outside it add, the cockpit over it, then tone mapping.
+//
+// - Rain and hail rush past the canopy. Unlit they are unseen; lightning and the aircraft's own
+//   lights catch them as streaks radiating from the point ahead they all come from.
+// - Water runs back over the glass in rivulets from the nose: it bends the view behind it, and
+//   its rims catch the light.
+// - In cloud, the red beacons and the wing-tip lights glow in the cloud all around.
+// - Hail splashes on the glass; the instruments are mirrored faintly in it; St. Elmo's fire
+//   leaves a violet corona where its discharges cling.
+// Cabin frame: the eye near the origin, -z ahead, +y up (m). The outside arrives exposed; light
+// added here is in scene units and exposed with uExposure. The cockpit layer holds
+// premultiplied scene light and coverage.
 
-uniform sampler2D uOutside;  // display-referred image of the outside
-uniform sampler2D uCockpit;  // cockpit layer: linear radiance and coverage
-uniform vec3 uHeadRight;     // head basis in the aircraft frame
+uniform sampler2D uOutside;
+uniform sampler2D uCockpit;
+uniform sampler2D uAtlas;     // the instruments' face
+uniform vec3 uHeadRight;      // the head, in the cabin frame
 uniform vec3 uHeadUp;
 uniform vec3 uHeadForward;
 uniform vec2 uTanHalf;
@@ -15,12 +23,31 @@ uniform vec3 uEye;
 uniform float uTime;
 uniform float uRain;
 uniform float uHail;
-uniform float uElmo;
-uniform float uFlash;        // brightness of the current flash at the aircraft
-uniform float uPanelGlow;
+uniform float uCloud;         // in cloud, 0..1
+uniform float uHaze;          // in the rain and haze of the storm, 0..1
+uniform vec3 uWindAxis;       // where the drops go, relative to the cabin
+uniform float uWindSpeed;     // how fast (m/s)
+uniform vec3 uLight[2];       // lightning at the aircraft: the flash and the flicker
+uniform vec3 uBeaconPos[2];
+uniform vec3 uBeacon;         // the beacons' intensity now (they flash)
+uniform vec3 uNavPos[2];
+uniform vec3 uNav[2];
+uniform vec3 uFacePos;        // the instruments' face: centre, axes, half size
+uniform vec3 uFaceU;
+uniform vec3 uFaceV;
+uniform vec2 uFaceHalf;
+uniform float uFaceGain;
+uniform vec3 uShieldPos;      // the glare shield over it
+uniform vec3 uShieldU;
+uniform vec3 uShieldV;
+uniform vec2 uShieldHalf;
+uniform vec4 uGlow[GLOWS];    // St. Elmo's fire: where a discharge clings (xyz), how bright (w)
 uniform float uExposure;
 uniform vec2 uScreen;
+uniform float uFrame;
 out vec4 outColor;
+
+const float CLOUD_SIGMA = 0.12; // extinction of the storm cloud around the aircraft (1/m)
 
 float h21(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -41,50 +68,152 @@ float vnoise(vec2 p) {
   return mix(mix(h21(i), h21(i + vec2(1.0, 0.0)), u.x), mix(h21(i + vec2(0.0, 1.0)), h21(i + vec2(1.0, 1.0)), u.x), u.y);
 }
 
-// Drops on a grid of cells over p (cell units): the highest drop over p as (slope.xy, height).
-// stretch < 1 draws them out along y, the direction they run.
-// Distance to the nearest edge of a cellular pattern with drifting points: the edges form
-// connected, branching lines, like the filaments of an electric discharge.
-float cellEdge(vec2 p, float t) {
-  vec2 cell = floor(p);
-  float d1 = 8.0;
-  float d2 = 8.0;
-  for (int j = -1; j <= 1; j++) {
-    for (int i = -1; i <= 1; i++) {
-      vec2 c = cell + vec2(float(i), float(j));
-      vec2 o = h22(c);
-      o = 0.5 + 0.42 * sin(t * (1.5 + 3.0 * o) + 6.2831 * o);
-      vec2 r = c + o - p;
-      float d = dot(r, r);
-      if (d < d1) {
-        d2 = d1;
-        d1 = d;
-      } else if (d < d2) {
-        d2 = d;
-      }
-    }
+// Light falling on a point p just outside the aircraft: lightning (the same over these few
+// metres) and the aircraft's own lamps.
+vec3 lightAround(vec3 p) {
+  vec3 e = uLight[0] + uLight[1];
+  for (int i = 0; i < 2; i++) {
+    vec3 b = uBeaconPos[i] - p;
+    vec3 n = uNavPos[i] - p;
+    e += uBeacon / (dot(b, b) + 0.05) + uNav[i] / (dot(n, n) + 0.05);
   }
-  return sqrt(d2) - sqrt(d1);
+  return e;
 }
 
-vec3 drops(vec2 p, float density, float stretch) {
-  vec2 cell = floor(p);
-  vec3 best = vec3(0.0);
-  for (int j = -1; j <= 1; j++) {
-    for (int i = -1; i <= 1; i++) {
-      vec2 c = cell + vec2(float(i), float(j));
-      if (h21(c + 17.0) > density) continue;
-      vec2 centre = c + 0.2 + 0.6 * h22(c);
-      float radius = 0.14 + 0.3 * h21(c + 5.0);
-      vec2 d = (p - centre) * vec2(1.0, stretch);
-      float q = dot(d, d) / (radius * radius);
-      if (q < 1.0) {
-        float hgt = sqrt(1.0 - q);
-        if (hgt > best.z) best = vec3(d / (radius * max(hgt, 0.2)), hgt);
-      }
+// A lamp at b (intensity I) seen through a medium of extinction sigma, along the view ray from
+// the glass (s0) on: single scattering along the ray (closed form for a point source), and a
+// softer share that many scatterings spread all around a lamp buried in thick cloud.
+vec3 lampGlow(vec3 b, vec3 I, vec3 dir, float s0, float sigma) {
+  vec3 rel = b - uEye;
+  float sc = dot(rel, dir);
+  float hd = max(length(rel - dir * sc), 0.2);
+  float f = (1.5707963 - atan((s0 - sc) / hd)) / hd;
+  float far = length(rel);
+  float single = f / (4.0 * PI) * exp(-sigma * (hd + max(sc, s0)));
+  float multiple = 0.008 * exp(-0.3 * sigma * far);
+  return I * sigma * (single + multiple);
+}
+
+// Drops (or hailstones) rushing past, in layers at growing distance from the line along which
+// they come. Each one lit is a short streak: the way it covers while the eye takes it in. Far
+// away and close to the point they come from they are too small and too many to see one by one.
+vec3 streaks(vec3 dir, float tGlass, float amount, bool hail, float sigma) {
+  vec3 ax = -uWindAxis;
+  vec3 e1 = normalize(cross(ax, abs(ax.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+  vec3 e2 = cross(ax, e1);
+  float ca = dot(dir, ax);
+  float sa = sqrt(max(1.0 - ca * ca, 1e-6));
+  float around = atan(dot(dir, e2), dot(dir, e1)) / (2.0 * PI) + 0.5;
+  float pix = 2.0 * uTanHalf.y / uScreen.y;
+  float travel = uWindSpeed / 80.0;
+  float size = hail ? 0.006 : 0.0015;
+  float spacing = hail ? 1.2 : 0.3;
+  float lenZ = hail ? 7.0 : 3.0;
+  vec3 sum = vec3(0.0);
+  for (int k = 0; k < 4; k++) {
+    float fk = float(k) + (hail ? 9.0 : 0.0);
+    float rho = 1.4 * pow(1.8, float(k));
+    float dist = rho / sa;
+    if (dist < tGlass + 0.1) continue;
+    float cells = max(floor(2.0 * PI * rho / spacing), 3.0);
+    float cellAngle = 2.0 * PI * rho / cells / dist;
+    float resolved = smoothstep(2.5, 6.0, cellAngle / pix);
+    if (resolved <= 0.0) continue;
+    float z = ca / sa * rho;
+    float zz = (z + uWindSpeed * uTime) / lenZ + fk * 0.37;
+    float fx = around * cells;
+    vec2 cell = vec2(floor(fx), floor(zz));
+    if (h21(cell + vec2(fk * 13.1, 7.7)) > amount) continue;
+    vec2 r = h22(cell + vec2(fk * 3.3, 1.9));
+    float across = (fract(fx) - 0.2 - 0.6 * r.x) * (2.0 * PI * rho / cells) / dist; // radians
+    float along = (fract(zz) - 0.05 - 0.4 * r.y) * lenZ; // metres behind the drop's head
+    float w = max(size / dist, 0.6 * pix);
+    float cov = exp(-across * across / (w * w)) * min(size / dist / (0.6 * pix), 1.0);
+    float on = smoothstep(-0.05, 0.08, along) * (1.0 - smoothstep(travel - 0.3, travel, along));
+    if (cov * on < 0.001) continue;
+    // A drop's light is spread along its streak: the longer the streak looks, the fainter.
+    float sweep = travel * sa / dist;
+    float dwell = min(1.0, 3.0 * pix / sweep);
+    sum += lightAround(uEye + dir * dist) * (cov * on * resolved * dwell * exp(-sigma * dist));
+  }
+  return sum * (hail ? 0.6 : 0.25);
+}
+
+// Height of the water on the glass (about mm), s: the direction of the point from the bubble's
+// centre. Rivulets run back from the nose in columns around it, meandering and thickening into
+// drops, faster the further they get; near the nose, where the air barely moves the water,
+// small beads come and go.
+float water(vec3 s, float t) {
+  float sinT = length(s.xy);
+  float theta = atan(sinT, -s.z);
+  float around = atan(s.y, s.x) / (2.0 * PI) + 0.5;
+  float y = theta * 1.2; // metres from the nose over the glass
+  float h = 0.0;
+  const float M = 72.0;
+  float colWidth = 2.0 * PI * 1.1 * max(sinT, 0.05) / M; // metres
+  float Y = log(y + 0.1) * 4.0 - t * 2.4;
+  for (int k = 0; k < 2; k++) {
+    float x = around * M + float(k) * 0.5;
+    float cid = mod(floor(x), M) + float(k) * 101.0;
+    float seg = floor(Y * 0.6 + h21(vec2(cid, 3.0)) * 7.0);
+    if (h21(vec2(cid, seg)) > 0.06 + 0.14 * uRain) continue;
+    float c = 0.5 + 0.32 * (vnoise(vec2(cid * 1.7, Y * 1.6)) * 2.0 - 1.0) + 0.06 * (vnoise(vec2(cid * 3.1, Y * 6.0)) * 2.0 - 1.0);
+    float w = clamp(0.0025 / colWidth, 0.015, 0.3);
+    float q = (fract(x) - c) / w;
+    float beads = 0.55 + 0.45 * sin(Y * 9.0 + cid * 2.3);
+    h = max(h, sqrt(max(1.0 - q * q, 0.0)) * (0.35 + 0.4 * beads));
+  }
+  h *= smoothstep(0.12, 0.4, theta);
+  if (theta < 0.5) {
+    vec2 p = s.xy * (1.1 / 0.007);
+    vec2 cell = floor(p);
+    float life = floor(t * 1.5 + h21(cell) * 9.0);
+    if (h21(cell + life * 7.31) < 0.3 * uRain) {
+      vec2 at = 0.3 + 0.4 * h22(cell + life);
+      float r = 0.18 + 0.2 * h21(cell + 4.1);
+      float qq = length(fract(p) - at) / r;
+      h = max(h, sqrt(max(1.0 - qq * qq, 0.0)) * 0.6 * (1.0 - smoothstep(0.3, 0.5, theta)));
     }
   }
-  return best;
+  return h;
+}
+
+// Hailstones striking the glass: a brief splash of shattered ice each.
+float hailImpacts(vec3 s) {
+  float sinT = length(s.xy);
+  float theta = atan(sinT, -s.z);
+  float around = atan(s.y, s.x) / (2.0 * PI) + 0.5;
+  vec2 q = vec2(around * 220.0, theta * 1.2 / 0.035);
+  float slot = floor(uTime * 30.0);
+  vec2 cell = floor(q);
+  if (h21(cell + slot * 3.17) > uHail * 0.015 * sinT) return 0.0;
+  vec2 at = 0.25 + 0.5 * h22(cell + slot * 1.13);
+  float age = fract(uTime * 30.0);
+  // A splash: a bright core and a few fragments flung out along the flow.
+  vec2 r = fract(q) - at;
+  float core = smoothstep(0.14, 0.02, length(r));
+  float spray = smoothstep(0.05, 0.0, abs(r.x)) * smoothstep(0.0, 0.05, r.y) * smoothstep(0.45, 0.1, r.y);
+  return (core + 0.5 * spray) * (1.0 - age) * (1.0 - age);
+}
+
+// The instruments seen in the glass along the reflected ray rd from g, unless the glare shield
+// is in the way.
+vec3 reflectInstruments(vec3 g, vec3 rd) {
+  vec3 sn = cross(uShieldU, uShieldV);
+  float ds = dot(uShieldPos - g, sn) / dot(rd, sn);
+  if (ds > 0.0) {
+    vec3 q = g + rd * ds - uShieldPos;
+    if (abs(dot(q, uShieldU)) < uShieldHalf.x && abs(dot(q, uShieldV)) < uShieldHalf.y) return vec3(0.0);
+  }
+  vec3 fn = cross(uFaceU, uFaceV);
+  float dn = dot(rd, fn);
+  if (dn >= 0.0) return vec3(0.0); // only the face's lit side
+  float df = dot(uFacePos - g, fn) / dn;
+  if (df <= 0.0) return vec3(0.0);
+  vec3 q = g + rd * df - uFacePos;
+  vec2 uv = vec2(dot(q, uFaceU), dot(q, uFaceV)) / uFaceHalf;
+  if (abs(uv.x) > 1.0 || abs(uv.y) > 1.0) return vec3(0.0);
+  return textureLod(uAtlas, uv * 0.5 + 0.5, 2.0).rgb * uFaceGain;
 }
 
 void main() {
@@ -96,89 +225,65 @@ void main() {
   float a = dot(d, d);
   float b = dot(o, d);
   float c = dot(o, o) - 1.0;
-  float t = (-b + sqrt(max(b * b - a * c, 0.0))) / a;
-  vec3 g = uEye + dir * t;
+  float tGlass = (-b + sqrt(max(b * b - a * c, 0.0))) / a;
+  vec3 g = uEye + dir * tGlass;
+  vec3 s = normalize((g - BUBBLE_C) / BUBBLE_R);
+  vec3 n = normalize((g - BUBBLE_C) / (BUBBLE_R * BUBBLE_R));
+  float pix = 2.0 * uTanHalf.y / uScreen.y;
+
+  // Water: worked out everywhere, as its slope comes from neighbouring pixels.
+  float hw = uRain > 0.0 ? water(s, uTime) : 0.0;
+  vec2 slope = vec2(dFdx(hw), dFdy(hw)) * 1e-3 / max(tGlass * pix, 1e-5);
 
   vec3 col = texture(uOutside, vUv).rgb;
   if (g.z < BACK_Z) {
-    vec3 s = normalize(g - BUBBLE_C);
-    vec3 n = normalize((g - BUBBLE_C) / (BUBBLE_R * BUBBLE_R));
-    float theta = acos(clamp(-s.z, -1.0, 1.0)); // angle from straight ahead
-    float phi = atan(s.y, s.x);
-    float sinT = max(sin(theta), 0.05);
-    // Surface coordinates in metres: around the nose, and back along the flow.
-    vec2 surf = vec2(phi * sinT, theta) * 1.2;
-
-    // Rain: small beads that cling, and drops that the airflow drives back over the glass,
-    // faster towards the sides.
-    vec3 drop = vec3(0.0);
-    if (uRain > 0.0) {
-      vec3 bead = drops(surf / 0.016, 0.55 * uRain, 1.0);
-      float speed = 0.35 + 0.9 * sinT;
-      vec2 run = vec2(surf.x / 0.04, (surf.y - uTime * speed) / 0.12);
-      vec3 runner = drops(run, 0.45 * uRain, 0.45);
-      drop = runner.z > bead.z ? runner : bead;
+    float steep = length(slope);
+    if (hw > 0.0) {
+      // Each run of water is a small lens: the view behind it is shifted, and its steep rims
+      // reflect the dark cabin rather than let the outside through.
+      vec2 shift = 0.15 * slope / (2.0 * uTanHalf);
+      col = texture(uOutside, vUv - shift).rgb * (1.0 - 0.3 * smoothstep(0.5, 1.6, steep));
     }
-    if (drop.z > 0.0) {
-      // Each drop is a small lens: it shows the scene behind displaced (and dims at its rim).
-      vec2 shift = drop.xy * 0.025 * vec2(uScreen.y / uScreen.x, 1.0);
-      vec3 seen = texture(uOutside, vUv - shift).rgb;
-      float rim = smoothstep(0.0, 0.35, drop.z);
-      vec3 dcol = seen * (0.8 + 0.2 * rim);
-      // Glints: a flash or the instrument glow catching the drop.
-      dcol += vec3(0.8, 0.86, 1.0) * min(uFlash, 2.0) * 0.3 * pow(drop.z, 6.0);
-      dcol += vec3(0.5, 0.3, 0.12) * 0.03 * uPanelGlow * pow(drop.z, 6.0) * smoothstep(0.0, -0.6, dir.y);
-      col = mix(col, dcol, smoothstep(0.0, 0.08, drop.z));
-    }
-
-    // Hail: brief white strikes, seen mostly when a flash lights them.
-    if (uHail > 0.0) {
-      float slot = floor(uTime * 12.0);
-      vec2 hp = surf / 0.05;
-      vec2 hc = floor(hp);
-      float hh = h21(hc + slot * 7.13);
-      if (hh < uHail * 0.12) {
-        vec2 at = hc + 0.2 + 0.6 * h22(hc + slot);
-        float rs = length(hp - at) * 0.05; // metres
-        float age = fract(uTime * 12.0);
-        float fleck = smoothstep(0.009, 0.002, rs) * (1.0 - age) * (1.0 - age);
-        col += vec3(0.85, 0.9, 1.0) * fleck * (0.12 + 0.5 * min(uFlash, 1.5));
-      }
-    }
-
-    // St. Elmo's fire: fine branching filaments that grow out from the frame members across the
-    // glass, crackling, over a faint violet halo along the frame.
-    if (uElmo > 0.0) {
-      float dF = abs(g.z - FRONT_HOOP_Z);
-      float dR = abs(g.z - REAR_HOOP_Z);
-      float dB = g.y > BUBBLE_C.y + 0.3 ? abs(g.x) : 1.0;
-      float dBase = abs(g.y - BASE_Y);
-      float dist = min(min(dF, dR), min(dB, dBase));
-      float halo = exp(-dist / 0.012) * (0.5 + 0.5 * vnoise(vec2(phi * 10.0 + theta * 6.0, uTime * 20.0)));
-      // How far the discharge reaches out varies along the frame and over time.
-      float reach = 0.03 + 0.2 * pow(vnoise(vec2(phi * 3.0 + theta * 4.0, uTime * 1.3)), 2.0);
-      float tick = floor(uTime * 24.0);
-      float e1 = cellEdge(surf * 34.0, uTime * 3.0 + tick * 0.37);
-      float e2 = cellEdge(surf * 85.0 + 7.0, uTime * 5.0 + tick * 0.61);
-      float threads = exp(-e1 / 0.025) + 0.5 * exp(-e2 / 0.04);
-      float alive = step(0.6, h21(floor(surf * 12.0) + tick));
-      float filaments = threads * alive * exp(-dist / reach);
-      float glow = (0.18 * halo + 0.8 * filaments) * uElmo;
-      col += vec3(0.42, 0.5, 1.0) * glow + vec3(0.9, 0.92, 1.0) * glow * glow * 0.25;
-    }
-
-    // Faint reflections of the instrument glow in the lower glass.
     float cosI = abs(dot(dir, n));
     float F = 0.04 + 0.96 * pow(1.0 - cosI, 5.0);
-    vec3 r = reflect(dir, n);
-    float towardsPanel = smoothstep(-0.1, -0.6, r.y) * smoothstep(0.2, -0.4, r.z);
-    col += vec3(0.55, 0.32, 0.12) * 0.05 * uPanelGlow * F * towardsPanel;
-    col *= 0.95;
+    col *= (1.0 - F) * 0.97;
+
+    vec3 add = vec3(0.0);
+    // The aircraft's lamps light the cloud and the rain around it.
+    float sigma = CLOUD_SIGMA * uCloud + 0.003 * uRain * uHaze;
+    if (sigma > 0.0) {
+      for (int i = 0; i < 2; i++) {
+        add += lampGlow(uBeaconPos[i], uBeacon, dir, tGlass, sigma);
+        add += lampGlow(uNavPos[i], uNav[i], dir, tGlass, sigma);
+      }
+    }
+    // Rain and hail rushing past.
+    if (uRain > 0.0) add += streaks(dir, tGlass, 0.18 * uRain, false, sigma);
+    if (uHail > 0.0) add += streaks(dir, tGlass, 0.04 * uHail, true, sigma);
+    // Water on the glass catches the light at its rims; hail splashes on it.
+    vec3 around = lightAround(g);
+    if (hw > 0.0) add += around * 0.03 * smoothstep(0.3, 1.2, steep);
+    if (uHail > 0.0) add += (around + 0.002) * 0.04 * hailImpacts(s);
+    // Lightning makes the wet, scratched glass glow faintly.
+    add += (uLight[0] + uLight[1]) * 0.0012 * (0.4 + uRain);
+    // St. Elmo's fire: a violet corona where the discharges cling.
+    float elmo = 0.0;
+    for (int i = 0; i < GLOWS; i++) {
+      vec4 gl = uGlow[i];
+      if (gl.w <= 0.0) continue;
+      float dd = length(g - gl.xyz);
+      elmo += gl.w * (exp(-dd / 0.02) * 0.02 + exp(-dd / 0.15) * 0.002);
+    }
+    add += vec3(0.45, 0.45, 1.0) * elmo;
+    // The instruments, mirrored in the glass.
+    add += F * reflectInstruments(g, reflect(dir, n));
+    col += add * uExposure;
   }
 
   // The cockpit on top.
   vec4 ck = texture(uCockpit, vUv);
-  vec3 ckCol = linearToSrgb(agx(ck.rgb * uExposure));
-  col = mix(col, ckCol, clamp(ck.a, 0.0, 1.0));
-  outColor = vec4(col, 1.0);
+  col = col * (1.0 - clamp(ck.a, 0.0, 1.0)) + ck.rgb * uExposure;
+  col = linearToSrgb(agx(col));
+  float dither = (h21(gl_FragCoord.xy + mod(uFrame, 16.0) * 7.31) + h21(gl_FragCoord.yx * 1.37 + 3.1) - 1.0) / 255.0;
+  outColor = vec4(col + dither, 1.0);
 }

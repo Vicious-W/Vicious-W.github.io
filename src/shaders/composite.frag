@@ -20,10 +20,14 @@ uniform vec2 uCirrusOffset;
 out vec4 outColor;
 
 #ifdef NIGHT
-// Night: the "sun" uniforms carry the moon. The flash channel is light per unit flash power.
+// Night: the "sun" uniforms carry the moon. The lightning channels (r: the flash, g: the
+// flicker) hold light per unit of their power.
 uniform sampler2D uFlash;
 uniform float uFlashPower;
 uniform vec3 uFlashColor;
+uniform float uFlickPower;
+uniform vec3 uFlickColor;
+uniform float uLinearOut; // 1: leave the image linear (exposed) for the cockpit's glass pass to finish
 uniform float uTime;
 uniform vec2 uScreen; // output size in pixels
 
@@ -37,11 +41,11 @@ vec3 starField(vec3 dir, float pixelAngle) {
   vec3 h = fract(sin(vec3(dot(cell, vec3(127.1, 311.7, 74.7)), dot(cell, vec3(269.5, 183.3, 246.1)),
                           dot(cell, vec3(113.5, 271.9, 124.6)))) * 43758.5453);
   float h2 = fract(sin(dot(cell, vec3(419.2, 371.9, 168.2))) * 43758.5453);
-  if (h2 > 0.11) return vec3(0.0);
+  if (h2 > 0.06) return vec3(0.0);
   vec3 star = normalize((cell + 0.25 + 0.5 * h) / N);
   float ang = acos(clamp(dot(dir, star), -1.0, 1.0));
   float spread = pixelAngle * 0.75;
-  float b = pow(h.x, 7.0) * 3.0 + 0.012;
+  float b = pow(h.x, 9.0) * 4.0 + 0.006 + 0.02 * pow(h.y, 4.0);
   float twinkle = 1.0 + 0.35 * (1.0 - smoothstep(0.0, 0.3, dir.y)) * sin(uTime * (7.0 + 9.0 * h.y) + 40.0 * h.z);
   vec3 tint = mix(vec3(0.75, 0.85, 1.0), vec3(1.0, 0.9, 0.75), h.z);
   return tint * b * twinkle * exp(-(ang * ang) / (spread * spread)) * 0.02;
@@ -85,6 +89,9 @@ vec4 cirrusLayer(vec3 dir, float camAlt, float cosS, vec3 sunColor, vec3 ambient
   float streaks = smoothstep(0.4, 0.95, fine.g * 0.7 + broad.a * 0.3);
   float fade = exp(-t / 160000.0) * smoothstep(-0.01, 0.04, dir.y);
   float alpha = clamp(patches * streaks * 0.5, 0.0, 0.8) * fade;
+#ifdef NIGHT
+  alpha *= 0.3; // at night cirrus is a faint veil in the moonlight, not streaks across the stars
+#endif
   vec3 light = sunColor * (0.55 * hgPhase(0.75, cosS) + 0.45 * hgPhase(0.1, cosS)) * 2.2 + ambient * 0.9;
   return vec4(light * alpha, alpha);
 }
@@ -130,7 +137,8 @@ void main() {
 
   vec3 color = sky * scene.a + scene.rgb;
 #ifdef NIGHT
-  color += uFlashColor * (uFlashPower * texture(uFlash, vUv).r);
+  vec2 lightning = texture(uFlash, vUv).rg;
+  color += uFlashColor * (uFlashPower * lightning.r) + uFlickColor * (uFlickPower * lightning.g);
 #endif
 
   // Optical glare around the sun, dimmed when clouds cover the solar disc. The bright core
@@ -150,6 +158,12 @@ void main() {
 #endif
   color += uSunIlluminance * tSun * glare * sunVisible;
 
+#ifdef NIGHT
+  if (uLinearOut > 0.5) {
+    outColor = vec4(color * uExposure, 1.0);
+    return;
+  }
+#endif
   color = agx(color * uExposure);
   color = linearToSrgb(color);
   float dither = (hash12(gl_FragCoord.xy + mod(uFrame, 16.0) * 7.31) + hash12(gl_FragCoord.yx * 1.37 + 3.1) - 1.0) / 255.0;

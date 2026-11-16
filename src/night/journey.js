@@ -2,27 +2,26 @@ import * as THREE from "three";
 
 /**
  * The night journey: the aircraft flies itself along a fixed path through the thunderstorm.
- * Coordinates are metres in the storm's frame (the storm stands at x = z = 0); y is altitude.
- * From the south it approaches past the flanking towers, enters through a canyon between two
- * cells, crosses the vault beside the main updraft, passes over a shaft that drops to the sea,
- * is swallowed by the dense rear cell, and comes out into calm moonlight to the north.
+ * Coordinates are metres in the storm's frame (see storm.js); y is altitude.
+ * From the south it approaches past the flanking towers, enters through the canyon between two
+ * towers as the anvil closes overhead, crosses the hall beside the main updraft and over a well
+ * that drops to the sea, flies into the rear tower (blind, but for a cave in its middle), and
+ * comes out into moonlight to the north, turning west so the storm stays in sight.
  */
 export const PATH = [
-  [-2000, 4300, 18000],
+  [-1900, 4300, 17500],
   [-1500, 4350, 12500],
-  [-800, 4500, 8000],
-  [0, 4700, 4000],
-  [600, 5000, 0],
-  [0, 4900, -3500],
-  [-1500, 4700, -7000],
-  [-2500, 4500, -11000],
-  [-4500, 4400, -18000],
-  [-8000, 4400, -26000],
-  [-13000, 4400, -34000]
+  [-700, 4500, 8500],
+  [-200, 4700, 4800],
+  [800, 4900, 800],
+  [-100, 4900, -3000],
+  [-900, 4700, -6200],
+  [-1600, 4550, -10300],
+  [-2600, 4450, -14500],
+  [-5500, 4400, -20500],
+  [-11500, 4400, -24500],
+  [-18500, 4400, -25500]
 ];
-
-// Clear spaces inside the storm along the path, radius in metres at each point (0 = none).
-export const VOIDS = [0, 0, 1300, 1800, 3200, 2000, 650, 900, 0, 0, 0];
 
 const SPEED = 68;
 const MOON_ELEVATION = THREE.MathUtils.degToRad(25);
@@ -71,43 +70,81 @@ export function createPath(points = PATH) {
   };
   return {
     length,
-    /** Position at distance s along the path (past the end it continues straight on). */
+    /** Position at distance s along the path (before the start and past the end it runs straight on). */
     position(s) {
-      if (s <= length) return raw(uAt(s));
-      const end = raw(uAt(length));
-      const before = raw(uAt(length - 50));
-      const k = (s - length) / 50;
+      if (s >= 0 && s <= length) return raw(uAt(s));
+      const edge = s < 0 ? 0 : length;
+      const inward = s < 0 ? 50 : length - 50;
+      const end = raw(uAt(edge));
+      const before = raw(uAt(inward));
+      const k = Math.abs(s - edge) / 50;
       return end.map((v, i) => v + (v - before[i]) * k);
     },
-    /** Point index (fractional) at distance s, to look up per-point values such as VOIDS. */
+    /** Point index (fractional) at distance s. */
     index(s) {
       return uAt(s);
     }
   };
 }
 
-// Irregular, smooth wobble for turbulence: incommensurate sines.
-function wobble(t, seed) {
-  return (
-    Math.sin(t * 1.7 + seed) * 0.35 +
-    Math.sin(t * 3.1 + seed * 2.1) * 0.25 +
-    Math.sin(t * 5.3 + seed * 3.7) * 0.18 +
-    Math.sin(t * 8.9 + seed * 1.3) * 0.13 +
-    Math.sin(t * 13.7 + seed * 5.9) * 0.09
-  );
+// ---- deterministic noise of time, so a moment of the journey always looks the same ---------
+
+function hash1(n) {
+  let h = Math.imul(n | 0, 0x9e3779b1) ^ 0x85ebca6b;
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+  return ((h ^ (h >>> 15)) >>> 0) / 4294967296;
 }
 
-const window1 = (s, centre, half) => {
+/** Smooth value noise in [-1, 1]. */
+function noise1(x, seed) {
+  const i = Math.floor(x);
+  const f = x - i;
+  const u = f * f * (3 - 2 * f);
+  const a = hash1(i + seed * 100003);
+  const b = hash1(i + 1 + seed * 100003);
+  return (a + (b - a) * u) * 2 - 1;
+}
+
+const smooth = (x, a, b) => THREE.MathUtils.smoothstep(x, a, b);
+const bump = (s, centre, half) => {
   const x = Math.abs(s - centre) / half;
   return x >= 1 ? 0 : 0.5 + 0.5 * Math.cos(Math.PI * x);
 };
 
 /**
+ * Gusts: at random moments the air hits the aircraft, which answers with a sharp jolt and a
+ * short damped swing. Returns the sum of the recent ones: heave, pitch and roll, each about
+ * -1..1. rough (0..1) sets how often they come.
+ */
+function gusts(t, rough) {
+  const slot = 0.7;
+  const n = Math.floor(t / slot);
+  let heave = 0;
+  let pitch = 0;
+  let roll = 0;
+  for (let j = n - 3; j <= n; j++) {
+    if (hash1(j * 8 + 1) > 0.18 + 0.62 * rough) continue;
+    const tau = t - (j + hash1(j * 8 + 2) * 0.9) * slot;
+    if (tau < 0) continue;
+    const amp = 0.3 + 0.7 * hash1(j * 8 + 3) ** 2;
+    const env = (1 - Math.exp(-tau / 0.03)) * Math.exp(-tau / 0.26);
+    const drop = hash1(j * 8 + 4) < 0.7 ? -1 : 1; // mostly the bottom falls out
+    heave += drop * amp * env * Math.cos(tau * 12);
+    pitch += (hash1(j * 8 + 5) * 2 - 1) * amp * env * Math.cos(tau * 9 + 1);
+    roll += (hash1(j * 8 + 6) * 2 - 1) * amp * env * Math.cos(tau * 10.5 + 2);
+  }
+  return { heave, pitch, roll };
+}
+
+/**
  * Same interface as createFlight in flight.js, driven by the path.
- * options.cabin may hold fixed levels (0..1) of rain, hail, elmo and turb, for captures.
+ * options.stormSD(x, y, z): baked distance into the storm cloud (m, positive inside).
+ * options.cabin may hold fixed levels (0..1) of rain, hail, elmo, turb and cloud, for captures.
  */
 export function createJourney(options = {}) {
   const path = createPath();
+  const stormSD = options.stormSD || (() => -1500);
   const state = {
     time: options.time ?? 0,
     x: 0,
@@ -120,9 +157,9 @@ export function createJourney(options = {}) {
   };
   const look = {
     yaw: options.yaw ?? 0,
-    pitch: options.pitch ?? -0.02,
+    pitch: options.pitch ?? -0.04,
     targetYaw: options.yaw ?? 0,
-    targetPitch: options.pitch ?? -0.02
+    targetPitch: options.pitch ?? -0.04
   };
 
   // The moon stands in for the sun: low, in the north-east, ahead and to the right.
@@ -133,6 +170,9 @@ export function createJourney(options = {}) {
   ).normalize();
 
   const euler = new THREE.Euler();
+  const qSteady = new THREE.Quaternion();
+  const qShake = new THREE.Quaternion();
+  const qLook = new THREE.Quaternion();
   const qAircraft = new THREE.Quaternion();
   const qHead = new THREE.Quaternion();
   const q = new THREE.Quaternion();
@@ -145,11 +185,13 @@ export function createJourney(options = {}) {
     x: 0,
     z: 0,
     time: 0,
+    speed: SPEED,
     sunDir,
-    qAircraft,
-    qHead,
-    eye: new THREE.Vector3(),
-    cabin: null
+    qAircraft, // attitude of the airframe, shake included
+    qHead, // the head in the airframe
+    eye: new THREE.Vector3(), // the eye in the airframe (m)
+    cabin: null,
+    fog: 0
   };
 
   function place() {
@@ -176,42 +218,63 @@ export function createJourney(options = {}) {
   }
   place();
 
-  // Distance along the path at each path point, to time events to places.
-  const pointAt = [];
-  for (let s = 0, i = 0; s <= path.length && i < PATH.length; s += 25) {
-    if (path.index(s) >= i) {
-      pointAt.push(s);
-      i++;
+  // ---- where things happen along the path (distances in metres) -----------------------
+  const cloudAt = s => {
+    let sum = 0;
+    for (const d of [-80, 0, 80]) sum += stormSD(...path.position(s + d));
+    return smooth(sum / 3, -350, 150);
+  };
+  // First distance at which the path has gone north of z0 (it flies north until the last turn).
+  const whereZ = z0 => {
+    for (let s = 0; s < path.length; s += 25) if (path.position(s)[2] <= z0) return s;
+    return path.length;
+  };
+  const mark = {
+    anvil: whereZ(8800), // the anvil closes overhead: rain begins
+    canyon: whereZ(6500),
+    updraft: whereZ(300), // closest to the main updraft
+    well: whereZ(-3000),
+    wall: whereZ(-6400), // into the rear tower
+    cave: whereZ(-10300),
+    out: whereZ(-13600) // out of its north face
+  };
+  // Refine the wall and the way out from the baked cloud itself, when it is known.
+  for (let s = whereZ(-5000); s < whereZ(-9000); s += 25) {
+    if (stormSD(...path.position(s)) > -100) {
+      mark.wall = s;
+      break;
     }
   }
-  // Inside the storm: from its entrance (the canyon) to its exit (the points whose clear spaces
-  // are carved), with a short transition at each end.
-  const voided = VOIDS.map((r, i) => (r > 0 ? i : -1)).filter(i => i >= 0);
-  const fogIn = pointAt[voided[0]];
-  const fogOut = pointAt[voided[voided.length - 1]];
-  const fogAt = s => {
-    const ramp = 900;
-    return Math.min(
-      THREE.MathUtils.smoothstep(s, fogIn - ramp, fogIn + ramp),
-      1 - THREE.MathUtils.smoothstep(s, fogOut - ramp, fogOut + ramp)
-    );
-  };
-  // The cabin through the storm: rain from the entrance, hail in the vault and the rear cell,
-  // St. Elmo's fire in the canyon and the rear cell, turbulence throughout, worst in the rear.
+  for (let s = whereZ(-16500); s > whereZ(-11500); s -= 25) {
+    if (stormSD(...path.position(s)) > -100) {
+      mark.out = s;
+      break;
+    }
+  }
+
+  const fixed = options.cabin || {};
+  /** The cabin at distance s and time t: all levels 0..1. */
   const cabinAt = (s, t) => {
-    const inside = fogAt(s);
-    const rain = inside * (0.75 + 0.25 * Math.sin(t * 0.13) * Math.sin(t * 0.07 + 1));
-    const hail = inside * Math.max(window1(s, pointAt[4] + 1500, 1800), window1(s, pointAt[6], 2200)) * (0.7 + 0.3 * Math.sin(t * 0.9));
-    const elmoWave = 0.55 + 0.45 * Math.sin(t * 0.8) * Math.sin(t * 0.31 + 2);
-    const elmo = inside * Math.max(window1(s, pointAt[3], 1600), window1(s, pointAt[6] - 300, 2600)) * elmoWave;
-    const turb = 0.12 + 0.6 * inside + 0.35 * window1(s, pointAt[6], 2500);
-    const fixed = options.cabin || {};
+    const storm = Math.min(smooth(s, mark.anvil - 900, mark.anvil + 900), 1 - smooth(s, mark.out - 200, mark.out + 900));
+    const cloud = fixed.cloud ?? cloudAt(s);
+    const blind = smooth(s, mark.wall - 300, mark.wall + 700) * (1 - smooth(s, mark.out - 500, mark.out + 300));
+    // Showers in the canyon and the hall, heavier near the wells and the updraft; a downpour in cloud.
+    const showers = 0.32 + 0.22 * noise1(s / 1700, 3) + 0.3 * bump(s, mark.well, 1600) + 0.2 * bump(s, mark.updraft, 1500);
+    const rain = storm * THREE.MathUtils.clamp(Math.max(showers, 0.85 * cloud + 0.6 * blind) * (0.85 + 0.15 * noise1(t * 0.31, 5)), 0, 1);
+    const hail =
+      Math.max(0.55 * bump(s, mark.updraft + 300, 1300), smooth(s, mark.wall + 500, mark.wall + 1700) * (1 - smooth(s, mark.out - 1200, mark.out - 200))) *
+      (0.72 + 0.28 * noise1(t * 0.9, 7));
+    const elmo =
+      Math.max(0.5 * bump(s, mark.canyon - 400, 1500), smooth(s, mark.wall - 200, mark.wall + 900) * (1 - smooth(s, mark.out - 700, mark.out + 200))) *
+      (0.6 + 0.4 * noise1(t * 0.43, 9));
+    const turb = 0.07 + storm * (0.26 + 0.22 * bump(s, mark.updraft, 2600)) + 0.6 * blind;
     return {
-      inside,
+      storm,
+      cloud,
       rain: fixed.rain ?? rain,
       hail: fixed.hail ?? hail,
       elmo: fixed.elmo ?? elmo,
-      turb: fixed.turb ?? turb
+      turb: fixed.turb ?? Math.min(turb, 1)
     };
   };
 
@@ -225,6 +288,8 @@ export function createJourney(options = {}) {
     state,
     look,
     path,
+    mark,
+    cabinAt,
 
     update(dt) {
       state.time += dt;
@@ -250,23 +315,39 @@ export function createJourney(options = {}) {
         tanX = minTanX;
         tanY = tanX / aspect;
       }
-      // Turbulence: the aircraft jolts (the world shakes outside), the head bobs a little in
-      // the seat (the cockpit shakes in view).
-      const s = state.time * SPEED;
-      const cabin = cabinAt(s, state.time);
-      const k = cabin.turb;
       const t = state.time;
-      const jolt = k > 0.5 ? Math.exp(-(((t % 3.7) - 0.4) ** 2) / 0.004) * (k - 0.5) * 2 : 0;
-      const dp = k * (0.006 * wobble(t * 1.3, 1.1) + 0.012 * jolt);
-      const dr = k * 0.012 * wobble(t * 1.1, 2.3);
-      const dh = k * 0.004 * wobble(t * 0.9, 3.7);
-      euler.set(state.pitch + dp, -state.heading + dh, -state.roll + dr, "YXZ");
-      qAircraft.setFromEuler(euler);
-      view.eye.set(k * 0.006 * wobble(t * 2.1, 4.1), k * (0.012 * wobble(t * 2.6, 5.3) - 0.02 * jolt), 0);
-      view.cabin = cabin;
+      const cabin = cabinAt(t * SPEED, t);
+      const k = cabin.turb;
+
+      // Turbulence. The slow wander of the airframe turns the whole view. The jolts are too
+      // quick for the eyes to follow: they stay on the world outside (as eyes do), and it is
+      // the cockpit that jumps around them. So gusts and buffet mostly move the airframe
+      // against the head, and only a part of them reaches the view of the world.
+      const g = gusts(t, k);
+      const buffet = k * k;
+      const fastP = k * 0.0075 * g.pitch + buffet * 0.0006 * noise1(t * 23, 21);
+      const fastR = k * 0.011 * g.roll + buffet * 0.0008 * noise1(t * 19, 22);
+      const fastH = k * 0.003 * noise1(t * 3.1, 23) * Math.abs(g.roll);
+      const slowP = k * (0.006 * noise1(t * 0.45, 11) + 0.004 * noise1(t * 1.1, 12));
+      const slowR = k * (0.016 * noise1(t * 0.38, 13) + 0.008 * noise1(t * 0.9, 14));
+      const slowH = k * 0.006 * noise1(t * 0.3, 15);
+      const follow = 0.3; // the share of a jolt that the view of the world takes
+      euler.set(state.pitch + slowP + follow * fastP, -state.heading + slowH + follow * fastH, -state.roll + slowR + follow * fastR, "YXZ");
+      qSteady.setFromEuler(euler);
+      euler.set((1 - follow) * fastP, (1 - follow) * fastH, (1 - follow) * fastR, "YXZ");
+      qShake.setFromEuler(euler);
+      qAircraft.copy(qSteady).multiply(qShake);
       euler.set(look.pitch, -look.yaw, 0, "YXZ");
-      qHead.setFromEuler(euler);
-      q.copy(qAircraft).multiply(qHead);
+      qLook.setFromEuler(euler);
+      qHead.copy(qShake).invert().multiply(qLook);
+      // The body lags the seat: when the aircraft drops, the eye rises in the cockpit.
+      view.eye.set(
+        k * (0.006 * noise1(t * 1.7, 31) + 0.004 * g.roll) + buffet * 0.0015 * noise1(t * 17, 32),
+        k * (-0.03 * g.heave + 0.006 * noise1(t * 2.3, 33)) + buffet * 0.002 * noise1(t * 21, 34),
+        k * 0.004 * noise1(t * 1.3, 35)
+      );
+      view.cabin = cabin;
+      q.copy(qSteady).multiply(qLook);
       view.forward.set(0, 0, -1).applyQuaternion(q);
       view.right.set(1, 0, 0).applyQuaternion(q);
       view.up.set(0, 1, 0).applyQuaternion(q);
@@ -274,8 +355,9 @@ export function createJourney(options = {}) {
       view.alt = state.alt;
       view.x = state.x;
       view.z = state.z;
-      view.time = state.time;
-      view.fog = fogAt(state.time * SPEED);
+      view.time = t;
+      // Rain and haze in the air of the storm, for the clouds.
+      view.fog = cabin.storm;
       return view;
     }
   };

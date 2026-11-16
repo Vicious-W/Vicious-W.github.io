@@ -45,14 +45,16 @@ function start() {
   const sky = createSky(renderer, {
     cloudScale: baseScale,
     quality: params.get("q") || "normal",
-    night: storm && { storm: storm.texture, min: STORM.min, size: STORM.size, range: STORM.range, base: STORM.base }
+    maxSteps: num("steps", 0),
+    night: storm && { storm: storm.texture, min: STORM.min, size: STORM.size, range: STORM.range, base: STORM.base, calm: STORM.calm }
   });
-  // Capture aid: "night&free" flies the free day-style flight (x, z, alt, heading) at night.
-  // Capture aid: rain, hail, elmo, turb (0..1) hold the cabin's levels.
+  // Capture aids: "night&free" flies the free day-style flight (x, z, alt, heading) at night;
+  // rain, hail, elmo, turb, cloud (0..1) hold the cabin's levels; "cockpit=0" shows the
+  // outside alone.
   const cabin = {};
-  for (const key of ["rain", "hail", "elmo", "turb"]) if (params.has(key)) cabin[key] = num(key, 0);
+  for (const key of ["rain", "hail", "elmo", "turb", "cloud"]) if (params.has(key)) cabin[key] = num(key, 0);
   const flight = night && !params.has("free")
-    ? createJourney({ time: num("t", undefined), yaw: num("yaw", undefined), pitch: num("pitch", undefined), cabin })
+    ? createJourney({ time: num("t", undefined), yaw: num("yaw", undefined), pitch: num("pitch", undefined), cabin, stormSD: storm.sample })
     : createFlight({
         alt: num("alt", undefined),
         heading: num("heading", undefined),
@@ -64,16 +66,19 @@ function start() {
       });
 
   // At night the outside is finished into a texture, then seen through the cockpit's glass.
-  const cockpit = night && !params.has("free") ? createCockpit(renderer) : null;
+  const cockpit = night && !params.has("free") && params.get("cockpit") !== "0" ? createCockpit(renderer, { stormSD: storm.sample }) : null;
   let frameTarget = null;
   function resize() {
     renderer.setSize(window.innerWidth, window.innerHeight, false);
     sky.resize(Math.round(window.innerWidth * dpr), Math.round(window.innerHeight * dpr));
     if (cockpit) {
       frameTarget?.dispose();
+      // Linear light: the glass pass refracts and adds to it, then tone-maps.
       frameTarget = new THREE.WebGLRenderTarget(canvas.width, canvas.height, {
-        type: THREE.UnsignedByteType,
+        type: THREE.HalfFloatType,
         format: THREE.RGBAFormat,
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
         depthBuffer: false,
         stencilBuffer: false
       });
@@ -149,18 +154,25 @@ function start() {
     if (step > 0) flight.update(step);
     const view = flight.view(window.innerWidth / window.innerHeight);
     if (lightning) {
-      // Capture aid: "flash=ic|near|cg&ft=ms" holds one flash, ft milliseconds after its first stroke.
-      if (!flashControl) flashControl = still && params.has("flash") ? lightning.force(view, params.get("flash"), num("ft", 15)) : lightning;
-      view.flash = flashControl.update(view, flight.state.time, step || 1 / 60);
+      // Capture aids: "flash=ic|near|cg&ft=ms" holds one flash, ft milliseconds after its first
+      // stroke; "flick=1" holds the flicker lit.
+      if (!flashControl) {
+        const held = still && (params.has("flash") || params.has("flick"));
+        flashControl = held ? lightning.force(view, params.get("flash"), num("ft", 15), params.get("flick") === "1") : lightning;
+      }
+      const lit = flashControl.update(view, flight.state.time, step || 1 / 60);
+      view.flash = lit.flash;
+      view.flick = lit.flick;
+      view.stormGlow = lit.glow;
     }
-    sky.render(view, { still: still && !motion, target: frameTarget });
-    if (bolts) bolts.render(view, view.flash, sky.scene, canvas.width, canvas.height, frameTarget);
+    sky.render(view, { still: still && !motion, target: frameTarget, linear: !!cockpit });
+    // A bolt's channel is blinding: in linear light it is drawn well past white.
+    if (bolts) bolts.render(view, view.flash, sky.scene, canvas.width, canvas.height, frameTarget, cockpit ? 6 : 1);
     if (cockpit) {
       const light = sky.light;
-      const glow = view.flash ? view.flash.glow : 0;
       cockpit.render(view, frameTarget.texture, canvas.width, canvas.height, {
         skyLight: [light.x, light.y, light.z],
-        ambient: [light.x * 0.12 + 0.0012 * glow, light.y * 0.12 + 0.0014 * glow, light.z * 0.12 + 0.002 * glow]
+        exposure: sky.exposure
       });
     }
     if (!revealed && sky.frame > 4) {

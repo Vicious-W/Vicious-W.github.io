@@ -149,10 +149,10 @@ function bakeVolume(renderer, pass, mode, size, slicesPerChunk, equalizeChannels
 /**
  * Physically based sky (Hillaire 2020 LUTs), raymarched cumulus at reduced resolution with
  * temporal accumulation, an ocean below, and a full-resolution composite.
- * night: { storm (texture), min [x, z], size [x, y, z], range, base } for the night journey:
+ * night: { storm (texture), min [x, z], size [x, y, z], range, base, calm } for the night journey:
  * the "sun" becomes the moon, the thunderstorm joins the clouds, and lightning is lit.
  */
-export function createSky(renderer, { cloudScale = 0.5, quality = "normal", night = null } = {}) {
+export function createSky(renderer, { cloudScale = 0.5, quality = "normal", night = null, maxSteps = 0 } = {}) {
   // Moonlight, bluish as night scenes look to the eye, and brighter than a real crescent's:
   // like a night in a film, dark but readable.
   const sunIlluminance = night
@@ -280,6 +280,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
     ...(night
       ? {
           STORM_SIZE: `vec3(${night.size.map(glslFloat).join(", ")})`,
+          STORM_MIN: `vec2(${night.min.map(glslFloat).join(", ")})`,
+          STORM_CALM: `vec4(${night.calm.map(glslFloat).join(", ")})`,
           STORM_RANGE: glslFloat(night.range)
         }
       : {})
@@ -314,7 +316,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
       uWeatherOffsetB: { value: new THREE.Vector2() },
       uWeatherOffsetC: { value: new THREE.Vector2() },
       uDensityScale: { value: 0.19 },
-      uMaxSteps: { value: quality === "high" ? 420 : 280 },
+      uMaxSteps: { value: maxSteps || (quality === "high" ? 420 : 280) },
       uStepScale: { value: quality === "high" ? 0.6 : 1.0 },
       ...(night
         ? {
@@ -323,6 +325,10 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
             uFlashPos: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
             uFlashWeight: { value: new THREE.Vector3() },
             uFlashOn: { value: 0 },
+            uFlashDepth: { value: 0 },
+            uFlickPos: { value: new THREE.Vector3() },
+            uFlickOn: { value: 0 },
+            uFlickDepth: { value: 0 },
             uFog: { value: 0 },
             uStormGlow: { value: 0 }
           }
@@ -335,7 +341,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
     fragmentShader: fragment(temporalSrc),
     defines: nightDefines,
     uniforms: {
-      ...(night ? { uCurFlash: { value: null }, uHistFlash: { value: null }, uFlashReset: { value: 0 } } : {}),
+      ...(night ? { uCurFlash: { value: null }, uHistFlash: { value: null }, uFlashReset: { value: new THREE.Vector2() } } : {}),
       ...camUniforms(),
       uCurScene: { value: null },
       uCurDepth: { value: null },
@@ -363,6 +369,9 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
             uFlash: { value: null },
             uFlashPower: { value: 0 },
             uFlashColor: { value: new THREE.Vector3(0.8, 0.88, 1.0) },
+            uLinearOut: { value: 0 },
+            uFlickPower: { value: 0 },
+            uFlickColor: { value: new THREE.Vector3(0.72, 0.82, 1.0) },
             uTime: { value: 0 },
             uScreen: { value: new THREE.Vector2(1, 1) }
           }
@@ -393,6 +402,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
   let frame = 0;
   let accumulated = 0;
   let lastFlashId = -1;
+  let lastFlickId = -1;
   const prev = {
     right: new THREE.Vector3(1, 0, 0),
     up: new THREE.Vector3(0, 1, 0),
@@ -427,6 +437,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
     get cloudScale() { return scale; },
     /** Illuminance of the sun (day) or the moon (night). */
     get light() { return sunIlluminance; },
+    /** Exposure applied to the finished image. */
+    get exposure() { return compositePass.uniforms.uExposure.value; },
     /** The reconstructed cloud image of the last frame: rgb + sky visibility, and depth. */
     get scene() { return history[historyIndex]; },
     get frame() { return frame; },
@@ -453,9 +465,10 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
      * view: { right, up, forward (THREE.Vector3), tanHalf (THREE.Vector2), alt (m),
      *         x, z (world metres), time (s), sunDir (THREE.Vector3) }
      * options: { still: average every frame without clamping (for converged captures),
-     *            target: where the finished image goes (the screen when null) }
+     *            target: where the finished image goes (the screen when null),
+     *            linear: (night) leave the image linear and exposed, without tone mapping }
      */
-    render(view, { still = false, target = null } = {}) {
+    render(view, { still = false, target = null, linear = false } = {}) {
       const camR = 6360 + view.alt / 1000;
 
       skyViewPass.uniforms.uCamR.value = camR;
@@ -499,16 +512,23 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
       u.uSunDir.value.copy(view.sunDir);
       u.uFrame.value = frame;
       u.uParity.value = frame & 1;
-      const flash = night ? view.flash : null;
+      const flash = night && view.flash && view.flash.on ? view.flash : null;
+      const flick = night && view.flick && view.flick.on ? view.flick : null;
       if (night) {
         u.uStormCam.value.set(view.x - night.min[0], view.z - night.min[1]);
         u.uFog.value = view.fog ?? 0;
-        u.uFlashOn.value = flash && flash.on ? 1 : 0;
-        u.uStormGlow.value = flash ? flash.glow : 0;
-        if (flash && flash.on) {
-          // Sources relative to the camera (y stays altitude, as in the cloud shader).
+        u.uStormGlow.value = view.stormGlow ?? 0;
+        u.uFlashOn.value = flash ? 1 : 0;
+        u.uFlickOn.value = flick ? 1 : 0;
+        // Sources relative to the camera (y stays altitude, as in the cloud shader).
+        if (flash) {
           flash.pos.forEach((q, k) => u.uFlashPos.value[k].set(q[0] - view.x, q[1], q[2] - view.z));
           u.uFlashWeight.value.set(flash.weight[0], flash.weight[1], flash.weight[2]);
+          u.uFlashDepth.value = flash.depth;
+        }
+        if (flick) {
+          u.uFlickPos.value.set(flick.pos[0] - view.x, flick.pos[1], flick.pos[2] - view.z);
+          u.uFlickDepth.value = flick.depth;
         }
       }
       cloudPass.render(renderer, cloudTarget);
@@ -536,9 +556,11 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
       if (night) {
         tu.uCurFlash.value = cloudTarget.textures[2];
         tu.uHistFlash.value = read.textures[2];
-        const id = flash && flash.on ? flash.id : -1;
-        tu.uFlashReset.value = id !== lastFlashId ? 1 : 0;
+        const id = flash ? flash.id : -1;
+        const idK = flick ? flick.id : -1;
+        tu.uFlashReset.value.set(id !== lastFlashId ? 1 : 0, idK !== lastFlickId ? 1 : 0);
         lastFlashId = id;
+        lastFlickId = idK;
       }
       temporalPass.render(renderer, write);
       historyIndex = 1 - historyIndex;
@@ -553,8 +575,10 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
       cu.uFrame.value = frame;
       if (night) {
         cu.uFlash.value = write.textures[2];
-        cu.uFlashPower.value = flash && flash.on ? flash.power : 0;
-        if (flash && flash.color) cu.uFlashColor.value.set(...flash.color);
+        cu.uFlashPower.value = flash ? flash.power : 0;
+        if (flash) cu.uFlashColor.value.set(...flash.color);
+        cu.uFlickPower.value = flick ? flick.power : 0;
+        cu.uLinearOut.value = linear ? 1 : 0;
         cu.uTime.value = view.time;
         cu.uScreen.value.set(width, height);
       }
