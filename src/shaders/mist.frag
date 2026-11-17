@@ -39,6 +39,9 @@ uniform vec3 uFlickColor;
 uniform float uFlickDepth;
 uniform vec3 uLampPos[4];     // the aircraft's lamps, relative to the eye in world axes (m)
 uniform vec3 uLamp[4];        // and their intensities
+uniform vec3 uTurbA;          // where the two layers of turbulence are (m, wrapped)
+uniform vec3 uTurbB;
+uniform vec3 uShutter;        // how far the aircraft flies while the eye takes a frame in (world, m)
 layout(location = 0) out vec4 outMist;
 layout(location = 1) out vec4 outDepth;
 
@@ -58,14 +61,32 @@ float blueNoise(vec2 fragCoord, float frame) {
   return fract(v + 0.61803398875 * mod(frame, 1024.0));
 }
 
+// Turbulence of the air close by, which the mist swirls in: a displacement (m) of where the
+// mist noise is read, from two layers of eddies (about 40 and 13 m) sweeping past each other, so
+// the mist curls, stretches and changes shape within seconds. It fades out by the reach of this
+// pass: further on the cloud pass draws the mist, still (from there its swirling would hardly show).
+vec3 turbulence(vec3 p, float t) {
+  float k = 1.0 - smoothstep(110.0, 220.0, t);
+  vec3 d = vec3(0.0);
+  if (k > 0.0) {
+    vec3 a = (p + uTurbA) / MIST_PERIOD;
+    vec3 b = (p + uTurbB) * (3.0 / MIST_PERIOD);
+    vec3 va = vec3(textureLod(uMistNoise, a, 1.0).r, textureLod(uMistNoise, a + vec3(0.31, 0.57, 0.13), 1.0).r, textureLod(uMistNoise, a + vec3(0.71, 0.19, 0.43), 1.0).r);
+    vec3 vb = vec3(textureLod(uMistNoise, b, 1.0).r, textureLod(uMistNoise, b + vec3(0.47, 0.83, 0.29), 1.0).r, textureLod(uMistNoise, b + vec3(0.11, 0.37, 0.69), 1.0).r);
+    d = k * (14.0 * (va - 0.5) + 6.0 * (vb - 0.5));
+  }
+  return d;
+}
+
 // Set by mistDensity for the light taps next to the sample: the flow and mip level it used.
 vec2 gFlow = vec2(0.5);
 float gLodM = 0.0;
 float gThin = 1.0;
+vec3 gTurb = vec3(0.0);
 
 // The storm's cloud at p with all its detail, 0..1; fp: the pixel's footprint there (m).
 // shape: metres inside the outer edge of its shape (very negative far from it).
-float mistDensity(vec3 p, float fp, out float shape) {
+float mistDensity(vec3 p, float fp, float t, out float shape) {
   float alt = altitudeAt(p);
   float z = alt - CLOUD_BOTTOM;
   vec3 suv = stormUv(p, alt);
@@ -86,7 +107,8 @@ float mistDensity(vec3 p, float fp, out float shape) {
   if (shape <= 0.0) return 0.0;
   gFlow = n.ba;
   gLodM = max(log2(fp / 2.0), 0.0);
-  float e = mistNoise(p, n.ba, gLodM, true);
+  gTurb = turbulence(p, t);
+  float e = mistNoise(p + gTurb, n.ba, gLodM, true);
   gThin = thin;
   return stormMist(shape, e) * smoothstep(0.0, 30.0, z) * thin;
 }
@@ -95,7 +117,7 @@ float mistDensity(vec3 p, float fp, out float shape) {
 // along the way, with the shape of the sample itself (it changes little over a few metres). It
 // is what makes a wisp bright on the side its light comes from.
 float localDepth(vec3 p, vec3 l, float shape) {
-  float d = stormMist(shape, mistNoise(p + l * 6.0, gFlow, gLodM, true)) * gThin;
+  float d = stormMist(shape, mistNoise(p + gTurb + l * 6.0, gFlow, gLodM, true)) * gThin;
   return d * uDensityScale * 6.0;
 }
 
@@ -119,11 +141,18 @@ void main() {
   float ph1 = cloudPhase(cosM, 0.6);
   float ph2 = cloudPhase(cosM, 0.36);
   float ph3 = cloudPhase(cosM, 0.2);
-  // Lightning reaches this mist through whatever lies between: worked out once, a little way
-  // along the ray, per unit of power.
-  vec3 pr = origin + dir * min(50.0, uNear);
-  float flashLit = uFlashPower > 0.0 ? lightningLit(pr, dir, flashCentre(), uFlashDepth, 380.0, 3, 0.0, jitter) : 0.0;
-  float flickLit = uFlickPower > 0.0 ? lightningLit(pr, dir, uFlickPos, uFlickDepth, 650.0, 2, 0.0, jitter) : 0.0;
+  // Lightning reaches this mist through whatever lies between. Over these few hundred metres
+  // that hardly changes, so it is worked out at the aircraft, alike for every pixel (per pixel,
+  // the coarse taps of the storm's shape drew straight-edged facets into the mist).
+  float flashLit = 0.0;
+  float flickLit = 0.0;
+  if (uFlashPower > 0.0) {
+    vec3 src = flashCentre();
+    flashLit = lightningPhase(dot(dir, normalize(src - origin)), lightningPath(origin, src, uFlashDepth, 380.0, 3, 0.5, 0.5));
+  }
+  if (uFlickPower > 0.0) {
+    flickLit = lightningPhase(dot(dir, normalize(uFlickPos - origin)), lightningPath(origin, uFlickPos, uFlickDepth, 650.0, 2, 0.5, 0.5));
+  }
 
   scudSpan(origin, dir);
   vec3 L = vec3(0.0);
@@ -140,10 +169,11 @@ void main() {
     float t1 = START + span * u1 * u1;
     float dt = t1 - t0;
     float t = t0 + dt * jitter;
-    vec3 p = origin + dir * t;
+    // Seen over the shutter: each sample at its own moment of the last sixtieth of a second.
+    vec3 p = origin + dir * t - uShutter * fract(jitter * 7.0 + float(i) * 0.618);
     float shape;
     gT = t;
-    float d = mistDensity(p, max(t * pixelAngle, 0.02), shape);
+    float d = mistDensity(p, max(t * pixelAngle, 0.02), t, shape);
     if (d > 0.0) {
       float sigma = d * uDensityScale;
       // The moon, past the storm between (its average shape, two taps).

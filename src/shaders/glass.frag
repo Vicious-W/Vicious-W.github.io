@@ -16,6 +16,7 @@ uniform sampler2D uOutside;
 uniform sampler2D uCockpit;
 uniform sampler2D uMist;      // the mist around the aircraft (see mist.frag): light, and what shows through
 uniform float uMistOn;
+uniform int uShow;            // debugging: 1 the mist alone, 2 the outside without the mist
 uniform sampler2D uAtlas;     // the instruments' face
 uniform vec3 uHeadRight;      // the head, in the cabin frame
 uniform vec3 uHeadUp;
@@ -30,6 +31,8 @@ uniform float uMotes;         // how much cloud there is right around the aircra
 uniform float uHaze;          // in the rain and haze of the storm, 0..1
 uniform vec3 uWindAxis;       // where the drops go, relative to the cabin
 uniform float uWindSpeed;     // how fast (m/s)
+uniform vec3 uMoteAxis;       // where the cloud's droplets go, relative to the cabin (they ride the air)
+uniform float uMoteSpeed;
 uniform vec3 uLight[2];       // lightning at the aircraft: the flash and the flicker
 uniform vec3 uBeaconPos[2];
 uniform vec3 uBeacon;         // the beacons' intensity now (they flash)
@@ -145,35 +148,49 @@ vec3 streaks(vec3 dir, float tGlass, float amount, bool hail, float sigma) {
 // The cloud itself, up close: droplets and ice crystals rushing past, too small to see unless a
 // light catches them. In a flash or a beacon's pulse the air around the canopy fills with
 // specks, each a short streak (the way it covers while the eye takes it in); crystals glint
-// brighter than drops as they tumble. Layers at growing distance from the line they come along,
-// as for the rain. amount: the share of cells that hold one.
+// brighter than drops as they tumble. They ride the air, not rails: the air comes at the canopy
+// from where its gusts and drafts bring it (uMoteAxis), each file of them a little faster or
+// slower, every speck jostled by small eddies, in patches as the mist is, and close by they
+// swerve around the bubble as the air does (flow around a sphere). Layers at growing distance
+// from the line they come along, as for the rain. amount: the share of cells that hold one.
 vec3 motes(vec3 dir, float tGlass, float amount, float sigma) {
-  vec3 ax = -uWindAxis;
+  vec3 ax = -uMoteAxis;
   vec3 e1 = normalize(cross(ax, abs(ax.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
   vec3 e2 = cross(ax, e1);
   float ca = dot(dir, ax);
   float sa = sqrt(max(1.0 - ca * ca, 1e-6));
   float around = atan(dot(dir, e2), dot(dir, e1)) / (2.0 * PI) + 0.5;
   float pix = 2.0 * uTanHalf.y / uScreen.y;
-  float travel = uWindSpeed / 80.0;
+  float travel = uMoteSpeed / 80.0;
   vec3 sum = vec3(0.0);
   for (int k = 0; k < 6; k++) {
     float fk = float(k);
-    float rho = 0.9 * pow(1.55, fk);
+    float rho0 = 0.9 * pow(1.55, fk);
+    // Around the bubble (radius about 1.2 m) the air's streamlines swing out: rho^2 (1 - R^3/r^3)
+    // stays what it was upstream.
+    float r1 = rho0 * sqrt(1.0 + ca * ca / (sa * sa));
+    float rho = rho0 * inversesqrt(max(1.0 - pow(1.2 / max(r1, 1e-3), 3.0), 0.3));
     float dist = rho / sa;
     if (dist < tGlass + 0.05) continue;
     float spacing = 0.07 * pow(1.3, fk);
-    float cells = max(floor(2.0 * PI * rho / spacing), 3.0);
+    float cells = max(floor(2.0 * PI * rho0 / spacing), 3.0);
     float cellAngle = 2.0 * PI * rho / cells / dist;
     float resolved = smoothstep(2.0, 5.0, cellAngle / pix);
     if (resolved <= 0.0) continue;
-    float lenZ = 0.6 * pow(1.3, fk);
-    float zz = (ca / sa * rho + uWindSpeed * uTime) / lenZ + fk * 0.37 + 5.0;
     float fx = around * cells;
-    vec2 hid = vec2(floor(fx), floor(zz)) + vec2(fk * 17.3, 3.1);
-    if (h21(hid) > amount) continue;
+    float column = floor(fx);
+    float speed = uMoteSpeed * (1.0 + 0.24 * (h21(vec2(column, fk * 7.1 + 2.3)) - 0.5));
+    float lenZ = 0.6 * pow(1.3, fk);
+    float z = ca / sa * rho;
+    float zz = (z + speed * uTime) / lenZ + fk * 0.37 + 5.0;
+    vec2 hid = vec2(column, floor(zz)) + vec2(fk * 17.3, 3.1);
+    // Patches: the mist is uneven, and so are the specks in it.
+    float clump = vnoise(vec2((z + speed * uTime) / 9.0, around * 5.0 + fk * 3.7));
+    if (h21(hid) > amount * (0.25 + 1.5 * clump * clump)) continue;
     vec2 r = h22(hid + 0.5);
-    float across = (fract(fx) - 0.2 - 0.6 * r.x) * (2.0 * PI * rho / cells) / dist; // radians
+    // Eddies jostle each speck sideways, a few centimetres.
+    float jostle = 0.05 * sin(uTime * (5.0 + 6.0 * r.y) + 6.283 * r.x) + 0.03 * sin(uTime * (11.0 + 7.0 * r.x) + 3.1 * r.y);
+    float across = ((fract(fx) - 0.2 - 0.6 * r.x) * (2.0 * PI * rho / cells) + jostle) / dist; // radians
     float along = (fract(zz) - 0.05 - 0.5 * r.y) * lenZ; // metres behind its head
     float size = 0.0006;
     float w = max(size / dist, 0.6 * pix);
@@ -341,5 +358,7 @@ void main() {
   col = col * (1.0 - clamp(ck.a, 0.0, 1.0)) + ck.rgb * uExposure;
   col = linearToSrgb(agx(col));
   float dither = (h21(gl_FragCoord.xy + mod(uFrame, 16.0) * 7.31) + h21(gl_FragCoord.yx * 1.37 + 3.1) - 1.0) / 255.0;
+  if (uShow == 1) col = linearToSrgb(agx(mist.rgb * 4.0));
+  if (uShow == 2) col = linearToSrgb(agx(texture(uOutside, vUv).rgb));
   outColor = vec4(col + dither, 1.0);
 }

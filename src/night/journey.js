@@ -252,6 +252,9 @@ export function createJourney(options = {}) {
     eye: new THREE.Vector3(), // the eye in the airframe (m)
     cabin: null,
     fog: 0,
+    velocity: [0, 0, 0], // the aircraft's (world, m/s)
+    air: [0, 0, 0], // how far the air has moved since the start (world, m)
+    airVel: [0, 0, 0], // and how fast it moves now (m/s)
     // The scud nearest the aircraft, for the cloud shaders (see storm.glsl).
     scud: {
       count: 0,
@@ -262,8 +265,10 @@ export function createJourney(options = {}) {
   };
   const order = bodies.map((b, i) => i);
 
+  // Capture aid: options.hold keeps the aircraft where it was at that time while time runs on
+  // (the air, the mist and the lightning go on), to see the mist move by itself.
   function place() {
-    const s = state.time * SPEED;
+    const s = (options.hold ?? state.time) * SPEED;
     const p = path.position(s);
     const a = path.position(s + 120);
     const b = path.position(s - 120);
@@ -353,6 +358,38 @@ export function createJourney(options = {}) {
     };
   };
 
+  // The air of the storm moves, and its cloud with it: gusts every way, the main updraft (and
+  // the air rising out of the well) carrying the mist up past the aircraft, and in the rear
+  // tower it churns. World velocity (m/s) at distance s and time t; and its displacement since
+  // the start (integrated once into a table, so a moment of the journey always looks the same).
+  const airVelocity = (s, t, out) => {
+    const storm = smooth(s, mark.anvil - 900, mark.anvil + 900) * (1 - smooth(s, mark.out - 200, mark.out + 900));
+    const churn = smooth(s, mark.wall - 300, mark.wall + 700) * (1 - smooth(s, mark.out - 500, mark.out + 300));
+    const k = 0.25 + 0.75 * storm + 0.8 * churn;
+    out[0] = k * (3.5 * noise1(t * 0.19, 43) + 1.5 * noise1(t * 0.83, 46));
+    out[1] = k * (4 * noise1(t * 0.23, 41) + 2.5 * noise1(t * 0.71, 42)) + 13 * bump(s, mark.updraft, 2200) + 6 * bump(s, mark.well, 1500);
+    out[2] = k * (3.5 * noise1(t * 0.17, 44) + 1.5 * noise1(t * 0.77, 47));
+    return out;
+  };
+  const AIR_DT = 0.05;
+  const AIR_N = 24000; // 1200 s
+  const airTable = new Float32Array((AIR_N + 1) * 3);
+  {
+    const v = [0, 0, 0];
+    for (let i = 1; i <= AIR_N; i++) {
+      const t = (i - 0.5) * AIR_DT;
+      airVelocity(t * SPEED, t, v);
+      for (let c = 0; c < 3; c++) airTable[i * 3 + c] = airTable[(i - 1) * 3 + c] + v[c] * AIR_DT;
+    }
+  }
+  const airAt = (t, out) => {
+    const x = Math.min(Math.max(t / AIR_DT, 0), AIR_N - 1e-6);
+    const i = Math.floor(x);
+    const f = x - i;
+    for (let c = 0; c < 3; c++) out[c] = airTable[i * 3 + c] + (airTable[(i + 1) * 3 + c] - airTable[i * 3 + c]) * f;
+    return out;
+  };
+
   function smoothLook(dt) {
     const k = 1 - Math.exp(-dt * 9);
     look.yaw += (look.targetYaw - look.yaw) * k;
@@ -433,6 +470,13 @@ export function createJourney(options = {}) {
       view.time = t;
       // Rain and haze in the air of the storm, for the clouds.
       view.fog = cabin.storm;
+      airAt(t, view.air);
+      {
+        const a = path.position(t * SPEED + 34);
+        const b = path.position(t * SPEED - 34);
+        for (let c = 0; c < 3; c++) view.velocity[c] = (a[c] - b[c]) * (SPEED / 68);
+      }
+      airVelocity(t * SPEED, t, view.airVel);
       // The scud within sight, nearest first, relative to the camera (y stays altitude).
       const dist = b => Math.hypot(b.centre[0] - state.x, b.centre[1] - state.alt, b.centre[2] - state.z);
       order.sort((a, b) => dist(bodies[a]) - dist(bodies[b]));

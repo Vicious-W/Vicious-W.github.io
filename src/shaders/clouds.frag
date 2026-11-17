@@ -316,7 +316,10 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, float lodM, int detai
       if (detail > 0 && shape > -2.2 * edge) shape += stormEdge(p, z, lodD, detail > 1) * edgeK;
       float e = 0.5;
       if (detail > 0 && shape > 0.0 && shape < FRINGE && lodM < 3.5) {
-        e = mix(mistNoise(p, n.ba, lodM, detail > 1 && lodM < 1.5), 0.5, smoothstep(2.5, 3.5, lodM));
+        // From afar a cloud's surface reads as its rounded bulges: the mist's tangle only roughens it
+        // a little (its average stays, so the cloud keeps its size); close by it is all there.
+        float tangle = (1.0 - 0.7 * smoothstep(300.0, 2500.0, gT)) * (1.0 - smoothstep(2.5, 3.5, lodM));
+        e = mix(0.5, mistNoise(p, n.ba, lodM, detail > 1 && lodM < 1.5), tangle);
       }
       // The search probe takes all the fringe; the surface search (detail 0) its average, so it
       // finds the surface where the mist has left it, not the outer edge of the shape.
@@ -566,7 +569,7 @@ void main() {
 #endif
       float lodB = max(log2(fp / (BASE_PERIOD / 128.0)), 0.0);
       float lodD = max(log2(fp / (DETAIL_PERIOD / 32.0)), 0.0);
-      float lodM = max(log2(fp / 2.0) + 0.5, 0.0);
+      float lodM = max(log2(fp / 2.0) + mix(0.5, 1.6, smoothstep(400.0, 3000.0, ts)), 0.0);
       // Edge detail at every distance, so far clouds have the same character as near ones; its
       // mip levels fade it out where it becomes smaller than a pixel. SEARCH uses the shape
       // inflated by the most that detail could add, so thin fringes are never skipped.

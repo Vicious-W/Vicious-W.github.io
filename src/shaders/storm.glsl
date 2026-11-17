@@ -24,7 +24,7 @@ uniform vec3 uMistOffset;   // where the mist noise is (m, wrapped): it drifts w
 const float FRINGE = 320.0;
 // How much of the fringe the mist can eat away (0..1), how sharp the edge of a wisp is (in
 // units of the fringe's depth), and how dense the wisps at its outer edge are.
-const float ERODE = 0.85;
+const float ERODE = 0.72;
 const float MIST_EDGE = 0.32;
 const float MIST_THIN = 0.3;
 const float MIST_PERIOD = 256.0; // one tile of the mist noise (2 m texels)
@@ -264,7 +264,9 @@ vec3 flashCentre() {
 // between; what gets out crosses the open air and lights the clouds that face it like a lamp:
 // their bulges shadow each other (a few fine steps), and whatever stands in the way further on
 // shadows them too (coarse taps of the baked shape along the whole way, which cost little).
-float lightningLit(vec3 p, vec3 dir, vec3 src, float depth, float spreadLength, int taps, float lodB, float jitter) {
+// What lies between p and lightning at src (see lightningLit): x, the optical depth of what
+// stands in the way (it shadows); y, how much the light has spread through cloud (1 = not).
+vec2 lightningPath(vec3 p, vec3 src, float depth, float spreadLength, int taps, float lodB, float jitter) {
   vec3 lc = src - p;
   float dl = length(lc);
   vec3 l = lc / max(dl, 1.0);
@@ -286,11 +288,20 @@ float lightningLit(vec3 p, vec3 dir, vec3 src, float depth, float spreadLength, 
   // shadow, it spreads the light.
   float odAll = through * uDensityScale;
   through += min(depth, max(dl - nearReach, 0.0));
-  float spread = 1.0 + through / spreadLength;
-  float cosF = dot(dir, l);
-  // The light comes from a glowing stretch of cloud, not from a point: the forward peak of the
-  // phase function is spread out (a sharp one would make every wisp before it sparkle).
+  return vec2(odAll, 1.0 + through / spreadLength);
+}
+
+// The light of lightning scattered towards the viewer, from its path (lightningPath); cosF:
+// between the view ray and the way to the lightning. It comes from a glowing stretch of cloud,
+// not from a point: the forward peak of the phase function is spread out (a sharp one would
+// make every wisp before it sparkle).
+float lightningPhase(float cosF, vec2 path) {
+  float odAll = path.x;
   float direct = cloudPhase(cosF, 0.6) * exp(-odAll)
                + 1.1 * (0.85 * cloudPhase(cosF, 0.36) * exp(-odAll * 0.25) + 0.65 * cloudPhase(cosF, 0.2) * exp(-odAll * 0.0625));
-  return (0.8 / (4.0 * PI) + direct) / (spread * spread);
+  return (0.8 / (4.0 * PI) + direct) / (path.y * path.y);
+}
+
+float lightningLit(vec3 p, vec3 dir, vec3 src, float depth, float spreadLength, int taps, float lodB, float jitter) {
+  return lightningPhase(dot(dir, normalize(src - p)), lightningPath(p, src, depth, spreadLength, taps, lodB, jitter));
 }

@@ -209,8 +209,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
   const detailNoise = bakeVolume(renderer, noisePass, 1, 32, 32, [0, 1, 2]);
   const weather = bakeWeather(renderer, noisePass, 512);
   // The storm's mist at metre scale (night only).
-  // One channel: wisps, a few puffs (see noise.frag).
-  const mistNoise = night ? bakeVolume(renderer, noisePass, 3, 128, 32, [0, 1], (r, g) => 0.85 * r + 0.15 * g) : null;
+  // One channel: rounded puffs, some wisps (see noise.frag).
+  const mistNoise = night ? bakeVolume(renderer, noisePass, 3, 128, 32, [0, 1], (r, g) => 0.25 * r + 0.75 * g) : null;
   noisePass.dispose();
 
   // Rare giant towering cumulus: baked 3D shapes, placed on a coarse grid in cloud-map space.
@@ -483,7 +483,10 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
           uFlickColor: compositePass.uniforms.uFlickColor,
           uFlickDepth: cu0.uFlickDepth,
           uLampPos: { value: Array.from({ length: 4 }, () => new THREE.Vector3()) },
-          uLamp: { value: Array.from({ length: 4 }, () => new THREE.Vector3()) }
+          uLamp: { value: Array.from({ length: 4 }, () => new THREE.Vector3()) },
+          uTurbA: { value: new THREE.Vector3() },
+          uTurbB: { value: new THREE.Vector3() },
+          uShutter: { value: new THREE.Vector3() }
         }
       })
     : null;
@@ -652,10 +655,12 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
       const flick = night && view.flick && view.flick.on ? view.flick : null;
       if (night) {
         u.uStormCam.value.set(view.x - night.min[0], view.z - night.min[1]);
+        // The mist drifts, and moves with the air of the storm (drafts and gusts).
+        const air = view.air || [0, 0, 0];
         u.uMistOffset.value.set(
-          wrap(view.x - MIST.drift.x * t, MIST.period),
-          wrap(-MIST.drift.y * t, MIST.period),
-          wrap(view.z - MIST.drift.z * t, MIST.period)
+          wrap(view.x - MIST.drift.x * t - air[0], MIST.period),
+          wrap(-MIST.drift.y * t - air[1], MIST.period),
+          wrap(view.z - MIST.drift.z * t - air[2], MIST.period)
         );
 
         u.uFog.value = view.fog ?? 0;
@@ -691,6 +696,14 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         const m = mistPass.uniforms;
         setCamera(m, view);
         m.uNear.value = view.near;
+        // Turbulence close by: two layers of eddies sweeping past each other, so the mist curls
+        // and changes shape within seconds (see mist.frag).
+        const air = view.air || [0, 0, 0];
+        m.uTurbA.value.set(wrap(view.x - air[0] + 7 * t, MIST.period), wrap(-air[1] - 4 * t, MIST.period), wrap(view.z - air[2] - 6 * t, MIST.period));
+        m.uTurbB.value.set(wrap(view.x - air[0] - 10 * t, MIST.period / 3), wrap(-air[1] + 6 * t, MIST.period / 3), wrap(view.z - air[2] + 8 * t, MIST.period / 3));
+        // The shutter: the mist is seen over the last sixtieth of a second of flight (it streaks).
+        m.uShutter.value.copy(view.forward).multiplyScalar(0);
+        if (view.velocity) m.uShutter.value.set(...view.velocity).multiplyScalar(1 / 60);
         m.uMoonSeen.value = view.moonSeen ?? 1;
         m.uOpen.value.set(...(view.open ?? [1, 1]));
         m.uFlashPower.value = flash ? flash.power : 0;

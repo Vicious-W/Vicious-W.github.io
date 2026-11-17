@@ -215,7 +215,7 @@ void main() {
 /**
  * stormSD(x, y, z): the baked storm distance (for the radar and for whether the moon shows).
  */
-export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
+export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}) {
   const instruments = createInstruments({ stormSD });
   const shared = {
     uAtlas: { value: instruments.texture },
@@ -346,6 +346,7 @@ export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
       uCockpit: { value: null },
       uMist: { value: null },
       uMistOn: { value: 0 },
+      uShow: { value: show },
       uAtlas: { value: instruments.texture },
       uHeadRight: { value: new THREE.Vector3(1, 0, 0) },
       uHeadUp: { value: new THREE.Vector3(0, 1, 0) },
@@ -360,6 +361,8 @@ export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
       uHaze: { value: 0 },
       uWindAxis: { value: new THREE.Vector3(0, 0, 1) },
       uWindSpeed: { value: 68 },
+      uMoteAxis: { value: new THREE.Vector3(0, 0, 1) },
+      uMoteSpeed: { value: 68 },
       uLight: { value: [new THREE.Vector3(), new THREE.Vector3()] },
       uBeaconPos: { value: BEACONS.map(p => new THREE.Vector3(...p)) },
       uBeacon: { value: new THREE.Vector3() },
@@ -523,6 +526,12 @@ export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
       fall.z += view.speed ?? 68;
       g.uWindSpeed.value = fall.length();
       g.uWindAxis.value.copy(fall).normalize();
+      // The cloud's droplets ride the air: its gusts and drafts, as the cabin meets them.
+      const air = view.airVel || [0, 0, 0];
+      const ride = tmp.set(air[0], air[1], air[2]).applyQuaternion(inverse);
+      ride.z += view.speed ?? 68;
+      g.uMoteSpeed.value = ride.length();
+      g.uMoteAxis.value.copy(ride).normalize();
       g.uExposure.value = exposure;
       g.uScreen.value.set(width, height);
       g.uFrame.value = frame++;

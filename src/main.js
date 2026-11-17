@@ -56,7 +56,7 @@ function start() {
   const cabin = {};
   for (const key of ["rain", "hail", "elmo", "turb", "cloud"]) if (params.has(key)) cabin[key] = num(key, 0);
   const flight = night && !params.has("free")
-    ? createJourney({ time: num("t", undefined), yaw: num("yaw", undefined), pitch: num("pitch", undefined), cabin, stormSD: storm.sample })
+    ? createJourney({ time: num("t", undefined), hold: params.has("hold") ? num("t", 0) : undefined, yaw: num("yaw", undefined), pitch: num("pitch", undefined), cabin, stormSD: storm.sample })
     : createFlight({
         alt: num("alt", undefined),
         heading: num("heading", undefined),
@@ -68,7 +68,7 @@ function start() {
       });
 
   // At night the outside is finished into a texture, then seen through the cockpit's glass.
-  const cockpit = night && !params.has("free") && params.get("cockpit") !== "0" ? createCockpit(renderer, { stormSD: storm.sample }) : null;
+  const cockpit = night && !params.has("free") && params.get("cockpit") !== "0" ? createCockpit(renderer, { stormSD: storm.sample, show: { mist: 1, outside: 2 }[params.get("show")] || 0 }) : null;
   let frameTarget = null;
   function resize() {
     renderer.setSize(window.innerWidth, window.innerHeight, false);
