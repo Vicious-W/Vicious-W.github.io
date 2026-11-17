@@ -133,6 +133,8 @@ bool cloudInterval(float y0, vec3 d, out float t0, out float t1) {
   vec2 rt;
   int nb = quadRoots(a, d.y, y0 - CLOUD_BOTTOM, rb);
   int nt = quadRoots(a, d.y, y0 - CLOUD_TOP_MAX, rt);
+  // A miss leaves t0 = t1 = -1. One exit only: Direct3D's shader compiler (Chrome on Windows)
+  // warns of an uninitialized result when a nested branch returns early.
   t0 = -1.0;
   t1 = -1.0;
   if (y0 >= CLOUD_BOTTOM && y0 <= CLOUD_TOP_MAX) {
@@ -140,11 +142,11 @@ bool cloudInterval(float y0, vec3 d, out float t0, out float t1) {
     t1 = nt > 0 ? rt.y : MAX_DIST;
     if (nb >= 1 && rb.x > 0.0) t1 = min(t1, rb.x);
   } else if (y0 < CLOUD_BOTTOM) {
-    if (nb == 0 || rb.y <= 0.0) return false;
-    t0 = rb.y;
-    t1 = nt > 0 ? rt.y : MAX_DIST;
-  } else {
-    if (nt < 2 || rt.y <= 0.0) return false;
+    if (nb > 0 && rb.y > 0.0) {
+      t0 = rb.y;
+      t1 = nt > 0 ? rt.y : MAX_DIST;
+    }
+  } else if (nt >= 2 && rt.y > 0.0) {
     t0 = max(rt.x, 0.0);
     t1 = (nb >= 1 && rb.x > 0.0) ? rb.x : rt.y;
   }
@@ -493,33 +495,37 @@ float stepAt(float t) {
 // are soft, so the clouds are smoothed here (edges about half a sample deep): sharp ones are
 // hit by a sample in some frames and missed in others, which speckles the glitter.
 float seaShadow(vec3 p, float jitter) {
+  // One exit only (see cloudInterval).
+  float lit;
 #ifdef NIGHT
   // Under the storm its shadow is all there is, and it is wide and soft: a few coarse taps
   // of the baked shape along the moonlight, instead of the full march.
   vec2 fromStorm = p.xz + uStormCam + STORM_MIN - STORM_CALM.xy;
   if (dot(fromStorm, fromStorm) < STORM_CALM.z * STORM_CALM.z) {
-    float lit = 1.0;
+    lit = 1.0;
     for (int i = 0; i < 6; i++) {
       float alt = CLOUD_BOTTOM + 400.0 + 1900.0 * (float(i) + jitter);
       lit *= 1.0 - stormBlock(p + uSunDir * (alt / max(uSunDir.y, 0.08)), 2.0);
     }
-    return lit;
-  }
+  } else
 #endif
-  float sy = max(uSunDir.y, 0.08);
-  float s0 = CLOUD_BOTTOM / sy;
-  float span = (CLOUD_TOP_MAX - CLOUD_BOTTOM) / sy;
-  const int N = 8;
-  float od = 0.0;
-  float h;
-  for (int i = 0; i < N; i++) {
-    float u = (float(i) + jitter) / float(N);
-    float ds = span * 2.0 * u / float(N);
-    vec3 q = p + uSunDir * (s0 + span * u * u);
-    Weather w = weatherAt(q.xz, 2.0, 1.0);
-    od += densityAt(q, w, 3.0, 0.0, 0, max(0.5 * ds, 150.0), h) * ds;
+  {
+    float sy = max(uSunDir.y, 0.08);
+    float s0 = CLOUD_BOTTOM / sy;
+    float span = (CLOUD_TOP_MAX - CLOUD_BOTTOM) / sy;
+    const int N = 8;
+    float od = 0.0;
+    float h;
+    for (int i = 0; i < N; i++) {
+      float u = (float(i) + jitter) / float(N);
+      float ds = span * 2.0 * u / float(N);
+      vec3 q = p + uSunDir * (s0 + span * u * u);
+      Weather w = weatherAt(q.xz, 2.0, 1.0);
+      od += densityAt(q, w, 3.0, 0.0, 0, max(0.5 * ds, 150.0), h) * ds;
+    }
+    lit = exp(-od * uDensityScale * 0.45);
   }
-  return exp(-od * uDensityScale * 0.45);
+  return lit;
 }
 
 vec3 shadeSea(vec3 dir, float tSea, float rCamKm, vec3 skyAvg, float jitter) {
