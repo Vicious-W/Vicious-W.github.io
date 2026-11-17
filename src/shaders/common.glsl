@@ -64,6 +64,12 @@ float hgPhase(float g, float c) {
   return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5));
 }
 
+// Phase function of cloud droplets: a strong forward lobe and a little back-scatter. k < 1
+// flattens it, for light that has been scattered many times.
+float cloudPhase(float c, float k) {
+  return mix(hgPhase(0.85 * k, c), hgPhase(-0.25 * k, c), 0.22);
+}
+
 // ---------------------------------------------------------------- spheres (km)
 
 float distanceToTop(float r, float mu) {

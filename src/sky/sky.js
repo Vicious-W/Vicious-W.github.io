@@ -11,6 +11,9 @@ import noiseSrc from "../shaders/noise.frag?raw";
 import cloudMapSrc from "../shaders/cloudmap.frag?raw";
 import cloudSlopeSrc from "../shaders/cloudslope.frag?raw";
 import cloudsSrc from "../shaders/clouds.frag?raw";
+import stormSrc from "../shaders/storm.glsl?raw";
+import mistSrc from "../shaders/mist.frag?raw";
+import mistTemporalSrc from "../shaders/misttemporal.frag?raw";
 import temporalSrc from "../shaders/temporal.frag?raw";
 import compositeSrc from "../shaders/composite.frag?raw";
 
@@ -49,6 +52,15 @@ const CLOUDMAP_ROT = { c: 0.96, s: 0.28 };
 const CIRRUS_ROT = { c: 0.6, s: -0.8 };
 const CIRRUS_STRETCH = 0.28;
 const wrap = (v, p) => v - p * Math.floor(v / p);
+
+// The storm's mist (storm.glsl): its noise tiles every 256 m and drifts with the air (m/s); the
+// smooth part of the base noise, drifting otherwise, stirs it.
+export const MIST = Object.freeze({ period: 256, drift: { x: 2.5, y: 0.8, z: -1.8 } });
+// The mist pass draws the storm's cloud within this distance of the eye (m), at this fraction
+// of the screen's resolution (mist is soft; its finest detail is a few pixels across).
+export const NEAR = Object.freeze({ reach: 240, scale: 0.5 });
+/** The storm's cloud code (storm.glsl) put in its place in a shader that uses it. */
+export const withStorm = src => src.replace("// @storm (storm.glsl goes here)", stormSrc);
 
 // One giant is placed by hand ahead of the starting view, so the first minutes include one.
 // u: size, position in its cell (x, z), height, rotation, shape, thickness (all 0..1).
@@ -111,7 +123,12 @@ function bakeWeather(renderer, pass, size) {
   return texture;
 }
 
-function bakeVolume(renderer, pass, mode, size, slicesPerChunk, equalizeChannels) {
+/**
+ * Bakes a tileable 3D noise. pack(rgba): optional, turns the four equalised channels into one
+ * value 0..1, stored as a half float: half the memory of the four 8-bit channels, and smooth
+ * where the shader cuts it at a threshold (8 bits left terraces there).
+ */
+function bakeVolume(renderer, pass, mode, size, slicesPerChunk, equalizeChannels, pack = null) {
   const target = new THREE.WebGLRenderTarget(size, size * slicesPerChunk, {
     type: THREE.UnsignedByteType,
     format: THREE.RGBAFormat,
@@ -134,9 +151,30 @@ function bakeVolume(renderer, pass, mode, size, slicesPerChunk, equalizeChannels
   }
   target.dispose();
   equalize(data, equalizeChannels);
-  const texture = new THREE.Data3DTexture(data, size, size, size);
-  texture.format = THREE.RGBAFormat;
-  texture.type = THREE.UnsignedByteType;
+  let texels = data;
+  if (pack) {
+    // Equalise the packed values (a fine histogram), so they spread evenly over 0..1.
+    const n = size * size * size;
+    const BINS = 65536;
+    const bin = new Uint16Array(n);
+    const hist = new Uint32Array(BINS);
+    for (let i = 0; i < n; i++) {
+      const v = pack(data[i * 4] / 255, data[i * 4 + 1] / 255, data[i * 4 + 2] / 255, data[i * 4 + 3] / 255);
+      bin[i] = Math.min(BINS - 1, Math.max(0, Math.floor(v * BINS)));
+      hist[bin[i]]++;
+    }
+    const lut = new Uint16Array(BINS);
+    let acc = 0;
+    for (let b = 0; b < BINS; b++) {
+      lut[b] = THREE.DataUtils.toHalfFloat((acc + hist[b] * 0.5) / n);
+      acc += hist[b];
+    }
+    texels = new Uint16Array(n);
+    for (let i = 0; i < n; i++) texels[i] = lut[bin[i]];
+  }
+  const texture = new THREE.Data3DTexture(texels, size, size, size);
+  texture.format = pack ? THREE.RedFormat : THREE.RGBAFormat;
+  texture.type = pack ? THREE.HalfFloatType : THREE.UnsignedByteType;
   texture.wrapS = texture.wrapT = texture.wrapR = THREE.RepeatWrapping;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
   texture.magFilter = THREE.LinearFilter;
@@ -170,6 +208,9 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
   const baseNoise = bakeVolume(renderer, noisePass, 0, 128, 32, [0, 1]);
   const detailNoise = bakeVolume(renderer, noisePass, 1, 32, 32, [0, 1, 2]);
   const weather = bakeWeather(renderer, noisePass, 512);
+  // The storm's mist at metre scale (night only).
+  // One channel: wisps, a few puffs (see noise.frag).
+  const mistNoise = night ? bakeVolume(renderer, noisePass, 3, 128, 32, [0, 1], (r, g) => 0.85 * r + 0.15 * g) : null;
   noisePass.dispose();
 
   // Rare giant towering cumulus: baked 3D shapes, placed on a coarse grid in cloud-map space.
@@ -289,7 +330,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
 
   const cloudPass = createPass({
     vertexShader,
-    fragmentShader: fragment(cloudsSrc),
+    fragmentShader: fragment(night ? withStorm(cloudsSrc) : cloudsSrc),
     defines: cloudDefines,
     uniforms: {
       ...camUniforms(),
@@ -322,6 +363,12 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         ? {
             uStorm: { value: night.storm },
             uStormCam: { value: new THREE.Vector2() },
+            uMistNoise: { value: mistNoise },
+            uMistOffset: { value: new THREE.Vector3() },
+            uNearDist: { value: 0 },
+            uScudPos: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) },
+            uScudSize: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) },
+            uScudTurn: { value: Array.from({ length: 8 }, () => new THREE.Vector2()) },
             uFlashPos: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
             uFlashWeight: { value: new THREE.Vector3() },
             uFlashOn: { value: 0 },
@@ -392,6 +439,82 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
     }
   });
 
+  // The mist around the aircraft (night): shares the cloud pass's noise, storm and lightning.
+  const cu0 = cloudPass.uniforms;
+  const mistPass = night
+    ? createPass({
+        vertexShader,
+        fragmentShader: fragment(withStorm(mistSrc)),
+        defines: cloudDefines,
+        uniforms: {
+          ...camUniforms(),
+          uTransmittance: cu0.uTransmittance,
+          uSkyView: cu0.uSkyView,
+          uBaseNoise: cu0.uBaseNoise,
+          uDetailNoise: cu0.uDetailNoise,
+          uBlueNoise: cu0.uBlueNoise,
+          uBaseOffset: cu0.uBaseOffset,
+          uDetailOffset: cu0.uDetailOffset,
+          uStorm: cu0.uStorm,
+          uStormCam: cu0.uStormCam,
+          uMistNoise: cu0.uMistNoise,
+          uMistOffset: cu0.uMistOffset,
+          uScudPos: cu0.uScudPos,
+          uScudSize: cu0.uScudSize,
+          uScudTurn: cu0.uScudTurn,
+          uCamAlt: cu0.uCamAlt,
+          uResolution: { value: new THREE.Vector2(1, 1) },
+          uFrame: cu0.uFrame,
+          uNear: { value: 0 },
+          uSunDir: cu0.uSunDir,
+          uSunIlluminance: cu0.uSunIlluminance,
+          uMoonSeen: { value: 1 },
+          uOpen: { value: new THREE.Vector2(1, 1) },
+          uDensityScale: cu0.uDensityScale,
+          uExposure: compositePass.uniforms.uExposure,
+          uStormGlow: cu0.uStormGlow,
+          uFlashPos: cu0.uFlashPos,
+          uFlashWeight: cu0.uFlashWeight,
+          uFlashPower: { value: 0 },
+          uFlashColor: compositePass.uniforms.uFlashColor,
+          uFlashDepth: cu0.uFlashDepth,
+          uFlickPos: cu0.uFlickPos,
+          uFlickPower: { value: 0 },
+          uFlickColor: compositePass.uniforms.uFlickColor,
+          uFlickDepth: cu0.uFlickDepth,
+          uLampPos: { value: Array.from({ length: 4 }, () => new THREE.Vector3()) },
+          uLamp: { value: Array.from({ length: 4 }, () => new THREE.Vector3()) }
+        }
+      })
+    : null;
+  const mistTemporalPass = night
+    ? createPass({
+        vertexShader,
+        fragmentShader: fragment(mistTemporalSrc),
+        uniforms: {
+          ...camUniforms(),
+          uCur: { value: null },
+          uCurDepth: { value: null },
+          uHist: { value: null },
+          uCamAlt: cu0.uCamAlt,
+          uPrevRight: { value: new THREE.Vector3(1, 0, 0) },
+          uPrevUp: { value: new THREE.Vector3(0, 1, 0) },
+          uPrevForward: { value: new THREE.Vector3(0, 0, -1) },
+          uPrevTanHalf: { value: new THREE.Vector2(1, 1) },
+          uPrevCamPos: { value: new THREE.Vector3() },
+          uBlend: { value: 1 },
+          uClampHistory: { value: 1 },
+          uHistoryValid: { value: 0 }
+        }
+      })
+    : null;
+  let mistTarget = null; // this frame's march: light and transmittance, depth
+  let mistHistory = [null, null];
+  let mistIndex = 0;
+  let mistValid = false;
+  let mistAccumulated = 0;
+  let mistOn = false;
+
   let cloudTarget = null;
   let history = [null, null];
   let historyIndex = 0;
@@ -422,6 +545,16 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
     cloudTarget = floatTarget(Math.ceil(w / 2), h, { count: targets });
     history = [floatTarget(w, h, { count: targets }), floatTarget(w, h, { count: targets })];
     cloudPass.uniforms.uResolution.value.set(w, h);
+    if (mistPass) {
+      mistTarget?.dispose();
+      mistHistory.forEach(target => target?.dispose());
+      const mw = Math.max(1, Math.round(width * NEAR.scale));
+      const mh = Math.max(1, Math.round(height * NEAR.scale));
+      mistTarget = floatTarget(mw, mh, { count: 2 });
+      mistHistory = [floatTarget(mw, mh), floatTarget(mw, mh)];
+      mistValid = false;
+      mistPass.uniforms.uResolution.value.set(mw, mh);
+    }
     historyValid = false;
     accumulated = 0;
   }
@@ -442,6 +575,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
     /** The reconstructed cloud image of the last frame: rgb + sky visibility, and depth. */
     get scene() { return history[historyIndex]; },
     get frame() { return frame; },
+    /** The mist around the aircraft (night): rgb = its light (exposed), a = what shows through; null when off. */
+    get mist() { return mistOn ? mistHistory[mistIndex].texture : null; },
     get accumulated() { return accumulated; },
 
     resize(w, h) {
@@ -459,6 +594,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
     resetHistory() {
       historyValid = false;
       accumulated = 0;
+      mistValid = false;
     },
 
     /**
@@ -516,7 +652,26 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
       const flick = night && view.flick && view.flick.on ? view.flick : null;
       if (night) {
         u.uStormCam.value.set(view.x - night.min[0], view.z - night.min[1]);
+        u.uMistOffset.value.set(
+          wrap(view.x - MIST.drift.x * t, MIST.period),
+          wrap(-MIST.drift.y * t, MIST.period),
+          wrap(view.z - MIST.drift.z * t, MIST.period)
+        );
+
         u.uFog.value = view.fog ?? 0;
+        // The scud on the journey's way (none in the free flight).
+        for (let i = 0; i < 8; i++) {
+          if (view.scud) {
+            u.uScudPos.value[i].copy(view.scud.pos[i]);
+            u.uScudSize.value[i].copy(view.scud.size[i]);
+            u.uScudTurn.value[i].copy(view.scud.turn[i]);
+          } else {
+            u.uScudSize.value[i].set(0, 0, 0, 0);
+          }
+        }
+        // The mist pass takes over the storm's cloud near the aircraft whenever it is within reach.
+        mistOn = (view.near ?? 0) > 0;
+        u.uNearDist.value = mistOn ? view.near : 0;
         u.uStormGlow.value = view.stormGlow ?? 0;
         u.uFlashOn.value = flash ? 1 : 0;
         u.uFlickOn.value = flick ? 1 : 0;
@@ -532,6 +687,46 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         }
       }
       cloudPass.render(renderer, cloudTarget);
+      if (mistOn) {
+        const m = mistPass.uniforms;
+        setCamera(m, view);
+        m.uNear.value = view.near;
+        m.uMoonSeen.value = view.moonSeen ?? 1;
+        m.uOpen.value.set(...(view.open ?? [1, 1]));
+        m.uFlashPower.value = flash ? flash.power : 0;
+        if (flash) compositePass.uniforms.uFlashColor.value.set(...flash.color);
+        m.uFlickPower.value = flick ? flick.power : 0;
+        for (let k = 0; k < 4; k++) {
+          if (view.lamps) {
+            m.uLampPos.value[k].copy(view.lamps.pos[k]);
+            m.uLamp.value[k].copy(view.lamps.light[k]);
+          } else {
+            m.uLamp.value[k].set(0, 0, 0);
+          }
+        }
+        mistPass.render(renderer, mistTarget);
+        // Resolve: blend with the last frames, reprojected at the mist's depth.
+        const r = mistTemporalPass.uniforms;
+        setCamera(r, view);
+        r.uCur.value = mistTarget.textures[0];
+        r.uCurDepth.value = mistTarget.textures[1];
+        r.uHist.value = mistHistory[mistIndex].texture;
+        r.uPrevRight.value.copy(prev.right);
+        r.uPrevUp.value.copy(prev.up);
+        r.uPrevForward.value.copy(prev.forward);
+        r.uPrevTanHalf.value.copy(prev.tanHalf);
+        r.uPrevCamPos.value.set(prev.x - view.x, prev.alt, prev.z - view.z);
+        if (!mistValid) mistAccumulated = 0;
+        r.uHistoryValid.value = mistValid ? 1 : 0;
+        r.uBlend.value = !mistValid ? 1 : still ? 1 / (mistAccumulated + 1) : 0.35;
+        r.uClampHistory.value = still ? 0 : 1;
+        mistIndex = 1 - mistIndex;
+        mistTemporalPass.render(renderer, mistHistory[mistIndex]);
+        mistValid = true;
+        mistAccumulated++;
+      } else {
+        mistValid = false;
+      }
 
       const read = history[historyIndex];
       const write = history[1 - historyIndex];

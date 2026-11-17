@@ -1,11 +1,12 @@
 import * as THREE from "three";
-import { createSky } from "./sky/sky.js";
+import { createSky, NEAR } from "./sky/sky.js";
 import { createFlight } from "./flight.js";
 import { createJourney } from "./night/journey.js";
 import { bakeStorm, STORM } from "./night/storm.js";
 import { createLightning } from "./night/lightning.js";
 import { createBolts } from "./night/bolts.js";
 import { createCockpit } from "./cockpit/cockpit.js";
+import { lampsInWorld } from "./cockpit/lamps.js";
 
 const canvas = document.getElementById("view");
 const veil = document.getElementById("veil");
@@ -142,6 +143,35 @@ function start() {
     veil.classList.add("gone");
   }
   const stillFrames = num("frames", 24);
+
+  // The air around the aircraft on the night journey: whether the storm's cloud is within reach
+  // of the mist pass, the moon past the storm (it comes and goes softly), how open the air
+  // above is, and the aircraft's lamps.
+  let moonSeen = 1;
+  const lamps = { pos: [0, 1, 2, 3].map(() => new THREE.Vector3()), light: [0, 1, 2, 3].map(() => new THREE.Vector3()) };
+  const clamp01 = v => Math.min(Math.max(v, 0), 1);
+  function airAround(view) {
+    const sd = storm.sample(view.x, view.alt, view.z);
+    // Within reach of the storm, or of scud (the nearest is first; its reach as in storm.glsl).
+    let scud = Infinity;
+    if (view.scud && view.scud.count > 0) {
+      const p = view.scud.pos[0];
+      const s = view.scud.size[0];
+      const reachK = s.w > 0 ? Math.min(Math.max(1 + 170 / (320 * s.w), 1.3), 2.4) : 1 + (1.2 * 320) / Math.min(s.x, s.y, s.z);
+      scud = Math.hypot(p.x, p.y - view.alt, p.z) - Math.max(s.x, s.y, s.z) * reachK;
+    }
+    view.near = (sd > -(NEAR.reach + 900) || scud < NEAR.reach + 300) && params.get("near") !== "0" ? NEAR.reach : 0;
+    let open = 1;
+    for (let d = 400; d < 16000 && open > 0; d += 500) {
+      if (storm.sample(view.x + view.sunDir.x * d, view.alt + view.sunDir.y * d, view.z + view.sunDir.z * d) > -150) open = 0;
+    }
+    moonSeen += (open - moonSeen) * 0.08;
+    view.moonSeen = moonSeen;
+    const above = h => storm.sample(view.x, view.alt + h, view.z);
+    const openNear = 1 - clamp01(above(420) / 420 + 0.5);
+    view.open = [openNear, openNear * (0.3 + 0.7 * (1 - clamp01(above(1900) / 900 + 0.5)))];
+    view.lamps = lampsInWorld(view.qAircraft, view.time, lamps);
+  }
   const lightning = night ? createLightning({ stormSD: storm.sample }) : null;
   const bolts = night ? createBolts(renderer) : null;
   let flashControl = null;
@@ -166,12 +196,14 @@ function start() {
       view.flick = lit.flick;
       view.stormGlow = lit.glow;
     }
+    if (cockpit) airAround(view);
     sky.render(view, { still: still && !motion, target: frameTarget, linear: !!cockpit });
     // A bolt's channel is blinding: in linear light it is drawn well past white.
     if (bolts) bolts.render(view, view.flash, sky.scene, canvas.width, canvas.height, frameTarget, cockpit ? 6 : 1);
     if (cockpit) {
       const light = sky.light;
       cockpit.render(view, frameTarget.texture, canvas.width, canvas.height, {
+        mist: sky.mist,
         skyLight: [light.x, light.y, light.z],
         exposure: sky.exposure
       });

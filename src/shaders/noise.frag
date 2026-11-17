@@ -2,6 +2,7 @@
 // Mode 0: cloud base shape (Perlin-Worley, billowy turbulence, smooth warp vectors), 3D.
 // Mode 1: cloud edge detail (billowy turbulence at three scales), 3D.
 // Mode 2: weather map (coverage, clumps, tower regions, top variation), 2D.
+// Mode 3: mist (the storm's turbulent edges at metre scale: wisps, puffs, a flow field), 3D.
 // 3D volumes are rendered as stacks of slices: x = column, y = row within slice + slice * size.
 
 uniform int uMode;
@@ -147,6 +148,31 @@ void main() {
     // R and G are equalised on the CPU.
     float g = billow(p, 8.0, 2, 31u, 1.1);
     outColor = vec4(perlinWorley, g, perlinFbm(p, 8.0, 3, 41u), perlinFbm(p, 8.0, 3, 51u));
+  } else if (uMode == 3) {
+    // Mist, one tile = 256 m (2 m texels). Where a channel is low, the edge of a cloud keeps
+    // its mist (the shader erodes the cloud where the noise is high).
+    // R: wisps. Creased turbulence is low on thin sheets (where the noise crosses zero); the
+    //    domain is curled by a smooth field at two scales, so the sheets bend into threads
+    //    and curls, like air mixing at the edge of a cloud. 64 to 8 m.
+    // G: puffs. Distance to scattered points (low around each point) roughened by Perlin
+    //    noise: small soft lumps with clear air between them. 64 to 16 m.
+    // R and G are equalised on the CPU, then mixed into one channel.
+    vec3 curl = perlinVec(p, 2.0, 91u) * 0.06 + perlinVec(p, 8.0, 95u) * 0.018;
+    vec3 q = p + curl;
+    float wisps = 0.0;
+    float amp = 1.0;
+    float norm = 0.0;
+    float freq = 4.0;
+    for (int i = 0; i < 4; i++) {
+      wisps += amp * abs(perlin(q, freq, 101u + uint(i) * 13u));
+      norm += amp;
+      amp *= 0.55;
+      freq *= 2.0;
+    }
+    wisps /= norm;
+    float cells = worley(q, 4.0, 121u) * 0.55 + worley(q, 8.0, 122u) * 0.3 + worley(q, 16.0, 123u) * 0.15;
+    float puffs = cells * 0.75 + 0.25 * perlinFbm(q, 8.0, 2, 131u);
+    outColor = vec4(wisps, puffs, 0.0, 1.0);
   } else {
     // Edge detail: billowy turbulence at 320, 160 and 80 m, combined as an FBM in the shader.
     outColor = vec4(billow(p, 2.0, 2, 61u, 1.2), billow(p, 4.0, 2, 71u, 1.2), billow(p, 8.0, 1, 81u, 1.0), 1.0);

@@ -14,6 +14,8 @@
 
 uniform sampler2D uOutside;
 uniform sampler2D uCockpit;
+uniform sampler2D uMist;      // the mist around the aircraft (see mist.frag): light, and what shows through
+uniform float uMistOn;
 uniform sampler2D uAtlas;     // the instruments' face
 uniform vec3 uHeadRight;      // the head, in the cabin frame
 uniform vec3 uHeadUp;
@@ -24,6 +26,7 @@ uniform float uTime;
 uniform float uRain;
 uniform float uHail;
 uniform float uCloud;         // in cloud, 0..1
+uniform float uMotes;         // how much cloud there is right around the aircraft, 0..1
 uniform float uHaze;          // in the rain and haze of the storm, 0..1
 uniform vec3 uWindAxis;       // where the drops go, relative to the cabin
 uniform float uWindSpeed;     // how fast (m/s)
@@ -139,6 +142,51 @@ vec3 streaks(vec3 dir, float tGlass, float amount, bool hail, float sigma) {
   return sum * (hail ? 0.6 : 0.25);
 }
 
+// The cloud itself, up close: droplets and ice crystals rushing past, too small to see unless a
+// light catches them. In a flash or a beacon's pulse the air around the canopy fills with
+// specks, each a short streak (the way it covers while the eye takes it in); crystals glint
+// brighter than drops as they tumble. Layers at growing distance from the line they come along,
+// as for the rain. amount: the share of cells that hold one.
+vec3 motes(vec3 dir, float tGlass, float amount, float sigma) {
+  vec3 ax = -uWindAxis;
+  vec3 e1 = normalize(cross(ax, abs(ax.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+  vec3 e2 = cross(ax, e1);
+  float ca = dot(dir, ax);
+  float sa = sqrt(max(1.0 - ca * ca, 1e-6));
+  float around = atan(dot(dir, e2), dot(dir, e1)) / (2.0 * PI) + 0.5;
+  float pix = 2.0 * uTanHalf.y / uScreen.y;
+  float travel = uWindSpeed / 80.0;
+  vec3 sum = vec3(0.0);
+  for (int k = 0; k < 6; k++) {
+    float fk = float(k);
+    float rho = 0.9 * pow(1.55, fk);
+    float dist = rho / sa;
+    if (dist < tGlass + 0.05) continue;
+    float spacing = 0.07 * pow(1.3, fk);
+    float cells = max(floor(2.0 * PI * rho / spacing), 3.0);
+    float cellAngle = 2.0 * PI * rho / cells / dist;
+    float resolved = smoothstep(2.0, 5.0, cellAngle / pix);
+    if (resolved <= 0.0) continue;
+    float lenZ = 0.6 * pow(1.3, fk);
+    float zz = (ca / sa * rho + uWindSpeed * uTime) / lenZ + fk * 0.37 + 5.0;
+    float fx = around * cells;
+    vec2 hid = vec2(floor(fx), floor(zz)) + vec2(fk * 17.3, 3.1);
+    if (h21(hid) > amount) continue;
+    vec2 r = h22(hid + 0.5);
+    float across = (fract(fx) - 0.2 - 0.6 * r.x) * (2.0 * PI * rho / cells) / dist; // radians
+    float along = (fract(zz) - 0.05 - 0.5 * r.y) * lenZ; // metres behind its head
+    float size = 0.0006;
+    float w = max(size / dist, 0.6 * pix);
+    float cov = exp(-across * across / (w * w)) * min(size / dist / (0.6 * pix), 1.0);
+    float on = smoothstep(-0.03, 0.04, along) * (1.0 - smoothstep(travel - 0.15, travel, along));
+    if (cov * on < 0.001) continue;
+    float dwell = min(1.0, 3.0 * pix / (travel * sa / dist));
+    float glint = 0.3 + 4.0 * pow(h21(hid + 9.7), 6.0) * (0.5 + 0.5 * sin(uTime * 37.0 + 40.0 * r.x));
+    sum += lightAround(uEye + dir * dist) * (cov * on * resolved * dwell * glint * exp(-sigma * dist));
+  }
+  return sum * 0.35;
+}
+
 // Height of the water on the glass (about mm), s: the direction of the point from the bubble's
 // centre. Rivulets run back from the nose in columns around it, meandering and thickening into
 // drops, faster the further they get; near the nose, where the air barely moves the water,
@@ -236,30 +284,38 @@ void main() {
   vec2 slope = vec2(dFdx(hw), dFdy(hw)) * 1e-3 / max(tGlass * pix, 1e-5);
 
   vec3 col = texture(uOutside, vUv).rgb;
+  vec4 mist = uMistOn > 0.5 ? texture(uMist, vUv) : vec4(0.0, 0.0, 0.0, 1.0);
   if (g.z < BACK_Z) {
     float steep = length(slope);
     if (hw > 0.0) {
       // Each run of water is a small lens: the view behind it is shifted, and its steep rims
       // reflect the dark cabin rather than let the outside through.
       vec2 shift = 0.15 * slope / (2.0 * uTanHalf);
-      col = texture(uOutside, vUv - shift).rgb * (1.0 - 0.3 * smoothstep(0.5, 1.6, steep));
+      col = texture(uOutside, vUv - shift).rgb;
+      if (uMistOn > 0.5) mist = texture(uMist, vUv - shift);
+      col = (mist.rgb + mist.a * col) * (1.0 - 0.3 * smoothstep(0.5, 1.6, steep));
+    } else {
+      col = mist.rgb + mist.a * col;
     }
     float cosI = abs(dot(dir, n));
     float F = 0.04 + 0.96 * pow(1.0 - cosI, 5.0);
     col *= (1.0 - F) * 0.97;
 
     vec3 add = vec3(0.0);
-    // The aircraft's lamps light the cloud and the rain around it.
+    // The aircraft's lamps light the cloud and the rain around it. In cloud, the mist pass
+    // has done it, with all the mist's detail; the rain between is left.
     float sigma = CLOUD_SIGMA * uCloud + 0.003 * uRain * uHaze;
-    if (sigma > 0.0) {
+    float sigmaLamps = uMistOn > 0.5 ? 0.003 * uRain * uHaze : sigma;
+    if (sigmaLamps > 0.0) {
       for (int i = 0; i < 2; i++) {
-        add += lampGlow(uBeaconPos[i], uBeacon, dir, tGlass, sigma);
-        add += lampGlow(uNavPos[i], uNav[i], dir, tGlass, sigma);
+        add += lampGlow(uBeaconPos[i], uBeacon, dir, tGlass, sigmaLamps);
+        add += lampGlow(uNavPos[i], uNav[i], dir, tGlass, sigmaLamps);
       }
     }
     // Rain and hail rushing past.
     if (uRain > 0.0) add += streaks(dir, tGlass, 0.18 * uRain, false, sigma);
     if (uHail > 0.0) add += streaks(dir, tGlass, 0.04 * uHail, true, sigma);
+    if (uMotes > 0.0) add += motes(dir, tGlass, 0.38 * uMotes, sigma);
     // Water on the glass catches the light at its rims; hail splashes on it.
     vec3 around = lightAround(g);
     if (hw > 0.0) add += around * 0.03 * smoothstep(0.3, 1.2, steep);

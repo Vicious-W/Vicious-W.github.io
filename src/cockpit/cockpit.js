@@ -4,6 +4,7 @@ import { createPass } from "../sky/fullscreen.js";
 import { createRibbons } from "../night/bolts.js";
 import { createInstruments } from "./instruments.js";
 import { createStreamers } from "./streamers.js";
+import { WING, BEACONS, NAV, BEACON_COLOR, NAV_COLORS, BEACON_POWER, NAV_POWER, beaconPulse } from "./lamps.js";
 import vertexShader from "../shaders/fullscreen.vert?raw";
 import common from "../shaders/common.glsl?raw";
 import glassSrc from "../shaders/glass.frag?raw";
@@ -25,13 +26,8 @@ export const BUBBLE = Object.freeze({ centre: [0, -0.25, -0.45], radii: [1.05, 1
 const BOW_Z = -0.55; // the bow: where the canopy's frame crosses the glass, ahead of the shoulders
 const ARCH_Z = 0.57; // the arch behind the seat
 
-// Lights of the aircraft (cabin frame). The beacons flash red; the wing tips shine steadily.
-const WING = { rootY: 1.22, tipY: 1.5, span: 6.2, leading: 0.95, rootChord: 1.5, tipChord: 0.95 };
-export const BEACONS = [[0, 2.1, 4.6], [0, -1.25, 1.9]];
-export const NAV = [[-WING.span, WING.tipY, WING.leading + 0.05], [WING.span, WING.tipY, WING.leading + 0.05]];
-const BEACON_COLOR = [1.0, 0.045, 0.03];
-const NAV_COLORS = [[1.0, 0.05, 0.035], [0.05, 1.0, 0.3]];
-const BEACON_PERIOD = 1.3;
+// Lights of the aircraft: see lamps.js.
+export { BEACONS, NAV };
 
 const C = new THREE.Vector3(...BUBBLE.centre);
 const R = new THREE.Vector3(...BUBBLE.radii);
@@ -348,6 +344,8 @@ export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
     uniforms: {
       uOutside: { value: null },
       uCockpit: { value: null },
+      uMist: { value: null },
+      uMistOn: { value: 0 },
       uAtlas: { value: instruments.texture },
       uHeadRight: { value: new THREE.Vector3(1, 0, 0) },
       uHeadUp: { value: new THREE.Vector3(0, 1, 0) },
@@ -358,6 +356,7 @@ export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
       uRain: { value: 0 },
       uHail: { value: 0 },
       uCloud: { value: 0 },
+      uMotes: { value: 0 },
       uHaze: { value: 0 },
       uWindAxis: { value: new THREE.Vector3(0, 0, 1) },
       uWindSpeed: { value: 68 },
@@ -365,7 +364,7 @@ export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
       uBeaconPos: { value: BEACONS.map(p => new THREE.Vector3(...p)) },
       uBeacon: { value: new THREE.Vector3() },
       uNavPos: { value: NAV.map(p => new THREE.Vector3(...p)) },
-      uNav: { value: NAV_COLORS.map(c => new THREE.Vector3(...c).multiplyScalar(0.5)) },
+      uNav: { value: NAV_COLORS.map(c => new THREE.Vector3(...c).multiplyScalar(NAV_POWER)) },
       uFacePos: { value: facePos },
       uFaceU: { value: faceU },
       uFaceV: { value: faceV },
@@ -388,7 +387,6 @@ export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
   const headUp = new THREE.Vector3();
   const headForward = new THREE.Vector3();
   let frame = 0;
-  let moonSeen = 1;
 
   // Irradiance of lightning at the aircraft (colour), and the direction it comes from.
   function lightningAt(view, positions, weights, power, depth, color, outDir, outLight) {
@@ -413,7 +411,7 @@ export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
      * outside: the image of the outside, linear and exposed. Draws the finished frame to the
      * screen.
      */
-    render(view, outside, width, height, { skyLight = [0, 0, 0], exposure = 8 } = {}) {
+    render(view, outside, width, height, { mist = null, skyLight = [0, 0, 0], exposure = 8 } = {}) {
       if (!layer || layer.width !== width || layer.height !== height) {
         layer?.dispose();
         layer = new THREE.WebGLRenderTarget(width, height, {
@@ -429,12 +427,8 @@ export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
       inverse.copy(view.qAircraft).invert();
       instruments.update(view, t);
 
-      // The moon: seen from the aircraft or hidden by the storm (it comes and goes softly).
-      let open = 1;
-      for (let d = 400; d < 16000 && open > 0; d += 500) {
-        if (stormSD(view.x + view.sunDir.x * d, view.alt + view.sunDir.y * d, view.z + view.sunDir.z * d) > -150) open = 0;
-      }
-      moonSeen += (open - moonSeen) * 0.08;
+      // The moon: seen from the aircraft or hidden by the storm (worked out in main.js).
+      const moonSeen = view.moonSeen ?? 1;
       shared.uDirDir.value[0].copy(view.sunDir).applyQuaternion(inverse);
       shared.uDirLight.value[0].set(...skyLight).multiplyScalar(moonSeen * (1 - cabin.cloud));
       shared.uAmbient.value.set(...skyLight).multiplyScalar(0.05 + 0.1 * moonSeen);
@@ -451,9 +445,8 @@ export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
       for (let i = 0; i < 2; i++) g.uLight.value[i].copy(shared.uDirLight.value[1 + i]);
 
       // The aircraft's own lights. The beacons flash: a sharp rise, a short tail.
-      const phase = ((t % BEACON_PERIOD) + BEACON_PERIOD) % BEACON_PERIOD;
-      const pulse = phase < 0.012 ? phase / 0.012 : Math.exp(-(phase - 0.012) / 0.06);
-      g.uBeacon.value.set(...BEACON_COLOR).multiplyScalar(1.2 * pulse);
+      const pulse = beaconPulse(t);
+      g.uBeacon.value.set(...BEACON_COLOR).multiplyScalar(BEACON_POWER * pulse);
       // In cloud the beacons' flashes fill the cloud around, and the cabin with it.
       shared.uAmbient.value.addScaledVector(g.uBeacon.value, 0.003 * cabin.cloud);
       screens.forEach((s, i) => shared.uPointLight.value[i].set(...s.color).multiplyScalar(0.0011));
@@ -512,6 +505,8 @@ export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
       // The glass pass finishes the frame.
       g.uOutside.value = outside;
       g.uCockpit.value = layer.texture;
+      g.uMist.value = mist;
+      g.uMistOn.value = mist ? 1 : 0;
       g.uHeadRight.value.copy(headRight);
       g.uHeadUp.value.copy(headUp);
       g.uHeadForward.value.copy(headForward);
@@ -521,6 +516,7 @@ export function createCockpit(renderer, { stormSD = () => -1500 } = {}) {
       g.uRain.value = cabin.rain;
       g.uHail.value = cabin.hail;
       g.uCloud.value = cabin.cloud;
+      g.uMotes.value = cabin.mist ?? cabin.cloud;
       g.uHaze.value = cabin.storm;
       // Rain as the cabin meets it: the drops fall, and the air streams back past the cabin.
       const fall = tmp.set(0, -8, 0).applyQuaternion(inverse);

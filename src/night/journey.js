@@ -24,6 +24,25 @@ export const PATH = [
 ];
 
 const SPEED = 68;
+
+// Scud and veils of mist on the way, which the aircraft flies through or close past, and two
+// pockets of thinner air inside the rear tower: so the journey goes in and out of cloud again
+// and again, not only once. t: when (s on the journey); off: offset from the path (m: right, up,
+// ahead); r: radii (m: across, up, along the path); dense: how deep in mist its middle is, as a
+// share of the storm's fringe (see storm.glsl); a pocket has dense < 0.
+export const SCUD = [
+  { t: 142, off: [0, 35, 0], r: [650, 70, 240], dense: 0.55 }, // a veil under the anvil, at the canyon
+  { t: 186, off: [-20, 0, 0], r: [170, 95, 180], dense: 0.75 },
+  { t: 214, off: [-250, 10, 0], r: [190, 120, 230], dense: 0.85 }, // close past, on the left
+  { t: 241, off: [30, -10, 0], r: [140, 100, 160], dense: 0.7 },
+  { t: 283, off: [70, 0, 0], r: [320, 160, 260], dense: 0.9 }, // ragged scud by the main updraft
+  { t: 318, off: [0, -330, 0], r: [260, 380, 260], dense: 0.8 }, // mist rising out of the well
+  { t: 349, off: [0, 0, 0], r: [180, 120, 210], dense: 0.75 },
+  { t: 368, off: [-60, 20, 0], r: [300, 220, 260], dense: 0.9 }, // torn off the rear tower
+  { t: 393, off: [0, 0, 0], r: [260, 200, 300], dense: -1 }, // pockets in the rear tower
+  { t: 447, off: [0, 0, 0], r: [220, 180, 260], dense: -1 }
+];
+const SCUD_MAX = 8;
 const MOON_ELEVATION = THREE.MathUtils.degToRad(25);
 const MOON_AZIMUTH = THREE.MathUtils.degToRad(38); // clockwise from north (-z)
 
@@ -87,6 +106,46 @@ export function createPath(points = PATH) {
   };
 }
 
+/** The scud in the storm frame: centre, radii, density, and the path's heading there (cos, sin). */
+export function placeScud(path = createPath()) {
+  return SCUD.map(b => {
+    const s = b.t * SPEED;
+    const p = path.position(s);
+    const a = path.position(s + 50);
+    const c = path.position(s - 50);
+    const h = Math.atan2(a[0] - c[0], -(a[2] - c[2]));
+    const right = [Math.cos(h), Math.sin(h)];
+    const ahead = [Math.sin(h), -Math.cos(h)];
+    const centre = [
+      p[0] + right[0] * b.off[0] + ahead[0] * b.off[2],
+      p[1] + b.off[1],
+      p[2] + right[1] * b.off[0] + ahead[1] * b.off[2]
+    ];
+    return { centre, r: b.r, dense: b.dense, turn: right };
+  });
+}
+
+/**
+ * How the scud and pockets change the cloud at (x, y, z), without the noise: the storm's
+ * baked distance sd (m, positive inside) in, the scud's share of mist (0..1) and the distance
+ * the pockets leave out.
+ */
+export function scudAt(bodies, x, y, z, sd) {
+  let mist = 0;
+  let shape = sd;
+  for (const b of bodies) {
+    const dx = x - b.centre[0];
+    const dy = y - b.centre[1];
+    const dz = z - b.centre[2];
+    const qa = (b.turn[0] * dx + b.turn[1] * dz) / b.r[0];
+    const qb = (b.turn[1] * dx - b.turn[0] * dz) / b.r[2];
+    const k = Math.hypot(qa, dy / b.r[1], qb);
+    if (b.dense > 0) mist = Math.max(mist, Math.min(Math.max((1 - k) * b.dense / 0.3, 0), 1) * 0.45);
+    else shape = Math.min(shape, (k - 1) * 320 * 1.2);
+  }
+  return { mist, shape };
+}
+
 // ---- deterministic noise of time, so a moment of the journey always looks the same ---------
 
 function hash1(n) {
@@ -145,6 +204,7 @@ function gusts(t, rough) {
 export function createJourney(options = {}) {
   const path = createPath();
   const stormSD = options.stormSD || (() => -1500);
+  const bodies = placeScud(path);
   const state = {
     time: options.time ?? 0,
     x: 0,
@@ -191,8 +251,16 @@ export function createJourney(options = {}) {
     qHead, // the head in the airframe
     eye: new THREE.Vector3(), // the eye in the airframe (m)
     cabin: null,
-    fog: 0
+    fog: 0,
+    // The scud nearest the aircraft, for the cloud shaders (see storm.glsl).
+    scud: {
+      count: 0,
+      pos: Array.from({ length: SCUD_MAX }, () => new THREE.Vector4()),
+      size: Array.from({ length: SCUD_MAX }, () => new THREE.Vector4()),
+      turn: Array.from({ length: SCUD_MAX }, () => new THREE.Vector2())
+    }
   };
+  const order = bodies.map((b, i) => i);
 
   function place() {
     const s = state.time * SPEED;
@@ -219,10 +287,17 @@ export function createJourney(options = {}) {
   place();
 
   // ---- where things happen along the path (distances in metres) -----------------------
+  // Cloud right around the aircraft: the storm (less its pockets) and the scud.
   const cloudAt = s => {
     let sum = 0;
-    for (const d of [-80, 0, 80]) sum += stormSD(...path.position(s + d));
-    return smooth(sum / 3, -350, 150);
+    let mist = 0;
+    for (const d of [-80, 0, 80]) {
+      const p = path.position(s + d);
+      const at = scudAt(bodies, p[0], p[1], p[2], stormSD(...p));
+      sum += at.shape;
+      mist = Math.max(mist, at.mist);
+    }
+    return Math.max(smooth(sum / 3, -350, 150), mist);
   };
   // First distance at which the path has gone north of z0 (it flies north until the last turn).
   const whereZ = z0 => {
@@ -358,6 +433,20 @@ export function createJourney(options = {}) {
       view.time = t;
       // Rain and haze in the air of the storm, for the clouds.
       view.fog = cabin.storm;
+      // The scud within sight, nearest first, relative to the camera (y stays altitude).
+      const dist = b => Math.hypot(b.centre[0] - state.x, b.centre[1] - state.alt, b.centre[2] - state.z);
+      order.sort((a, b) => dist(bodies[a]) - dist(bodies[b]));
+      let n = 0;
+      for (const i of order) {
+        const b = bodies[i];
+        if (n >= SCUD_MAX || dist(b) > 9000) break;
+        view.scud.pos[n].set(b.centre[0] - state.x, b.centre[1], b.centre[2] - state.z, 0);
+        view.scud.size[n].set(b.r[0], b.r[1], b.r[2], b.dense);
+        view.scud.turn[n].set(b.turn[0], b.turn[1]);
+        n++;
+      }
+      for (let i = n; i < SCUD_MAX; i++) view.scud.size[i].set(0, 0, 0, 0);
+      view.scud.count = n;
       return view;
     }
   };
