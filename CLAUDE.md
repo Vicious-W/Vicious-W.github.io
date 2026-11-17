@@ -25,7 +25,7 @@
   - 作品里不放任何个人信息；画面上除必要的字外不加任何字，仪表也只有图形；
   - "真实"指看起来、听起来真实，要经得起和真实视频对比；
   - 《皇牌空战》只作画面效果的参照，不复刻任何游戏；
-  - 只做电脑端（主人的 RTX 3060 + Chrome），不考虑手机；
+  - 只做电脑端（主人的笔记本：RTX 3060 Laptop GPU，外接 2560×1440 显示器，Chrome），不考虑手机；
   - 效果优先：不为硬件预先让步，遇到具体的卡顿再优化。
 - **开发方式**：网页技术，画面、声音、座舱全部由代码生成；在主人的电脑上开发，用他的显卡
   实时检查。
@@ -38,7 +38,8 @@
 3. 改动如果会影响白天场景，用 `tools/shot.mjs` 分别对改动前后的构建截图对比。
 4. 不要建 PR，除非主人要求；不要用 force push 改写历史；提交小而清楚。
 5. 完成后确认线上已经是新版本：线上 `index.html` 引用的 `assets/index-*.js` 文件名应与本地
-   `dist/assets/` 一致。
+   `dist/assets/` 一致（仓库统一 LF 换行，本地构建和 GitHub 的构建逐字节相同）。
+6. 提交作者用仓库本地配置的 `Claude <noreply@anthropic.com>`，不要用主人的邮箱。
 
 ## 常用命令
 
@@ -56,13 +57,13 @@ npm run check          # 运行几个场景，报告控制台错误和所用的�
 | `node tools/shot.mjs --sheet 名字 "参数" ...` | 收敛后的静帧截图，可拼成一张总览 |
 | `node tools/series.mjs --query="night&t=384" --frames=120 --every=6 --sheet` | 逐帧推进的动态序列，看闪烁、拖影、颠簸 |
 | `node tools/record.mjs --query="night&t=380" --seconds=15` | 按真实帧率录成 WebM 视频（可发给主人） |
-| `node tools/bench.mjs --size=1920x1080 "night&t=267" ""` | 每帧耗时（等显卡完成）；`--live` 测实际帧率 |
+| `node tools/bench.mjs --size=2560x1440 "night&t=267" ""` | 每帧耗时（等显卡完成）；`--live` 测实际帧率和帧节奏（95% 分位应接近平均帧时间） |
 | `node tools/check.mjs "night" "night&t=400" ""` | 控制台检查 |
 | `node tools/storm-view.mjs` | 不渲染，直接画出雷暴的平面图和剖面图，打印航线间距和座舱时间线 |
 
-所有工具都会先打印 `GPU:`。在主人电脑上必须是 NVIDIA 显卡；如果显示 SwiftShader（软件渲染），
-加 `--headed` 让 Chrome 以窗口模式运行。输出在 `captures/`（不提交）。`--url=http://localhost:5173`
-可以直接测开发服务器，不必先构建。
+所有工具都会先打印 `GPU:`。在主人电脑上必须是 NVIDIA 显卡（无头模式就是，不需要 `--headed`；
+屏幕锁定时 `--headed` 的窗口会被限到每秒 1 帧）。测性能按主人的屏幕 `--size=2560x1440`。
+输出在 `captures/`（不提交）。`--url=http://localhost:5173` 可以直接测开发服务器，不必先构建。
 
 ## 网址参数（调试和截图用）
 
