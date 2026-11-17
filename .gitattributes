@@ -1,0 +1,6 @@
+# LF everywhere, also in a Windows checkout: the shaders are bundled as text, so CRLF
+# would change the build (and its file name) compared with the one GitHub deploys.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.webm binary
