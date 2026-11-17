@@ -25,10 +25,13 @@ function roundRect(g, x, y, w, h, r) {
 
 /** stormSD(x, y, z): the baked storm distance (m, positive inside), for the radar. */
 export function createInstruments({ stormSD = () => -1500 } = {}) {
+  // Both canvases are drawn on the CPU (willReadFrequently). A GPU canvas has to be synced
+  // with WebGL at every upload, and with the storm keeping the GPU busy that sync broke the
+  // frame pacing on a real GPU: bursts of frames, then stalls of 80-200 ms at each redraw.
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = H;
-  const g = canvas.getContext("2d");
+  const g = canvas.getContext("2d", { willReadFrequently: true });
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
@@ -40,7 +43,7 @@ export function createInstruments({ stormSD = () => -1500 } = {}) {
   const echoCanvas = document.createElement("canvas");
   echoCanvas.width = 352;
   echoCanvas.height = 352;
-  const eg = echoCanvas.getContext("2d");
+  const eg = echoCanvas.getContext("2d", { willReadFrequently: true });
   eg.fillStyle = "#010304";
   eg.fillRect(0, 0, 352, 352);
   const EO = [176, 326]; // the radar's origin in that canvas
