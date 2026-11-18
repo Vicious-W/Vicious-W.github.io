@@ -160,7 +160,7 @@ function start() {
       const reachK = s.w > 0 ? Math.min(Math.max(1 + 170 / (320 * s.w), 1.3), 2.4) : 1 + (1.2 * 320) / Math.min(s.x, s.y, s.z);
       scud = Math.hypot(p.x, p.y - view.alt, p.z) - Math.max(s.x, s.y, s.z) * reachK;
     }
-    view.near = (sd > -(NEAR.reach + 900) || scud < NEAR.reach + 300) && params.get("near") !== "0" ? NEAR.reach : 0;
+    view.near = (sd > -(NEAR.reach + 900) || scud < NEAR.reach + 300 || (view.airMist ?? 0) > 0.02) && params.get("near") !== "0" ? NEAR.reach : 0;
     let open = 1;
     for (let d = 400; d < 16000 && open > 0; d += 500) {
       if (storm.sample(view.x + view.sunDir.x * d, view.alt + view.sunDir.y * d, view.z + view.sunDir.z * d) > -150) open = 0;

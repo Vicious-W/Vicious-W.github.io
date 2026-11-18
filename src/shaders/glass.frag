@@ -54,6 +54,11 @@ uniform float uFrame;
 out vec4 outColor;
 
 const float CLOUD_SIGMA = 0.12; // extinction of the storm cloud around the aircraft (1/m)
+// Grading of the night: how much of the scene's colour is kept, its tint, and how deep the
+// shadows go (the power of the tone curve; the day uses 1.12).
+const float NIGHT_COLOUR = 0.45;
+const vec3 NIGHT_TINT = vec3(0.97, 1.0, 1.06);
+const float NIGHT_CONTRAST = 1.16;
 
 float h21(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -179,7 +184,7 @@ vec3 motes(vec3 dir, float tGlass, float amount, float sigma) {
     if (resolved <= 0.0) continue;
     float fx = around * cells;
     float column = floor(fx);
-    float speed = uMoteSpeed * (1.0 + 0.24 * (h21(vec2(column, fk * 7.1 + 2.3)) - 0.5));
+    float speed = uMoteSpeed * (1.0 + 0.4 * (h21(vec2(column, fk * 7.1 + 2.3)) - 0.5));
     float lenZ = 0.6 * pow(1.3, fk);
     float z = ca / sa * rho;
     float zz = (z + speed * uTime) / lenZ + fk * 0.37 + 5.0;
@@ -189,7 +194,7 @@ vec3 motes(vec3 dir, float tGlass, float amount, float sigma) {
     if (h21(hid) > amount * (0.25 + 1.5 * clump * clump)) continue;
     vec2 r = h22(hid + 0.5);
     // Eddies jostle each speck sideways, a few centimetres.
-    float jostle = 0.05 * sin(uTime * (5.0 + 6.0 * r.y) + 6.283 * r.x) + 0.03 * sin(uTime * (11.0 + 7.0 * r.x) + 3.1 * r.y);
+    float jostle = 0.12 * sin(uTime * (4.0 + 5.0 * r.y) + 6.283 * r.x) + 0.06 * sin(uTime * (10.0 + 7.0 * r.x) + 3.1 * r.y);
     float across = ((fract(fx) - 0.2 - 0.6 * r.x) * (2.0 * PI * rho / cells) + jostle) / dist; // radians
     float along = (fract(zz) - 0.05 - 0.5 * r.y) * lenZ; // metres behind its head
     float size = 0.0006;
@@ -221,7 +226,7 @@ float water(vec3 s, float t) {
     float x = around * M + float(k) * 0.5;
     float cid = mod(floor(x), M) + float(k) * 101.0;
     float seg = floor(Y * 0.6 + h21(vec2(cid, 3.0)) * 7.0);
-    if (h21(vec2(cid, seg)) > 0.06 + 0.14 * uRain) continue;
+    if (h21(vec2(cid, seg)) > 0.025 + 0.06 * uRain) continue;
     float c = 0.5 + 0.32 * (vnoise(vec2(cid * 1.7, Y * 1.6)) * 2.0 - 1.0) + 0.06 * (vnoise(vec2(cid * 3.1, Y * 6.0)) * 2.0 - 1.0);
     float w = clamp(0.0025 / colWidth, 0.015, 0.3);
     float q = (fract(x) - c) / w;
@@ -233,7 +238,7 @@ float water(vec3 s, float t) {
     vec2 p = s.xy * (1.1 / 0.007);
     vec2 cell = floor(p);
     float life = floor(t * 1.5 + h21(cell) * 9.0);
-    if (h21(cell + life * 7.31) < 0.3 * uRain) {
+    if (h21(cell + life * 7.31) < 0.1 * uRain) {
       vec2 at = 0.3 + 0.4 * h22(cell + life);
       float r = 0.18 + 0.2 * h21(cell + 4.1);
       float qq = length(fract(p) - at) / r;
@@ -310,10 +315,15 @@ void main() {
       vec2 shift = 0.15 * slope / (2.0 * uTanHalf);
       col = texture(uOutside, vUv - shift).rgb;
       if (uMistOn > 0.5) mist = texture(uMist, vUv - shift);
-      col = (mist.rgb + mist.a * col) * (1.0 - 0.3 * smoothstep(0.5, 1.6, steep));
+      col = (mist.rgb + mist.a * col) * (1.0 - 0.1 * smoothstep(0.5, 1.6, steep));
     } else {
       col = mist.rgb + mist.a * col;
     }
+    // The night as the eye sees it: hardly any colour, only a cool tint (the blue of a film's
+    // night, laid over everything, turned the whole picture into a murky navy). The discharges
+    // and lamps added below keep their colour.
+    float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    col = mix(vec3(lum), col, NIGHT_COLOUR) * NIGHT_TINT;
     float cosI = abs(dot(dir, n));
     float F = 0.04 + 0.96 * pow(1.0 - cosI, 5.0);
     col *= (1.0 - F) * 0.97;
@@ -335,7 +345,7 @@ void main() {
     if (uMotes > 0.0) add += motes(dir, tGlass, 0.38 * uMotes, sigma);
     // Water on the glass catches the light at its rims; hail splashes on it.
     vec3 around = lightAround(g);
-    if (hw > 0.0) add += around * 0.03 * smoothstep(0.3, 1.2, steep);
+    if (hw > 0.0) add += around * 0.012 * smoothstep(0.3, 1.2, steep);
     if (uHail > 0.0) add += (around + 0.002) * 0.04 * hailImpacts(s);
     // Lightning makes the wet, scratched glass glow faintly.
     add += (uLight[0] + uLight[1]) * 0.0012 * (0.4 + uRain);
@@ -356,7 +366,7 @@ void main() {
   // The cockpit on top.
   vec4 ck = texture(uCockpit, vUv);
   col = col * (1.0 - clamp(ck.a, 0.0, 1.0)) + ck.rgb * uExposure;
-  col = linearToSrgb(agx(col));
+  col = linearToSrgb(agxLook(col, NIGHT_CONTRAST, 1.0));
   float dither = (h21(gl_FragCoord.xy + mod(uFrame, 16.0) * 7.31) + h21(gl_FragCoord.yx * 1.37 + 3.1) - 1.0) / 255.0;
   if (uShow == 1) col = linearToSrgb(agx(mist.rgb * 4.0));
   if (uShow == 2) col = linearToSrgb(agx(texture(uOutside, vUv).rgb));

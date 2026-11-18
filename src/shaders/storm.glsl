@@ -155,10 +155,10 @@ float stormEdge(vec3 p, float z, float lodD, bool fine) {
   if (fine) {
     // Integer frequency multiple keeps the wrapped detail offset continuous.
     vec3 dn2 = textureLod(uDetailNoise, dq * 3.0, lodD + 1.585).rgb;
-    dfbm = dfbm * 0.72 + (dn2.r * 0.625 + dn2.g * 0.25 + dn2.b * 0.125) * 0.28;
+    dfbm = dfbm * 0.88 + (dn2.r * 0.625 + dn2.g * 0.25 + dn2.b * 0.125) * 0.12;
   }
   float ragged = mix(1.7, 1.0, smoothstep(0.0, 140.0, z));
-  return 90.0 * ragged * (dfbm - 0.5) * 2.0;
+  return 70.0 * ragged * (dfbm - 0.5) * 2.0;
 }
 
 // The mist at p: low where the edge of the cloud keeps its mist, high where it is eaten away
@@ -168,7 +168,7 @@ float stormEdge(vec3 p, float z, float lodD, bool fine) {
 // close range.
 float mistNoise(vec3 p, vec2 flow, float lodM, bool fine) {
   vec2 f = flow - 0.5;
-  vec3 q = (p + uMistOffset + vec3(f.x, 0.6 * (f.x - f.y), f.y) * 24.0) / MIST_PERIOD;
+  vec3 q = (p + uMistOffset + vec3(f.x, 0.6 * (f.x - f.y), f.y) * 9.0) / MIST_PERIOD;
   float e = textureLod(uMistNoise, q, lodM).r;
   if (fine) {
     // Integer multiple: the wrapped offset stays continuous.

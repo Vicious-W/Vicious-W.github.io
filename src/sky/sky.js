@@ -55,7 +55,10 @@ const wrap = (v, p) => v - p * Math.floor(v / p);
 
 // The storm's mist (storm.glsl): its noise tiles every 256 m and drifts with the air (m/s); the
 // smooth part of the base noise, drifting otherwise, stirs it.
-export const MIST = Object.freeze({ period: 256, drift: { x: 2.5, y: 0.8, z: -1.8 } });
+export const MIST = Object.freeze({ period: 256, drift: { x: 2.5, y: 5.0, z: -1.8 } });
+// The storm boils (night): its billows rise (m/s), its bulges roll up faster still. By day the
+// clouds drift as they always have.
+const BOIL = Object.freeze({ billows: 10.0, bulges: { x: -5.0, y: 15.0, z: 3.0 } });
 // The mist pass draws the storm's cloud within this distance of the eye (m), at this fraction
 // of the screen's resolution (mist is soft; its finest detail is a few pixels across).
 export const NEAR = Object.freeze({ reach: 240, scale: 0.5 });
@@ -486,7 +489,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
           uLamp: { value: Array.from({ length: 4 }, () => new THREE.Vector3()) },
           uTurbA: { value: new THREE.Vector3() },
           uTurbB: { value: new THREE.Vector3() },
-          uShutter: { value: new THREE.Vector3() }
+          uShutter: { value: new THREE.Vector3() },
+          uAirMist: { value: 0 }
         }
       })
     : null;
@@ -621,13 +625,13 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
       const u = cloudPass.uniforms;
       u.uBaseOffset.value.set(
         wrap(cx, CLOUD.basePeriod),
-        wrap(t * 0.9, CLOUD.basePeriod / CLOUD.baseYScale),
+        wrap(night ? -t * BOIL.billows : t * 0.9, CLOUD.basePeriod / CLOUD.baseYScale),
         wrap(cz, CLOUD.basePeriod)
       );
       u.uDetailOffset.value.set(
-        wrap(cx - t * 1.5, CLOUD.detailPeriod),
-        wrap(t * 2.2, CLOUD.detailPeriod),
-        wrap(cz + t * 0.7, CLOUD.detailPeriod)
+        wrap(cx + t * (night ? -BOIL.bulges.x : -1.5), CLOUD.detailPeriod),
+        wrap(night ? -t * BOIL.bulges.y : t * 2.2, CLOUD.detailPeriod),
+        wrap(cz + t * (night ? -BOIL.bulges.z : 0.7), CLOUD.detailPeriod)
       );
       u.uWeatherOffsetA.value.set(wrap(cx, CLOUD.weatherPeriodA), wrap(cz, CLOUD.weatherPeriodA));
       const rx = WEATHER_ROT.c * cx - WEATHER_ROT.s * cz;
@@ -699,8 +703,9 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         // Turbulence close by: two layers of eddies sweeping past each other, so the mist curls
         // and changes shape within seconds (see mist.frag).
         const air = view.air || [0, 0, 0];
-        m.uTurbA.value.set(wrap(view.x - air[0] + 7 * t, MIST.period), wrap(-air[1] - 4 * t, MIST.period), wrap(view.z - air[2] - 6 * t, MIST.period));
-        m.uTurbB.value.set(wrap(view.x - air[0] - 10 * t, MIST.period / 3), wrap(-air[1] + 6 * t, MIST.period / 3), wrap(view.z - air[2] + 8 * t, MIST.period / 3));
+        m.uTurbA.value.set(wrap(view.x - air[0] + 11 * t, MIST.period), wrap(-air[1] - 7 * t, MIST.period), wrap(view.z - air[2] - 10 * t, MIST.period));
+        m.uTurbB.value.set(wrap(view.x - air[0] - 16 * t, MIST.period / 3), wrap(-air[1] + 10 * t, MIST.period / 3), wrap(view.z - air[2] + 13 * t, MIST.period / 3));
+        m.uAirMist.value = view.airMist ?? 0;
         // The shutter: the mist is seen over the last sixtieth of a second of flight (it streaks).
         m.uShutter.value.copy(view.forward).multiplyScalar(0);
         if (view.velocity) m.uShutter.value.set(...view.velocity).multiplyScalar(1 / 60);

@@ -195,7 +195,8 @@ vec3 agxContrast(vec3 x) {
   return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
 }
 
-vec3 agx(vec3 v) {
+// AgX with a "look": power deepens the shadows, saturation scales the colour.
+vec3 agxLook(vec3 v, float power, float saturation) {
   const mat3 inset = mat3(0.842479062253094, 0.0423282422610123, 0.0423756549057051,
                           0.0784335999999992, 0.878468636469772, 0.0784336,
                           0.0792237451477643, 0.0791661274605434, 0.879142973793104);
@@ -208,13 +209,17 @@ vec3 agx(vec3 v) {
   v = clamp(log2(max(v, vec3(1e-10))), minEv, maxEv);
   v = (v - minEv) / (maxEv - minEv);
   v = agxContrast(v);
-  // Gentle "look": a touch more contrast and saturation than base AgX.
   float luma = dot(v, vec3(0.2126, 0.7152, 0.0722));
-  v = pow(max(v, vec3(0.0)), vec3(1.12));
-  luma = pow(max(luma, 0.0), 1.12);
-  v = luma + 1.32 * (v - luma);
+  v = pow(max(v, vec3(0.0)), vec3(power));
+  luma = pow(max(luma, 0.0), power);
+  v = luma + saturation * (v - luma);
   v = outset * v;
   return pow(max(v, vec3(0.0)), vec3(2.2));
+}
+
+// The day's look: a touch more contrast and saturation than base AgX.
+vec3 agx(vec3 v) {
+  return agxLook(v, 1.12, 1.32);
 }
 
 vec3 linearToSrgb(vec3 c) {

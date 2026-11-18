@@ -42,6 +42,7 @@ uniform vec3 uLamp[4];        // and their intensities
 uniform vec3 uTurbA;          // where the two layers of turbulence are (m, wrapped)
 uniform vec3 uTurbB;
 uniform vec3 uShutter;        // how far the aircraft flies while the eye takes a frame in (world, m)
+uniform float uAirMist;       // rain and mist in the storm's air around the aircraft (0..1)
 layout(location = 0) out vec4 outMist;
 layout(location = 1) out vec4 outDepth;
 
@@ -49,6 +50,7 @@ const float ALBEDO = 0.985;
 const float NIGHT_SKYLIGHT = 2.6;
 const float START = 0.9;      // the glass
 const int STEPS = 48;
+const float AIR_MIST = 0.018; // the densest veils of the air's own mist (in the storm's density units)
 
 float altitudeAt(vec3 p) {
   return p.y + dot(p.xz, p.xz) * (0.5 / RG_M);
@@ -73,7 +75,7 @@ vec3 turbulence(vec3 p, float t) {
     vec3 b = (p + uTurbB) * (3.0 / MIST_PERIOD);
     vec3 va = vec3(textureLod(uMistNoise, a, 1.0).r, textureLod(uMistNoise, a + vec3(0.31, 0.57, 0.13), 1.0).r, textureLod(uMistNoise, a + vec3(0.71, 0.19, 0.43), 1.0).r);
     vec3 vb = vec3(textureLod(uMistNoise, b, 1.0).r, textureLod(uMistNoise, b + vec3(0.47, 0.83, 0.29), 1.0).r, textureLod(uMistNoise, b + vec3(0.11, 0.37, 0.69), 1.0).r);
-    d = k * (14.0 * (va - 0.5) + 6.0 * (vb - 0.5));
+    d = k * (22.0 * (va - 0.5) + 9.0 * (vb - 0.5));
   }
   return d;
 }
@@ -86,7 +88,7 @@ vec3 gTurb = vec3(0.0);
 
 // The storm's cloud at p with all its detail, 0..1; fp: the pixel's footprint there (m).
 // shape: metres inside the outer edge of its shape (very negative far from it).
-float mistDensity(vec3 p, float fp, float t, out float shape) {
+float mistDensity(vec3 p, float fp, vec3 turb, out float shape) {
   float alt = altitudeAt(p);
   float z = alt - CLOUD_BOTTOM;
   vec3 suv = stormUv(p, alt);
@@ -107,10 +109,23 @@ float mistDensity(vec3 p, float fp, float t, out float shape) {
   if (shape <= 0.0) return 0.0;
   gFlow = n.ba;
   gLodM = max(log2(fp / 2.0), 0.0);
-  gTurb = turbulence(p, t);
+  gTurb = turb;
   float e = mistNoise(p + gTurb, n.ba, gLodM, true);
   gThin = thin;
   return stormMist(shape, e) * smoothstep(0.0, 30.0, z) * thin;
+}
+
+// Rain and mist in the air between the towers: faint veils, tens of metres across, that stream
+// past and swirl in the turbulence. Only close by (further on the storm's haze is even, and the
+// veils would not show), and seen only where lightning, the moon or the lamps catch them.
+float airMist(vec3 p, float t, vec3 turb) {
+  float veil = 0.0;
+  if (uAirMist > 0.0) {
+    vec3 q = (p + uMistOffset + turb) * (0.5 / MIST_PERIOD) + vec3(0.37, 0.11, 0.73);
+    float n = textureLod(uMistNoise, q, 0.0).r;
+    veil = uAirMist * (1.0 - smoothstep(140.0, 230.0, t)) * smoothstep(0.45, 0.95, n) * AIR_MIST;
+  }
+  return veil;
 }
 
 // Optical depth of the mist over the next dozen metres from p towards l: the mist at one point
@@ -155,6 +170,7 @@ void main() {
   }
 
   scudSpan(origin, dir);
+  vec3 turb = vec3(0.0);
   vec3 L = vec3(0.0);
   float T = 1.0;
   float odSum = 0.0;
@@ -173,22 +189,29 @@ void main() {
     vec3 p = origin + dir * t - uShutter * fract(jitter * 7.0 + float(i) * 0.618);
     float shape;
     gT = t;
-    float d = mistDensity(p, max(t * pixelAngle, 0.02), t, shape);
-    if (d > 0.0) {
-      float sigma = d * uDensityScale;
+    // The turbulence changes over metres, not from one step to the next: worked out every
+    // fourth step (it is six look-ups).
+    if ((i & 3) == 0) turb = turbulence(p, t);
+    float d = mistDensity(p, max(t * pixelAngle, 0.02), turb, shape);
+    float da = 0.0;
+    if (uAirMist > 0.0) da = airMist(p, t, turb);
+    if (d + da > 0.0) {
+      float sigma = (d + da) * uDensityScale;
       // The moon, past the storm between (its average shape, two taps).
       float od = 0.0;
-      if (dot(moon, vec3(1.0)) > 0.0) {
+      if (d > 0.0 && dot(moon, vec3(1.0)) > 0.0) {
         od = (clamp((stormShape(p + uSunDir * 40.0, 1.0) - LIGHT_START) / LIGHT_RAMP, 0.0, 1.0) * 80.0
             + clamp((stormShape(p + uSunDir * 200.0, 2.0) - LIGHT_START) / LIGHT_RAMP, 0.0, 1.0) * 240.0) * uDensityScale;
       }
       float sun = ph0 * exp(-od) + 1.2 * (0.85 * ph1 * exp(-od * 0.25) + 0.65 * ph2 * exp(-od * 0.0625) + 0.40 * ph3 * exp(-od * 0.021));
-      vec3 S = amb;
-      if (dot(moon, vec3(1.0)) > 0.0) S += moon * sun * exp(-localDepth(p, uSunDir, shape));
+      // The air's own mist is thin: in the dark between flashes it barely shows (lit by the sky
+      // alike, it laid a grey veil over the whole picture); lightning and the lamps bring it out.
+      vec3 S = amb * ((d + 0.15 * da) / (d + da));
+      if (dot(moon, vec3(1.0)) > 0.0) S += moon * sun * (d > 0.0 ? exp(-localDepth(p, uSunDir, shape)) : 1.0);
       // Lightning.
       if (uFlashPower > 0.0) {
         vec3 lf = normalize(flashCentre() - p);
-        S += uFlashColor * (uFlashPower * flashFalloff(p) * flashLit * mix(1.0, exp(-localDepth(p, lf, shape)), 0.8));
+        S += uFlashColor * (uFlashPower * flashFalloff(p) * flashLit * (d > 0.0 ? mix(1.0, exp(-localDepth(p, lf, shape)), 0.8) : 1.0));
       }
       if (uFlickPower > 0.0) S += uFlickColor * (uFlickPower * sourceFalloff(length(uFlickPos - p), 0.5) * flickLit);
       // The aircraft's lamps, dimmed by the mist between (its average along this ray so far).
@@ -210,7 +233,7 @@ void main() {
       T *= tr;
       odSum += sigma * dt;
       if (T < 0.004) break;
-    } else if (shape < -700.0 - (span - t)) {
+    } else if (uAirMist <= 0.0 && shape < -700.0 - (span - t)) {
       // Nothing within reach of the rest of the march.
       break;
     }

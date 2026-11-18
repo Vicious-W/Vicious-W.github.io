@@ -471,6 +471,8 @@ export function createJourney(options = {}) {
       // Rain and haze in the air of the storm, for the clouds.
       view.fog = cabin.storm;
       airAt(t, view.air);
+      // Rain and mist in the air around the aircraft: the storm's showers (see mist.frag).
+      view.airMist = cabin.storm * Math.min(1, 0.35 + cabin.rain);
       {
         const a = path.position(t * SPEED + 34);
         const b = path.position(t * SPEED - 34);

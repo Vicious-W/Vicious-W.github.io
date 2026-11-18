@@ -672,7 +672,13 @@ void main() {
         // "Powder": thin edges and crevices hold less multiply scattered light, so they read
         // darker from the lit side. Fades out when looking towards the sun to keep silver linings.
         float powder = 1.0 - exp(-sigma * 140.0);
+#ifdef NIGHT
+        // The storm's misty edge holds its light like the rest: no darker rims around every bulge
+        // (they drew a dark outline round each of them, a busy texture of small puffs).
+        sun *= mix(1.0, powder, storm ? 0.0 : powderAmount);
+#else
         sun *= mix(1.0, powder, powderAmount);
+#endif
         vec3 amb = mix(ambBottom, ambTop, clamp(h, 0.0, 1.0));
 #ifdef NIGHT
         if (storm) {
