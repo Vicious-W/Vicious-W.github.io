@@ -408,7 +408,14 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
     outLight.set(color[0] * scale, color[1] * scale, color[2] * scale);
   }
 
+  let lastFire = null;
+
   return {
+    /** St. Elmo's fire as last drawn (for the sound). */
+    get fire() {
+      return lastFire;
+    },
+
     /**
      * view: the frame's view (with qAircraft, qHead, eye, cabin, flash, flick);
      * outside: the image of the outside, linear and exposed. Draws the finished frame to the
@@ -458,6 +465,7 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
 
       // St. Elmo's fire: streamers over the glass, and their violet light in the cabin.
       const fire = streamers.update(t, cabin.elmo);
+      lastFire = fire;
       shared.uPointPos.value[6].copy(fire.centre);
       shared.uPointLight.value[6].set(0.3, 0.36, 1.0).multiplyScalar(0.012 * fire.light);
       for (let i = 0; i < streamers.max; i++) g.uGlow.value[i].copy(fire.glows[i]);

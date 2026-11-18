@@ -335,7 +335,8 @@ export function createJourney(options = {}) {
   const fixed = options.cabin || {};
   /** The cabin at distance s and time t: all levels 0..1. */
   const cabinAt = (s, t) => {
-    const storm = Math.min(smooth(s, mark.anvil - 900, mark.anvil + 900), 1 - smooth(s, mark.out - 200, mark.out + 900));
+    // Out of the storm the rain stops almost at once (a few seconds).
+    const storm = Math.min(smooth(s, mark.anvil - 900, mark.anvil + 900), 1 - smooth(s, mark.out - 150, mark.out + 300));
     const cloud = fixed.cloud ?? cloudAt(s);
     const blind = smooth(s, mark.wall - 300, mark.wall + 700) * (1 - smooth(s, mark.out - 500, mark.out + 300));
     // Showers in the canyon and the hall, heavier near the wells and the updraft; a downpour in cloud.
@@ -390,6 +391,23 @@ export function createJourney(options = {}) {
     return out;
   };
 
+  /**
+   * The gusts that strike between journey times t0 and t1 (s), for the sound of the airframe:
+   * { time, amp (0..1), drop (true when the bottom falls out) }. The same events as in gusts().
+   */
+  function gustEvents(t0, t1) {
+    const slot = 0.7;
+    const events = [];
+    for (let j = Math.floor(t0 / slot) - 1; j <= Math.floor(t1 / slot); j++) {
+      const time = (j + hash1(j * 8 + 2) * 0.9) * slot;
+      if (time < t0 || time >= t1) continue;
+      const rough = cabinAt(time * SPEED, time).turb;
+      if (hash1(j * 8 + 1) > 0.18 + 0.62 * rough) continue;
+      events.push({ time, amp: (0.3 + 0.7 * hash1(j * 8 + 3) ** 2) * rough, drop: hash1(j * 8 + 4) < 0.7 });
+    }
+    return events;
+  }
+
   function smoothLook(dt) {
     const k = 1 - Math.exp(-dt * 9);
     look.yaw += (look.targetYaw - look.yaw) * k;
@@ -402,6 +420,7 @@ export function createJourney(options = {}) {
     path,
     mark,
     cabinAt,
+    gustEvents,
 
     update(dt) {
       state.time += dt;

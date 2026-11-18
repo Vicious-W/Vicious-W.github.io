@@ -216,7 +216,11 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
       bolt.unshift(...makeChannel(rand, top, [x, STORM.base + 150, z], { depth: 5, rough: 0.35, branches: 1 }));
     } else {
       // Inside the cloud: a discharge a kilometre or more long, its light at three places.
-      const at = seat(view, near ? (tight ? around(view, 500, 2600) : around(view, 1500, 6000)) : anywhere) || { pos: [CENTRE[0], 6000, CENTRE[1]], depth: 800 };
+      // Now and then one strikes in the wall right next to the aircraft: blinding, and its
+      // thunder a crack a few seconds later.
+      const close = near && !tight && rand() < 0.2;
+      const pick = near ? (tight ? around(view, 500, 2600) : close ? around(view, 900, 2200) : around(view, 1500, 6000)) : anywhere;
+      const at = seat(view, pick) || { pos: [CENTRE[0], 6000, CENTRE[1]], depth: 800 };
       depth = at.depth;
       const a = rand() * Math.PI * 2;
       const len = range(900, 2600);
@@ -283,6 +287,8 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     f.depth = flash.depth;
     f.bolt = flash.bolt;
     f.boltPower = flash.bolt ? Math.min(p, 1.5) : 0;
+    // For the sound: the whole flash (when it starts, its strokes, its channel).
+    f.event = flash;
   }
 
   function writeFlick(p) {
@@ -297,6 +303,7 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     f.power = p * flick.scale;
     f.pos = flick.pos;
     f.depth = flick.depth;
+    f.event = flick;
   }
 
   return {

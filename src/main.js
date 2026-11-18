@@ -7,6 +7,7 @@ import { createLightning } from "./night/lightning.js";
 import { createBolts } from "./night/bolts.js";
 import { createCockpit } from "./cockpit/cockpit.js";
 import { lampsInWorld } from "./cockpit/lamps.js";
+import { createAudio } from "./audio/audio.js";
 
 const canvas = document.getElementById("view");
 const veil = document.getElementById("veil");
@@ -144,6 +145,18 @@ function start() {
   }
   const stillFrames = num("frames", 24);
 
+  // The sound of the night journey. Browsers let it start only after a click or a key; capture
+  // aid: "sound" starts it at once (the tools allow that).
+  const audio = cockpit && !still ? createAudio({ solo: params.get("solo") }) : null;
+  if (audio) {
+    window.__audioStream = audio.stream;
+    const begin = () => audio.start();
+    window.addEventListener("pointerdown", begin, { once: true });
+    window.addEventListener("keydown", begin, { once: true });
+    document.addEventListener("visibilitychange", () => audio.pause(document.hidden));
+    if (params.has("sound")) audio.start();
+  }
+
   // The air around the aircraft on the night journey: whether the storm's cloud is within reach
   // of the mist pass, the moon past the storm (it comes and goes softly), how open the air
   // above is, and the aircraft's lamps.
@@ -184,6 +197,7 @@ function start() {
     const step = still ? (motion ? 1 / 60 : 0) : dt;
     if (step > 0) flight.update(step);
     const view = flight.view(window.innerWidth / window.innerHeight);
+    let lit = null;
     if (lightning) {
       // Capture aids: "flash=ic|near|cg&ft=ms" holds one flash, ft milliseconds after its first
       // stroke; "flick=1" holds the flicker lit.
@@ -191,7 +205,7 @@ function start() {
         const held = still && (params.has("flash") || params.has("flick"));
         flashControl = held ? lightning.force(view, params.get("flash"), num("ft", 15), params.get("flick") === "1") : lightning;
       }
-      const lit = flashControl.update(view, flight.state.time, step || 1 / 60);
+      lit = flashControl.update(view, flight.state.time, step || 1 / 60);
       view.flash = lit.flash;
       view.flick = lit.flick;
       view.stormGlow = lit.glow;
@@ -208,6 +222,7 @@ function start() {
         exposure: sky.exposure
       });
     }
+    if (audio) audio.update(view, { lit, fire: cockpit.fire, gustEvents: flight.gustEvents });
     if (!revealed && sky.frame > 4) {
       veil.classList.add("gone");
       revealed = true;
