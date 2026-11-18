@@ -46,10 +46,11 @@ bool inStormBox(vec3 suv) {
   return all(greaterThan(suv, vec3(0.0))) && all(lessThan(suv, vec3(1.0)));
 }
 
-// The storm's billows: the same noise as every other cloud, at the scale of its towers. The
-// anvil is a smoother shelf.
+// The storm's billows, at the scale of its towers: the lumpy Perlin-Worley of every other
+// cloud, and a smooth swell (the creased, warped turbulence that the day's clouds use drew
+// swirling veins over the storm's faces in the moonlight). The anvil is a smoother shelf.
 float stormBillows(vec4 n, float alt) {
-  return mix(1.0, 0.3, smoothstep(10000.0, 11500.0, alt)) * (650.0 * (n.r - 0.5) + 220.0 * (n.g - 0.5));
+  return mix(1.0, 0.3, smoothstep(10000.0, 11500.0, alt)) * (650.0 * (n.r - 0.5) + 200.0 * (n.b - 0.5));
 }
 
 vec4 baseNoiseAt(vec3 p, float lodB) {
@@ -155,10 +156,10 @@ float stormEdge(vec3 p, float z, float lodD, bool fine) {
   if (fine) {
     // Integer frequency multiple keeps the wrapped detail offset continuous.
     vec3 dn2 = textureLod(uDetailNoise, dq * 3.0, lodD + 1.585).rgb;
-    dfbm = dfbm * 0.88 + (dn2.r * 0.625 + dn2.g * 0.25 + dn2.b * 0.125) * 0.12;
+    dfbm = dfbm * 0.94 + (dn2.r * 0.625 + dn2.g * 0.25 + dn2.b * 0.125) * 0.06;
   }
   float ragged = mix(1.7, 1.0, smoothstep(0.0, 140.0, z));
-  return 70.0 * ragged * (dfbm - 0.5) * 2.0;
+  return 48.0 * ragged * (dfbm - 0.5) * 2.0;
 }
 
 // The mist at p: low where the edge of the cloud keeps its mist, high where it is eaten away

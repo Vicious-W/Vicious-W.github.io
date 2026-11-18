@@ -25,21 +25,14 @@ export const PATH = [
 
 const SPEED = 68;
 
-// Scud and veils of mist on the way, which the aircraft flies through or close past, and two
-// pockets of thinner air inside the rear tower: so the journey goes in and out of cloud again
-// and again, not only once. t: when (s on the journey); off: offset from the path (m: right, up,
-// ahead); r: radii (m: across, up, along the path); dense: how deep in mist its middle is, as a
-// share of the storm's fringe (see storm.glsl); a pocket has dense < 0.
+// Pockets of thinner air inside the rear tower, so its blind stretch opens up twice. (Small
+// fragments of scud and veils placed along the hall for the aircraft to fly through stood
+// alone in the clear air like props; they were taken out.) t: when (s on the journey); off:
+// offset from the path (m: right, up, ahead); r: radii (m: across, up, along the path); dense:
+// how deep in mist its middle is, as a share of the storm's fringe (see storm.glsl); a pocket
+// has dense < 0.
 export const SCUD = [
-  { t: 142, off: [0, 35, 0], r: [650, 70, 240], dense: 0.55 }, // a veil under the anvil, at the canyon
-  { t: 186, off: [-20, 0, 0], r: [170, 95, 180], dense: 0.75 },
-  { t: 214, off: [-250, 10, 0], r: [190, 120, 230], dense: 0.85 }, // close past, on the left
-  { t: 241, off: [30, -10, 0], r: [140, 100, 160], dense: 0.7 },
-  { t: 283, off: [70, 0, 0], r: [320, 160, 260], dense: 0.9 }, // ragged scud by the main updraft
-  { t: 318, off: [0, -330, 0], r: [260, 380, 260], dense: 0.8 }, // mist rising out of the well
-  { t: 349, off: [0, 0, 0], r: [180, 120, 210], dense: 0.75 },
-  { t: 368, off: [-60, 20, 0], r: [300, 220, 260], dense: 0.9 }, // torn off the rear tower
-  { t: 393, off: [0, 0, 0], r: [260, 200, 300], dense: -1 }, // pockets in the rear tower
+  { t: 393, off: [0, 0, 0], r: [260, 200, 300], dense: -1 },
   { t: 447, off: [0, 0, 0], r: [220, 180, 260], dense: -1 }
 ];
 const SCUD_MAX = 8;

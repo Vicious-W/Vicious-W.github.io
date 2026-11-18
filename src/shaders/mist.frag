@@ -105,7 +105,7 @@ float mistDensity(vec3 p, float fp, vec3 turb, out float shape) {
   float thin;
   shape = withScud(p, n, sd + stormBillows(n, alt), edgeK, thin);
   if (shape < -260.0) return 0.0;
-  shape += stormEdge(p, z, max(log2(fp / (DETAIL_PERIOD / 32.0)), 0.0), true) * edgeK;
+  shape += stormEdge(p, z, max(log2(fp / (DETAIL_PERIOD / 32.0)), 0.0) + 1.2, true) * edgeK;
   if (shape <= 0.0) return 0.0;
   gFlow = n.ba;
   gLodM = max(log2(fp / 2.0), 0.0);

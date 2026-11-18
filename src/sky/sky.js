@@ -58,7 +58,8 @@ const wrap = (v, p) => v - p * Math.floor(v / p);
 export const MIST = Object.freeze({ period: 256, drift: { x: 2.5, y: 5.0, z: -1.8 } });
 // The storm boils (night): its billows rise (m/s), its bulges roll up faster still. By day the
 // clouds drift as they always have.
-const BOIL = Object.freeze({ billows: 10.0, bulges: { x: -5.0, y: 15.0, z: 3.0 } });
+// Rates of a strong storm's updrafts, so that a tower's outline is seen to change within seconds.
+const BOIL = Object.freeze({ billows: { x: 8.0, y: 22.0, z: -5.0 }, bulges: { x: -6.0, y: 28.0, z: 4.0 } });
 // The mist pass draws the storm's cloud within this distance of the eye (m), at this fraction
 // of the screen's resolution (mist is soft; its finest detail is a few pixels across).
 export const NEAR = Object.freeze({ reach: 240, scale: 0.5 });
@@ -624,9 +625,9 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
       const cz = view.z - wind.z * t;
       const u = cloudPass.uniforms;
       u.uBaseOffset.value.set(
-        wrap(cx, CLOUD.basePeriod),
-        wrap(night ? -t * BOIL.billows : t * 0.9, CLOUD.basePeriod / CLOUD.baseYScale),
-        wrap(cz, CLOUD.basePeriod)
+        wrap(cx - (night ? BOIL.billows.x * t : 0), CLOUD.basePeriod),
+        wrap(night ? -t * BOIL.billows.y : t * 0.9, CLOUD.basePeriod / CLOUD.baseYScale),
+        wrap(cz - (night ? BOIL.billows.z * t : 0), CLOUD.basePeriod)
       );
       u.uDetailOffset.value.set(
         wrap(cx + t * (night ? -BOIL.bulges.x : -1.5), CLOUD.detailPeriod),

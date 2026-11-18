@@ -313,12 +313,14 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, float lodM, int detai
     if (gStorm) {
       // The storm: its edge detail, then the fringe of mist (storm.glsl). Where the mist is
       // smaller than a pixel only its average is left, which needs no look-up.
-      if (detail > 0 && shape > -2.2 * edge) shape += stormEdge(p, z, lodD, detail > 1) * edgeK;
+      // (one level smoother than the pixel: its creases drew thin veins over the faces)
+      if (detail > 0 && shape > -2.2 * edge) shape += stormEdge(p, z, lodD + 1.2, detail > 1) * edgeK;
       float e = 0.5;
-      if (detail > 0 && shape > 0.0 && shape < FRINGE && lodM < 3.5) {
-        // From afar a cloud's surface reads as its rounded bulges: the mist's tangle only roughens it
-        // a little (its average stays, so the cloud keeps its size); close by it is all there.
-        float tangle = (1.0 - 0.7 * smoothstep(300.0, 2500.0, gT)) * (1.0 - smoothstep(2.5, 3.5, lodM));
+      // The mist's tangle belongs to the air close by (the mist pass draws it in full): from a few
+      // hundred metres on a cloud's surface is its rounded bulges alone, smooth (the tangle, even
+      // faded, mottled every face like a stain). Its average stays, so the cloud keeps its size.
+      float tangle = 1.0 - smoothstep(200.0, 900.0, gT);
+      if (detail > 0 && shape > 0.0 && shape < FRINGE && tangle > 0.0) {
         e = mix(0.5, mistNoise(p, n.ba, lodM, detail > 1 && lodM < 1.5), tangle);
       }
       // The search probe takes all the fringe; the surface search (detail 0) its average, so it
