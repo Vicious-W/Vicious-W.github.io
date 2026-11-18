@@ -11,7 +11,7 @@
 - 场景一《云中飞行》：白天在海面上空的云层间巡航。M1 已通过，M2–M4 以后再做；主人暂时不管
   白天，现在只做夜航（但改共用代码时白天不能变）。
 - 场景二《夜航雷暴》：夜里飞进雷暴，越飞越深，最终飞进异星云海（恐怖）。N2 通过（第五版，
-  2026-11-18）；正在做 N3 声音。
+  2026-11-18）；N3 声音第一版已上线，等主人试听。
 - 主人的长期设想：做成一款充满未知、可以不断探索的恐怖航行游戏。
 
 ## 和主人合作的规则
@@ -65,6 +65,7 @@ npm run check          # 运行几个场景，报告控制台错误和所用的�
 | `node tools/bench.mjs --size=2560x1440 "night&t=267" ""` | 每帧耗时（等显卡完成）；`--live` 测实际帧率和帧节奏（95% 分位应接近平均帧时间） |
 | `node tools/check.mjs "night" "night&t=400" ""` | 控制台检查 |
 | `node tools/storm-view.mjs` | 不渲染，直接画出雷暴的平面图和剖面图，打印航线间距和座舱时间线 |
+| `node tools/listen.mjs --query="night&t=225" --seconds=40` | "听"声音：抓原始声音，打印倍频程声级和每半秒的响度，存 WAV（`captures/audio/`）。远处的雷要几十秒才到，录得够长 |
 | `node tools/lab.mjs` | 实验窗口：一个可见的最大化 Chrome（和主人的设置一样，2560×1308），开在开发服务器上，用 `curl localhost:9333/...` 控制：`goto`、`shot`、`burst`（实时连拍）、`perf`、`console`、`eval`。改代码后页面自动刷新 |
 
 所有工具都会先打印 `GPU:`。在主人电脑上必须是 NVIDIA 显卡（无头模式就是，不需要 `--headed`；
@@ -89,6 +90,8 @@ npm run check          # 运行几个场景，报告控制台错误和所用的�
 | `near=0` | 关掉近处雾（飞机周围 240 m 改由远处的云着色器画），用来对比和测开销 |
 | `show=mist|outside` | 只显示近处雾 / 只显示窗外（不含近处雾），找问题用 |
 | `hold` | 飞机停在 `t` 的位置，时间照走（雾、气流、闪电照常），看雾自己怎么动 |
+| `sound` | 不等点击就开始声音（只在允许自动播放的浏览器里有效，工具都允许） |
+| `solo=cabin|weather|knocks|thunder` | 只听一层声音 |
 | `free` | 夜里用白天那种自由飞行（没有座舱），配合 `alt`、`heading`、`x`、`z` |
 | `scale=0.25–1` | 云的分辨率（默认 1 = 全分辨率） |
 | `q=normal\|high`、`steps=N` | 光线步进的质量（默认 high）和最大步数 |
@@ -113,5 +116,8 @@ npm run check          # 运行几个场景，报告控制台错误和所用的�
   航线上的碎云和空腔 `SCUD`、座舱时间线、颠簸）、`lightning.js`（主闪电和远处闪烁的调度）、`bolts.js`（发光的线：闪电通道、电弧）。
 - `src/cockpit/`：`cockpit.js`（座舱几何、照明、玻璃一道的参数）、`lamps.js`（机上的灯：座舱和近处雾共用）、`instruments.js`（仪表画面，
   无文字；雷达读取雷暴）、`streamers.js`（圣埃尔摩之火的电弧）。
+- `src/audio/`：`audio.js`（声音的总装：座舱、颠簸、雷的安排，第一次点击后淡入）、`weather.worklet.js`
+  （音频线程上的雨、冰雹、电弧声）、`thunder.js`（闪电通道的形状）、`thunder.worker.js`/`thundersynth.js`
+  （后台线程合成雷声）。
 - `tools/`：上表的检查工具（只用于开发，不会部署）。
 - `docs/reference/past-vision.md`：旧项目构想的摘录，仅供参考。
