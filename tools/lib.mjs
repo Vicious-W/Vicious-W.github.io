@@ -103,7 +103,7 @@ export function watchConsole(page) {
   const logs = [];
   page.on("console", m => logs.push(`${m.type()}: ${m.text()}`));
   page.on("pageerror", e => logs.push(`pageerror: ${e.message}`));
-  return () => logs.filter(l => !/GPU stall due to ReadPixels|Automatic fallback to software WebGL|GroupMarkerNotSet/.test(l));
+  return () => logs.filter(l => !/GPU stall due to ReadPixels|Automatic fallback to software WebGL|GroupMarkerNotSet|ScriptProcessorNode is deprecated/.test(l));
 }
 
 /** Saves the page's canvas (still mode keeps its drawing buffer) as a PNG. */
