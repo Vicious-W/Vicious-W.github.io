@@ -1,7 +1,9 @@
 // Listens to the night journey: runs it live from t with the sound on, captures the mix (the
 // page's window.__audioStream) as raw samples, and reports what it sounds like in numbers:
 // octave-band levels (dB relative to the loudest band, as in the reference table of
-// docs/HANDOVER.md, and in dBFS), the loudness over time and the peaks. Saves a WAV too.
+// docs/HANDOVER.md, and in dBFS), the loudness over time and the peaks, and each thunder that
+// arrives (when, from how far, how strong). Saves a WAV too. The capture runs on the audio
+// thread (an AudioWorklet), so a busy page cannot drop samples from it.
 //
 //   node tools/listen.mjs --query="night&t=380" [--seconds=10] [--name=clip] [--url=...] [--headed]
 import fs from "node:fs";
@@ -18,6 +20,7 @@ const site = await serve(options);
 const browser = await launch(options);
 const page = await browser.newPage({ viewport: { width: 960, height: 540 }, deviceScaleFactor: 1 });
 const issues = watchConsole(page);
+await page.addInitScript(() => (window.__audioLog = []));
 await page.goto(`${site.base}/?sound&${options.query || "night"}`, { waitUntil: "commit", timeout: 600000 });
 console.log(`GPU: ${await gpuName(page)}`);
 await page.waitForFunction(() => (window.__sky?.sky.frame || 0) > 5 && window.__audioStream, null, { timeout: 600000, polling: 100 });
@@ -26,12 +29,29 @@ const result = await page.evaluate(async seconds => {
   const ac = new AudioContext();
   await ac.resume();
   const src = ac.createMediaStreamSource(window.__audioStream);
-  const sp = ac.createScriptProcessor(4096, 2, 2);
+  // A worklet that passes on what it hears in blocks of 4096 frames.
+  const code = `registerProcessor("tap", class extends AudioWorkletProcessor {
+    constructor() { super(); this.l = new Float32Array(4096); this.r = new Float32Array(4096); this.n = 0; }
+    process(inputs) {
+      const i = inputs[0];
+      if (i.length) {
+        const l = i[0], r = i[1] || i[0];
+        for (let k = 0; k < l.length; k++) {
+          this.l[this.n] = l[k]; this.r[this.n] = r[k];
+          if (++this.n === 4096) { this.port.postMessage([this.l, this.r], [this.l.buffer, this.r.buffer]); this.l = new Float32Array(4096); this.r = new Float32Array(4096); this.n = 0; }
+        }
+      }
+      return true;
+    }
+  });`;
+  await ac.audioWorklet.addModule(URL.createObjectURL(new Blob([code], { type: "application/javascript" })));
+  const sp = new AudioWorkletNode(ac, "tap", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: "explicit" });
   const chunks = [[], []];
   let frames = 0;
-  sp.onaudioprocess = e => {
-    for (let c = 0; c < 2; c++) chunks[c].push(new Float32Array(e.inputBuffer.getChannelData(c)));
-    frames += e.inputBuffer.length;
+  sp.port.onmessage = e => {
+    chunks[0].push(e.data[0]);
+    chunks[1].push(e.data[1]);
+    frames += e.data[0].length;
   };
   const mute = ac.createGain();
   mute.gain.value = 0;
@@ -159,7 +179,8 @@ const result = await page.evaluate(async seconds => {
     rms,
     overall: 10 * Math.log10(total / (2 * n) + 1e-12),
     peak: 20 * Math.log10(peak + 1e-12),
-    wav: btoa(bin)
+    wav: btoa(bin),
+    thunder: (window.__audioLog || []).filter(e => e.arrive >= t0 - 1 && e.arrive < t0 + n / sr)
   };
 }, seconds);
 
@@ -169,6 +190,9 @@ console.log(`${name}: t ${result.t0.toFixed(1)}..${(result.t0 + result.seconds).
 console.log(`octaves  ${result.centres.map(c => String(c >= 1000 ? `${c / 1000}k` : c).padStart(5)).join("")}`);
 console.log(`relative ${result.rel.map(v => v.toFixed(0).padStart(5)).join("")}`);
 console.log(`loudness every 0.5 s (dBFS): ${result.rms.map(v => v.toFixed(0)).join(" ")}`);
+for (const e of result.thunder) {
+  console.log(`thunder at +${(e.arrive - result.t0).toFixed(1)} s: ${e.kind}, ${e.near} m, energy ${e.energy}, ${e.seconds} s long, peak ${(20 * Math.log10(e.peak + 1e-9)).toFixed(0)} dB before the mix`);
+}
 console.log(`wav: ${file}`);
 const bad = issues();
 if (bad.length) console.log(bad.slice(0, 20).join("\n"));
