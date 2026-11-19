@@ -156,10 +156,10 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     const r = Math.sqrt(rand()) * 11000;
     return [CENTRE[0] + Math.cos(a) * r, range(3000, 10500), CENTRE[1] + Math.sin(a) * r];
   };
-  const around = (view, rMin, rMax) => () => {
+  const around = (view, rMin, rMax, below = 1500, above = 4200) => () => {
     const a = rand() * Math.PI * 2;
     const r = range(rMin, rMax);
-    return [view.x + Math.cos(a) * r, view.alt + range(-1500, 4200), view.z + Math.sin(a) * r];
+    return [view.x + Math.cos(a) * r, view.alt + range(-below, above), view.z + Math.sin(a) * r];
   };
 
   function createFlash(view, kind, near) {
@@ -216,11 +216,11 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
       bolt.unshift(...makeChannel(rand, top, [x, STORM.base + 150, z], { depth: 5, rough: 0.35, branches: 1 }));
     } else {
       // Inside the cloud: a discharge a kilometre or more long, its light at three places.
-      // Now and then one strikes in the wall right next to the aircraft: blinding, and its
-      // thunder a crack a few seconds later.
-      const close = near && !tight && rand() < 0.2;
-      const pick = near ? (tight ? around(view, 500, 2600) : close ? around(view, 900, 2200) : around(view, 1500, 6000)) : anywhere;
-      const at = seat(view, pick) || { pos: [CENTRE[0], 6000, CENTRE[1]], depth: 800 };
+      // Now and then one strikes in the cloud right next to the aircraft (in the hall, that is
+      // the deck below it or a wall): blinding, and its thunder a crack a few seconds later.
+      const close = near && !tight && rand() < 0.3;
+      const pick = near ? (tight ? around(view, 500, 2200, 900, 1800) : close ? around(view, 300, 2400, 2200, 1400) : around(view, 1500, 6000)) : anywhere;
+      const at = seat(view, pick, near ? 32 : 16) || { pos: [CENTRE[0], 6000, CENTRE[1]], depth: 800 };
       depth = at.depth;
       const a = rand() * Math.PI * 2;
       const len = range(900, 2600);
@@ -312,7 +312,8 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     /** Advance to time t (s) of the journey; dt is the frame length. */
     update(view, t, dt) {
       if (!flash && t >= nextFlash - LEAD) {
-        const inside = centreDistance(view) < 9500;
+        // Inside the storm: among its towers, or in its cloud.
+        const inside = centreDistance(view) < 9500 || stormSD(view.x, view.alt, view.z) > -1000;
         const kind = rand() < (inside ? 0.3 : 0.4) ? "cg" : "ic";
         flash = createFlash(view, kind, inside && rand() < 0.75);
         flash.start = Math.max(nextFlash, t + LEAD * 0.5);

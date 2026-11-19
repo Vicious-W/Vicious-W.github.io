@@ -4,17 +4,19 @@
  *
  * Every few metres of the channel is a shock wave that relaxes into a pressure pulse (an
  * N-wave, longer the further it has run). Each arrives when its sound has travelled (343 m/s),
- * so a channel kilometres long is heard as a roll that lasts seconds: the near parts first and
- * sharp (a crack, if they are close), the far parts later and low (the air takes the highs).
- * Parts lying across the line of sight send their pulses together: the claps in the roll. Every
- * return stroke sends it all again. Then the echoes from the sea and the clouds: a reverberation
- * of a few seconds, darker as it dies. Positions in the storm frame (metres, y up).
+ * so a channel kilometres long is heard as a roll that lasts seconds. Parts lying across the
+ * line of sight send their pulses together: the claps in the roll; parts running away from the
+ * listener spread theirs out: a rip. Close to the channel the shock is still steep: a crack, a
+ * tearing sound within a kilometre or two. The air takes the highs, more the further a part is:
+ * the first of it may be a crack, the last of it is a low rumble. Every return stroke sends it
+ * all again. Then the echoes from the clouds and the sea: a few seconds, darker as they die.
+ * Positions in the storm frame (metres, y up).
  */
 
 export const SOUND = 343;
 
-// RBJ biquad, applied in place.
-function filter(data, type, f, q, sr) {
+// RBJ biquad, applied in place over [from, to).
+function filter(data, type, f, q, sr, from = 0, to = data.length) {
   const w = (2 * Math.PI * f) / sr;
   const alpha = Math.sin(w) / (2 * q);
   const c = Math.cos(w);
@@ -35,7 +37,7 @@ function filter(data, type, f, q, sr) {
   b1 /= a0;
   b2 /= a0;
   let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
-  for (let i = 0; i < data.length; i++) {
+  for (let i = from; i < to; i++) {
     const x = data[i];
     const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
     x2 = x1;
@@ -77,6 +79,18 @@ function reverberate(input, left, right, sr, t60, wet) {
 }
 
 /**
+ * What the air leaves of the highs after r metres: absorption grows with frequency (a few dB a
+ * kilometre at 1 kHz, about as f^1.5) and the pulses spread out. The frequency where the loss
+ * is about 3 dB (Hz).
+ */
+export const dullAt = r => 1000 * Math.pow(750 / Math.max(r, 60), 2 / 3);
+
+// How fast the crack of the steep shock dies away with distance (m).
+const CRACK_REACH = 1500;
+// Distance bands, each dulled by the air as far as its own distance.
+const BANDS = 6;
+
+/**
  * segments: Float32Array of [ax, ay, az, bx, by, bz] per segment; listener: [x, y, z]; right:
  * the listener's right in the world; strokes: [{ t (s), a }]; power: how much sound the flash
  * makes. Returns { left, right, delay } (the samples start delay seconds after the flash), or
@@ -86,6 +100,7 @@ export function synthesize({ sampleRate: sr, segments, listener, right, strokes,
   const parts = [];
   let rMin = Infinity;
   let rMax = 0;
+  const dist = (x, y, z) => Math.max(Math.hypot(x - listener[0], y - listener[1], z - listener[2]), 30);
   for (let s = 0; s < segments.length; s += 6) {
     const vx = segments[s + 3] - segments[s];
     const vy = segments[s + 4] - segments[s + 1];
@@ -99,16 +114,26 @@ export function synthesize({ sampleRate: sr, segments, listener, right, strokes,
     const along = (vx * dx + vy * dy + vz * dz) / (len * r);
     const across = Math.sqrt(Math.max(1 - along * along, 0));
     const pan = Math.max(-1, Math.min(1, (dx * right[0] + dy * right[1] + dz * right[2]) / r));
-    // Spreading: the lows of thunder carry far (a storm 15 km off still rumbles), so the level
-    // falls more slowly than 1/r; scaled to 1/r at 1 km.
-    parts.push({ r, amp: (len * (0.25 + 0.75 * across)) / (1000 * Math.pow(r / 1000, 0.7)), pan });
-    rMin = Math.min(rMin, r);
-    rMax = Math.max(rMax, r);
+    // A part running away from the listener is heard over the time its sound takes to cross
+    // it: pulses from along it, one every few metres of path.
+    const ra = dist(segments[s], segments[s + 1], segments[s + 2]);
+    const rb = dist(segments[s + 3], segments[s + 4], segments[s + 5]);
+    const k = Math.min(6, 1 + Math.floor(Math.abs(rb - ra) / 5));
+    const rs = k === 1 ? [r] : Array.from({ length: k }, (_, j) => ra + ((rb - ra) * (j + 0.5)) / k);
+    // Spreading: about 1/r, a little slower (the lows of thunder carry: a storm 15 km off still
+    // rumbles); 1 at 1 km. Strongest across the line of sight.
+    parts.push({ r, rs, amp: (len * (0.35 + 0.65 * across)) / (1000 * Math.pow(r / 1000, 0.85) * k), pan });
+    for (const q of rs) {
+      rMin = Math.min(rMin, q);
+      rMax = Math.max(rMax, q);
+    }
   }
   if (!parts.length) return null;
   const span = strokes.length ? strokes[strokes.length - 1].t : 0;
   const seconds = Math.min((rMax - rMin) / SOUND + span + 0.2, maxSeconds - 4);
   const n = Math.ceil((seconds + 4) * sr);
+  const left = new Float32Array(n);
+  const rightOut = new Float32Array(n);
   const low = [new Float32Array(n), new Float32Array(n)];
   const high = [new Float32Array(n), new Float32Array(n)];
   let seed = (rMin * 1000) >>> 0;
@@ -116,52 +141,73 @@ export function synthesize({ sampleRate: sr, segments, listener, right, strokes,
     seed = (seed * 1664525 + 1013904223) >>> 0;
     return seed / 4294967296;
   };
-  for (const st of strokes) {
-    const strokeAmp = Math.pow(st.a, 0.7) * power;
+  const logSpan = Math.log(rMax / rMin);
+  const bands = logSpan > 0.05 ? BANDS : 1;
+  const bandOf = r => Math.min(bands - 1, Math.max(0, Math.floor((Math.log(r / rMin) / (logSpan || 1)) * bands)));
+  const crackLength = Math.floor(0.004 * sr);
+  const crackDecay = 0.0009 * sr;
+  for (let band = 0; band < bands; band++) {
+    let first = n;
+    let last = 0;
+    let wr = 0;
+    let w = 0;
     for (const p of parts) {
-      const at = Math.round(((p.r - rMin) / SOUND + st.t) * sr);
-      if (at >= n) continue;
+      if (bandOf(p.r) !== band) continue;
+      wr += p.amp * Math.log(p.r);
+      w += p.amp;
       const gl = Math.cos(((p.pan + 1) * Math.PI) / 4);
       const gr = Math.sin(((p.pan + 1) * Math.PI) / 4);
-      // The pulse: an N-wave, a few milliseconds near the channel, longer far from it.
-      const T = Math.min(0.022, Math.max(0.006, 0.009 * Math.pow(p.r / 1000, 0.25))) * (0.8 + 0.4 * rand());
-      const m = Math.floor(T * sr);
-      const a = p.amp * strokeAmp;
-      for (let k = 0; k < m && at + k < n; k++) {
-        const x = k / m;
-        const v = a * (1 - 2 * x) * Math.sin(Math.PI * x) ** 0.25;
-        low[0][at + k] += v * gl;
-        low[1][at + k] += v * gr;
-      }
-      // Close to the channel the shock is still steep: a crack.
-      const crack = a * 2.5 * Math.exp(-p.r / 350);
-      if (crack > 1e-5) {
-        const mc = Math.floor(0.004 * sr);
-        for (let k = 0; k < mc && at + k < n; k++) {
-          const v = crack * (rand() * 2 - 1) * Math.exp(-k / (0.0009 * sr));
-          high[0][at + k] += v * gl;
-          high[1][at + k] += v * gr;
+      for (const st of strokes) {
+        const a = p.amp * Math.pow(st.a, 0.7) * power;
+        for (const q of p.rs) {
+          const at = Math.round(((q - rMin) / SOUND + st.t) * sr);
+          if (at >= n) continue;
+          // The pulse: an N-wave, a few milliseconds near the channel, longer far from it.
+          const T = Math.min(0.022, Math.max(0.003, 0.0045 * Math.pow(q / 300, 0.3))) * (0.8 + 0.4 * rand());
+          const m = Math.floor(T * sr);
+          for (let i = 0; i < m && at + i < n; i++) {
+            const x = i / m;
+            const v = a * (1 - 2 * x) * Math.sin(Math.PI * x) ** 0.25;
+            low[0][at + i] += v * gl;
+            low[1][at + i] += v * gr;
+          }
+          // The crack of the steep shock.
+          const crack = a * 4 * Math.exp(-q / CRACK_REACH);
+          if (crack > 1e-5) {
+            for (let i = 0; i < crackLength && at + i < n; i++) {
+              const v = crack * (rand() * 2 - 1) * Math.exp(-i / crackDecay);
+              high[0][at + i] += v * gl;
+              high[1][at + i] += v * gr;
+            }
+          }
+          first = Math.min(first, at);
+          last = Math.max(last, at + Math.max(m, crackLength));
         }
       }
     }
+    if (first >= n) continue;
+    // The air takes the highs, as far as this band's distance.
+    const dull = dullAt(Math.exp(wr / w));
+    const to = Math.min(n, last + Math.floor(0.06 * sr));
+    for (let c = 0; c < 2; c++) {
+      filter(low[c], "lowpass", Math.min(1.3 * dull, 0.45 * sr), 0.7, sr, first, to);
+      filter(high[c], "highpass", 600, 0.7, sr, first, to);
+      filter(high[c], "lowpass", Math.min(5 * dull, 0.45 * sr), 0.7, sr, first, to);
+      const out = c ? rightOut : left;
+      const lo = low[c];
+      const hi = high[c];
+      for (let i = first; i < to; i++) {
+        out[i] += lo[i] + hi[i];
+        lo[i] = 0;
+        hi[i] = 0;
+      }
+    }
   }
-  // The air takes the highs: the further the nearest part, the duller it all is.
-  const lowCut = 160 + 1400 * Math.exp(-rMin / 900);
-  const highCut = Math.min(700 + 6000 * Math.exp(-rMin / 400), sr * 0.45);
-  for (let c = 0; c < 2; c++) {
-    filter(low[c], "lowpass", lowCut, 0.7, sr);
-    filter(high[c], "highpass", 900, 0.7, sr);
-    filter(high[c], "lowpass", highCut, 0.7, sr);
-  }
-  const left = new Float32Array(n);
-  const rightOut = new Float32Array(n);
   const mono = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    const l = low[0][i] + high[0][i];
-    const r = low[1][i] + high[1][i];
-    left[i] = 0.85 * l;
-    rightOut[i] = 0.85 * r;
-    mono[i] = 0.5 * (l + r);
+    mono[i] = 0.5 * (left[i] + rightOut[i]);
+    left[i] *= 0.85;
+    rightOut[i] *= 0.85;
   }
   reverberate(mono, left, rightOut, sr, 3.2, 0.32);
   return { left, right: rightOut, delay: rMin / SOUND };
