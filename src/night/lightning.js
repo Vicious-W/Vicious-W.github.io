@@ -235,9 +235,12 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     const w = [range(0.45, 0.65), range(0.3, 0.5), range(0.25, 0.45)];
     const sum = w[0] + w[1] + w[2];
     // Power: irradiance at 1 km in clear air (the cloud shader's unit). Close flashes are
-    // blinding; distant ones light part of the storm.
-    const scale = kind === "cg" ? range(3.5, 8) : near ? (tight ? range(7, 14) : range(26, 46)) : range(12, 24);
-    return { id: id++, kind, start: 0, strokes, duration, sources, weight: w.map(v => v / sum), scale, bolt, depth, color: kind === "cg" ? COLOR_CG : COLOR_IC };
+    // blinding; distant ones light part of the storm. strength: how strong this one is among its
+    // kind (0.6..1.4), for its thunder.
+    const [lo, hi] = kind === "cg" ? [3.5, 8] : near ? (tight ? [7, 14] : [26, 46]) : [12, 24];
+    const scale = range(lo, hi);
+    const strength = 0.6 + (0.8 * (scale - lo)) / (hi - lo);
+    return { id: id++, kind, start: 0, strokes, duration, sources, weight: w.map(v => v / sum), scale, strength, bolt, depth, color: kind === "cg" ? COLOR_CG : COLOR_IC };
   }
 
   function createFlick(view) {
@@ -252,7 +255,8 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     };
     const at = seat(view, pick, 10) || { pos: [CENTRE[0], 7000, CENTRE[1]], depth: 900 };
     const { strokes, duration } = makeStrokes(rand, 1 + Math.floor(rand() * 3), true);
-    return { id: id++, start: 0, strokes, duration, pos: at.pos, depth: at.depth, scale: range(6, 15) };
+    const scale = range(6, 15);
+    return { id: id++, start: 0, strokes, duration, pos: at.pos, depth: at.depth, scale, strength: 0.6 + (0.8 * (scale - 6)) / 9 };
   }
 
   function flashRate(view) {

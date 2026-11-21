@@ -1,4 +1,5 @@
 import { channelThrough, finer, flatten } from "./thunder.js";
+import { echoResponse } from "./thundersynth.js";
 
 /**
  * The sound of the night journey, all made in the browser (Web Audio):
@@ -10,14 +11,20 @@ import { channelThrough, finer, flatten } from "./thunder.js";
  *   weather.worklet.js), following the cabin's levels and the discharges seen;
  * - the airframe in turbulence: a thud, a rattle, a creak at each gust;
  * - thunder: every flash's channel heard part by part as its sound arrives (thunder.js,
- *   thundersynth.js), through the canopy, from its side; each flash as strong as it happens to
- *   be: far ones rumble, close ones crack and shake the cabin;
+ *   thundersynth.js), through the canopy, from where each part is (it stays there as the head
+ *   turns), with the echoes of the clouds and the sea; as strong as the flash was bright: far
+ *   ones rumble, close ones crack and shake the cabin;
  * all into a limiter. Browsers let sound start only after a click or a key: start() then fades
  * it in. The mix is also offered as a MediaStream (window.__audioStream) for the recording tools.
  */
 
 // Levels (linear gains); see the measurements in docs/HANDOVER.md.
 const MIX = Object.freeze({ master: 0.8, wind: 0.12, whistle: 0.9, fan: 0.008, engine: 0.013, weather: 0.2, knocks: 0.44, thunder: 42 });
+
+// Thunder as heard (thundersynth.js gives it in first-order ambisonics): each ear a virtual
+// microphone looking its way, omni + side * (the head's axis . direction); and the echoes, a
+// convolver on W (matched to the four-line network of the second version, within 1 dB).
+const DECODE = Object.freeze({ omni: 0.6, side: 0.45, echoes: 0.25 });
 
 // The air's slow wandering: time constants (s) of random walks in -1..1.
 const WANDER = Object.freeze({ level: 4, tilt: 7, rpm: 10 });
@@ -176,12 +183,35 @@ export function createAudio({ solo = null } = {}) {
   cabinOnly.connect(cabin);
   // Sound from outside comes through the canopy, a bubble of acrylic: it takes a little more of
   // each octave above a couple of kilohertz, and booms a little in the lows.
-  const outside = new GainNode(ctx, { gain: MIX.thunder * only("thunder") });
-  outside
-    .connect(new BiquadFilterNode(ctx, { type: "highshelf", frequency: 1800, gain: -4 }))
+  const canopy = new BiquadFilterNode(ctx, { type: "highshelf", frequency: 1800, gain: -4 });
+  canopy
     .connect(new BiquadFilterNode(ctx, { type: "lowpass", frequency: 7000, Q: 0.5 }))
     .connect(new BiquadFilterNode(ctx, { type: "peaking", frequency: 100, Q: 1, gain: 2 }))
     .connect(master);
+  // Thunder comes as W, X, Y, Z (the world's axes) and is decoded each frame for the way the head
+  // faces (update), so it is heard where the lightning was however the head turns.
+  const outside = new GainNode(ctx, { gain: MIX.thunder * only("thunder"), channelCount: 4, channelCountMode: "explicit", channelInterpretation: "discrete" });
+  const split = new ChannelSplitterNode(ctx, { numberOfOutputs: 4 });
+  outside.connect(split);
+  const ears = new ChannelMergerNode(ctx, { numberOfInputs: 2 });
+  ears.connect(canopy);
+  const decode = [0, 1].map(side => {
+    const sum = new GainNode(ctx, { channelCount: 1, channelCountMode: "explicit" });
+    sum.connect(ears, 0, side);
+    return [0, 1, 2, 3].map(k => {
+      const g = new GainNode(ctx, { gain: k === 0 ? DECODE.omni : 0 });
+      split.connect(g, k);
+      g.connect(sum);
+      return g;
+    });
+  });
+  // The echoes from the clouds and the sea, from all around.
+  const response = echoResponse(ctx.sampleRate);
+  const echoes = new ConvolverNode(ctx, { normalize: false });
+  const responseBuffer = ctx.createBuffer(2, response[0].length, ctx.sampleRate);
+  response.forEach((d, c) => responseBuffer.copyToChannel(d, c));
+  echoes.buffer = responseBuffer;
+  split.connect(new GainNode(ctx, { gain: DECODE.echoes }), 0).connect(echoes).connect(canopy);
 
   // ---- the air on the canopy ---------------------------------------------------------------
   // Flow noise is never steady. The big eddies swell and fade its lows over seconds; the small
@@ -231,24 +261,36 @@ export function createAudio({ solo = null } = {}) {
   air.connect(whistle).connect(whistleLevel).connect(new StereoPannerNode(ctx, { pan: 0.35 })).connect(cabinOnly);
 
   // ---- the fan behind the cabin and its engine ----------------------------------------------
-  // Their speed wanders a little (rpm: a fraction of it), and the blades chop the air unevenly.
+  // Their speed wanders a little (rpm: a fraction of it), sags for a moment when a gust loads
+  // them (load), and the blades chop the air unevenly.
   const rpm = new ConstantSourceNode(ctx, { offset: 0 });
+  const load = new ConstantSourceNode(ctx, { offset: 0 });
   rpm.start();
+  load.start();
+  const bySpeed = (f, param) => {
+    const hz = new GainNode(ctx, { gain: f });
+    rpm.connect(hz);
+    load.connect(hz);
+    hz.connect(param);
+  };
+  // Both are behind the cabin: heard from there as the head turns (update).
+  const behind = new StereoPannerNode(ctx, { pan: 0 });
+  behind.connect(cabinOnly);
   const fanOut = new GainNode(ctx, { gain: MIX.fan });
-  fanOut.connect(new BiquadFilterNode(ctx, { type: "lowpass", frequency: 800, Q: 0.5 })).connect(cabinOnly);
+  fanOut.connect(new BiquadFilterNode(ctx, { type: "lowpass", frequency: 800, Q: 0.5 })).connect(behind);
   shake(fanOut.gain, 11, 1, 9, 21).gain.value = 0.25 * MIX.fan;
   [108, 216, 324, 432, 540].forEach((f, i) => {
     const o = new OscillatorNode(ctx, { frequency: f });
-    rpm.connect(new GainNode(ctx, { gain: f })).connect(o.frequency);
+    bySpeed(f, o.frequency);
     o.connect(new GainNode(ctx, { gain: [1, 0.5, 0.3, 0.16, 0.08][i] })).connect(fanOut);
     o.start();
   });
   const engine = new OscillatorNode(ctx, { type: "sawtooth", frequency: 46 });
-  rpm.connect(new GainNode(ctx, { gain: 46 })).connect(engine.frequency);
+  bySpeed(46, engine.frequency);
   engine
     .connect(new BiquadFilterNode(ctx, { type: "lowpass", frequency: 140, Q: 0.7 }))
     .connect(new GainNode(ctx, { gain: MIX.engine }))
-    .connect(cabinOnly);
+    .connect(behind);
   engine.start();
   const walks = { level: 0, tilt: 0, rpm: 0 };
   let lastWalk = null;
@@ -318,27 +360,26 @@ export function createAudio({ solo = null } = {}) {
       const ext = (q, from, k) => q.map((v, i) => v + (v - from[i]) * k);
       segments = channelThrough([ext(s[0], s[1], 0.4), s[0], s[1], s[2], ext(s[2], s[1], 0.4)], r, 25);
     }
-    // Flashes differ: some barely rumble, some explode (log-normal, about ±5 dB).
-    const energy = power * Math.exp(0.55 * ((r() + r() + r()) * 2 - 3));
+    // As strong as the flash was bright among its kind (strength 0.6..1.4, lightning.js), and
+    // a little more or less besides (log-normal, about ±3 dB).
+    const energy = power * Math.pow(event.strength ?? 1, 1.5) * Math.exp(0.35 * ((r() + r() + r()) * 2 - 3));
     thunders++;
     synth({
       sampleRate: THUNDER_RATE,
       segments: flatten(segments),
       listener: [view.x, view.alt, view.z],
-      right: [view.right.x, view.right.y, view.right.z],
       strokes: event.strokes.map(s => ({ t: s.t, a: s.a })),
       power: energy
     })
       .then(out => {
-        if (!out.left) return;
-        const buffer = ctx.createBuffer(2, out.left.length, THUNDER_RATE);
-        buffer.copyToChannel(out.left, 0);
-        buffer.copyToChannel(out.right, 1);
+        if (!out.channels) return;
+        const buffer = ctx.createBuffer(4, out.channels[0].length, THUNDER_RATE);
+        out.channels.forEach((d, c) => buffer.copyToChannel(d, c));
         const at = toAudio(event.start + out.delay);
         const near = out.delay * 343;
         if (window.__audioLog) {
           let peak = 0;
-          for (let c = 0; c < 2; c++) for (const v of buffer.getChannelData(c)) peak = Math.max(peak, Math.abs(v));
+          for (const v of out.channels[0]) peak = Math.max(peak, Math.abs(v));
           window.__audioLog.push({ id: event.id, kind, arrive: +(event.start + out.delay).toFixed(2), near: Math.round(near), energy: +energy.toFixed(2), in: +(at - ctx.currentTime).toFixed(2), seconds: +buffer.duration.toFixed(1), peak: +peak.toFixed(4), segments: segments.length });
         }
         const s = new AudioBufferSourceNode(ctx, { buffer });
@@ -416,6 +457,18 @@ export function createAudio({ solo = null } = {}) {
       buffet.gain.setTargetAtTime(0.6 * Math.pow(turb, 1.5), now, 0.3);
       rpm.offset.setTargetAtTime(0.012 * walks.rpm, now, 0.8);
 
+      // The fan and the engine behind the cabin, to the side the head has turned from.
+      const q = view.qAircraft;
+      const back = [2 * (q.x * q.z + q.w * q.y), 2 * (q.y * q.z - q.w * q.x), 1 - 2 * (q.x * q.x + q.y * q.y)];
+      behind.pan.setTargetAtTime(0.7 * (back[0] * view.right.x + back[1] * view.right.y + back[2] * view.right.z), now, 0.05);
+
+      // Thunder heard as the head now faces: left ear omni - side * (right . XYZ), right ear +.
+      const ear = [view.right.x, view.right.y, view.right.z];
+      for (let k = 1; k < 4; k++) {
+        decode[0][k].gain.setTargetAtTime(-DECODE.side * ear[k - 1], now, 0.02);
+        decode[1][k].gain.setTargetAtTime(DECODE.side * ear[k - 1], now, 0.02);
+      }
+
       // Gusts a moment ahead: the air swells, the airframe thuds, rattles, creaks; a strong one
       // makes a seam whistle.
       const ahead = view.time + 0.15;
@@ -426,6 +479,8 @@ export function createAudio({ solo = null } = {}) {
           const a = Math.min(g.amp, 1);
           windSwell.gain.setTargetAtTime(1 + 0.8 * a, at, 0.03);
           windSwell.gain.setTargetAtTime(1, at + 0.12, 0.35);
+          load.offset.setTargetAtTime(-0.025 * a, at, 0.08);
+          load.offset.setTargetAtTime(0, at + 0.25, 0.7);
           play(knocks.thuds[Math.floor(rand() * 3)], MIX.knocks * a * (g.drop ? 1 : 0.7), rand() * 0.6 - 0.3, at);
           if (rand() < 0.6) play(knocks.rattles[Math.floor(rand() * 3)], MIX.knocks * 0.5 * a, rand() * 1.2 - 0.6, at + 0.02);
           if (rand() < 0.25) play(knocks.creaks[Math.floor(rand() * 2)], MIX.knocks * 0.4 * a, rand() * 1.4 - 0.7, at + 0.05);
