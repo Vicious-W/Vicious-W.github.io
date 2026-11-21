@@ -4,9 +4,10 @@ import { createFlight } from "./flight.js";
 import { createJourney } from "./night/journey.js";
 import { bakeStorm, STORM } from "./night/storm.js";
 import { createLightning } from "./night/lightning.js";
-import { createBolts } from "./night/bolts.js";
+import { createBolts, createLampPoints } from "./night/bolts.js";
 import { createCockpit } from "./cockpit/cockpit.js";
 import { lampsInWorld } from "./cockpit/lamps.js";
+import { powerAt } from "./night/moments.js";
 import { createAudio } from "./audio/audio.js";
 
 const canvas = document.getElementById("view");
@@ -184,9 +185,13 @@ function start() {
     const openNear = 1 - clamp01(above(420) / 420 + 0.5);
     view.open = [openNear, openNear * (0.3 + 0.7 * (1 - clamp01(above(1900) / 900 + 0.5)))];
     view.lamps = lampsInWorld(view.qAircraft, view.time, lamps);
+    // After the strike the lamps are dark until the power comes back.
+    view.power = powerAt(view.time);
+    if (!view.power.on) for (const l of view.lamps.light) l.set(0, 0, 0);
   }
   const lightning = night ? createLightning({ stormSD: storm.sample }) : null;
   const bolts = night ? createBolts(renderer) : null;
+  const trafficPoints = night ? createLampPoints(renderer) : null;
   let flashControl = null;
   let last = performance.now();
   let revealed = false;
@@ -214,6 +219,8 @@ function start() {
     sky.render(view, { still: still && !motion, target: frameTarget, linear: !!cockpit });
     // A bolt's channel is blinding: in linear light it is drawn well past white.
     if (bolts) bolts.render(view, view.flash, sky.scene, canvas.width, canvas.height, frameTarget, cockpit ? 6 : 1);
+    // Another aircraft's lamps, seen directly (moments.js).
+    if (trafficPoints && view.traffic && view.traffic.on) trafficPoints.render(view, view.traffic, sky.scene, canvas.width, canvas.height, frameTarget, cockpit ? 6 : 1);
     if (cockpit) {
       const light = sky.light;
       cockpit.render(view, frameTarget.texture, canvas.width, canvas.height, {

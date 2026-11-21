@@ -1,5 +1,6 @@
 import { channelThrough, finer, flatten } from "./thunder.js";
 import { echoResponse } from "./thundersynth.js";
+import { STRIKE, catchTimes } from "../night/moments.js";
 
 /**
  * The sound of the night journey, all made in the browser (Web Audio):
@@ -10,6 +11,10 @@ import { echoResponse } from "./thundersynth.js";
  * - the weather on the glass: rain, hail and St. Elmo's fire (an AudioWorklet, see
  *   weather.worklet.js), following the cabin's levels and the discharges seen;
  * - the airframe in turbulence: a thud, a rattle, a creak at each gust;
+ * - the strike (moments.js): a bang inside the cabin, the ears deafened for a few seconds, the
+ *   fan dying with the power and starting again as the relays catch;
+ * - another aircraft passing close (moments.js): the roar of its engines, rising in pitch as it
+ *   comes and falling as it goes, from where it is;
  * - thunder: every flash's channel heard part by part as its sound arrives (thunder.js,
  *   thundersynth.js), through the canopy, from where each part is (it stays there as the head
  *   turns), with the echoes of the clouds and the sea; as strong as the flash was bright: far
@@ -19,7 +24,7 @@ import { echoResponse } from "./thundersynth.js";
  */
 
 // Levels (linear gains); see the measurements in docs/HANDOVER.md.
-const MIX = Object.freeze({ master: 0.8, wind: 0.12, whistle: 0.9, fan: 0.008, engine: 0.013, weather: 0.2, knocks: 0.44, thunder: 42 });
+const MIX = Object.freeze({ master: 0.8, wind: 0.12, whistle: 0.9, fan: 0.008, engine: 0.013, weather: 0.2, knocks: 0.44, thunder: 42, jet: 3.5 });
 
 // Thunder as heard (thundersynth.js gives it in first-order ambisonics): each ear a virtual
 // microphone looking its way, omni + side * (the head's axis . direction); and the echoes, a
@@ -152,6 +157,42 @@ function knockSounds(ctx) {
   return { thuds, rattles, creaks };
 }
 
+/**
+ * The strike as heard inside the cabin, made once: the crack of the channel at the nose, the
+ * blast of its shock over the airframe and the boom after it, the current crackling through
+ * the airframe, the canopy's frame ringing. And a relay's click.
+ */
+function strikeSounds(ctx) {
+  const sr = ctx.sampleRate;
+  const rand = rng(77);
+  const n = Math.floor(1.6 * sr);
+  const bang = ctx.createBuffer(2, n, sr);
+  const modes = [[310, 0.25], [820, 0.12], [1650, 0.06], [2900, 0.04]];
+  for (let c = 0; c < 2; c++) {
+    const d = bang.getChannelData(c);
+    let lp = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / sr;
+      const crack = (rand() * 2 - 1) * Math.exp(-t / 0.0025);
+      const x = t / 0.008;
+      const blast = t < 0.008 ? (1 - 2 * x) * 1.2 : 0;
+      lp += (rand() * 2 - 1 - lp) * 0.02;
+      const boom = lp * 6 * Math.exp(-t / 0.18) * (1 - Math.exp(-t / 0.004));
+      const sizzle = (rand() < 0.08 ? rand() * 2 - 1 : 0) * Math.exp(-t / 0.05) * 0.8;
+      let ring = 0;
+      for (const [f, a] of modes) ring += a * Math.sin(2 * Math.PI * f * (c ? 1.012 : 1) * t) * Math.exp(-t / ((0.35 * 300) / f + 0.05));
+      d[i] = crack + blast + boom + sizzle + 0.5 * ring * (1 - Math.exp(-t / 0.002));
+    }
+  }
+  const click = ctx.createBuffer(1, Math.floor(0.03 * sr), sr);
+  const k = click.getChannelData(0);
+  for (let i = 0; i < k.length; i++) {
+    const t = i / sr;
+    k[i] = (Math.sin(2 * Math.PI * 3100 * t) * 0.6 + (rand() * 2 - 1) * 0.4) * Math.exp(-t / 0.0015) + 0.3 * Math.sin(2 * Math.PI * 900 * t) * Math.exp(-t / 0.006);
+  }
+  return { bang, click };
+}
+
 /** solo (capture aid): "cabin", "weather", "knocks" or "thunder" alone. */
 export function createAudio({ solo = null } = {}) {
   const ctx = new AudioContext({ latencyHint: "interactive" });
@@ -168,11 +209,17 @@ export function createAudio({ solo = null } = {}) {
   for (let i = 0; i < curve.length; i++) {
     const x = (i / (curve.length - 1)) * 4 - 2; // the shaper sees -2..2, halved below
     const a = Math.abs(x);
-    curve[i] = Math.sign(x) * (a < 0.8 ? a : 0.8 + 0.2 * Math.tanh((a - 0.8) / 0.2));
+    curve[i] = Math.sign(x) * (a < 0.8 ? a : 0.8 + 0.17 * Math.tanh((a - 0.8) / 0.17));
   }
-  const clip = new WaveShaperNode(ctx, { curve, oversample: "2x" });
+  const clip = new WaveShaperNode(ctx, { curve, oversample: "none" });
   const out = new GainNode(ctx, { gain: 1 });
-  master.connect(limiter).connect(new GainNode(ctx, { gain: 0.5 })).connect(clip).connect(out).connect(ctx.destination);
+  // The ears: after the strike's bang everything is dulled for a few seconds, and they ring.
+  const hearing = new BiquadFilterNode(ctx, { type: "lowpass", frequency: 20000, Q: 0.5 });
+  master.connect(hearing).connect(limiter).connect(new GainNode(ctx, { gain: 0.5 })).connect(clip).connect(out).connect(ctx.destination);
+  const ringing = new OscillatorNode(ctx, { frequency: 6300 });
+  const ringingLevel = new GainNode(ctx, { gain: 0 });
+  ringing.connect(ringingLevel).connect(limiter);
+  ringing.start();
   const tap = ctx.createMediaStreamDestination();
   out.connect(tap);
   const cabin = new GainNode(ctx, { gain: 1 });
@@ -263,21 +310,26 @@ export function createAudio({ solo = null } = {}) {
   // ---- the fan behind the cabin and its engine ----------------------------------------------
   // Their speed wanders a little (rpm: a fraction of it), sags for a moment when a gust loads
   // them (load), and the blades chop the air unevenly.
+  // When the power fails they run down (spin) and fall silent (fanPower).
   const rpm = new ConstantSourceNode(ctx, { offset: 0 });
   const load = new ConstantSourceNode(ctx, { offset: 0 });
+  const spin = new ConstantSourceNode(ctx, { offset: 0 });
   rpm.start();
   load.start();
+  spin.start();
   const bySpeed = (f, param) => {
     const hz = new GainNode(ctx, { gain: f });
     rpm.connect(hz);
     load.connect(hz);
+    spin.connect(hz);
     hz.connect(param);
   };
   // Both are behind the cabin: heard from there as the head turns (update).
   const behind = new StereoPannerNode(ctx, { pan: 0 });
-  behind.connect(cabinOnly);
+  const fanPower = new GainNode(ctx, { gain: 1 });
+  fanPower.connect(behind).connect(cabinOnly);
   const fanOut = new GainNode(ctx, { gain: MIX.fan });
-  fanOut.connect(new BiquadFilterNode(ctx, { type: "lowpass", frequency: 800, Q: 0.5 })).connect(behind);
+  fanOut.connect(new BiquadFilterNode(ctx, { type: "lowpass", frequency: 800, Q: 0.5 })).connect(fanPower);
   shake(fanOut.gain, 11, 1, 9, 21).gain.value = 0.25 * MIX.fan;
   [108, 216, 324, 432, 540].forEach((f, i) => {
     const o = new OscillatorNode(ctx, { frequency: f });
@@ -290,12 +342,27 @@ export function createAudio({ solo = null } = {}) {
   engine
     .connect(new BiquadFilterNode(ctx, { type: "lowpass", frequency: 140, Q: 0.7 }))
     .connect(new GainNode(ctx, { gain: MIX.engine }))
-    .connect(behind);
+    .connect(fanPower);
   engine.start();
   const walks = { level: 0, tilt: 0, rpm: 0 };
   let lastWalk = null;
   // One step of a random walk that keeps within about ±1 (an Ornstein-Uhlenbeck process).
   const wander = (v, dt, tau) => Math.max(-1, Math.min(1, v - (v * dt) / tau + (rand() * 2 - 1) * 0.5 * Math.sqrt((6 * dt) / tau)));
+
+  // ---- another aircraft's engines, outside -------------------------------------------------
+  // A jet's roar (broadband, centred low), the whine of its fan blades and a low hum, all
+  // shifted together by its approach (Doppler), dulled by the air with distance, from its side.
+  const jetNoise = new AudioBufferSourceNode(ctx, { buffer: pinkNoise(ctx, 6, 41), loop: true });
+  const jetWhine = new OscillatorNode(ctx, { type: "sawtooth", frequency: 1850 });
+  const jetHum = new OscillatorNode(ctx, { type: "triangle", frequency: 78 });
+  const jetAir = new BiquadFilterNode(ctx, { type: "lowpass", frequency: 4000, Q: 0.6 });
+  const jetLevel = new GainNode(ctx, { gain: 0 });
+  const jetPan = new StereoPannerNode(ctx, { pan: 0 });
+  jetNoise.connect(new BiquadFilterNode(ctx, { type: "bandpass", frequency: 650, Q: 0.45 })).connect(jetAir);
+  jetWhine.connect(new BiquadFilterNode(ctx, { type: "bandpass", frequency: 1850, Q: 9 })).connect(new GainNode(ctx, { gain: 0.06 })).connect(jetAir);
+  jetHum.connect(new GainNode(ctx, { gain: 0.12 })).connect(jetAir);
+  jetAir.connect(jetLevel).connect(jetPan).connect(new GainNode(ctx, { gain: only("thunder") })).connect(canopy);
+  for (const s of [jetNoise, jetWhine, jetHum]) s.start();
 
   // ---- weather on the glass (once the worklet is loaded) ------------------------------------
   let weather = null;
@@ -312,6 +379,8 @@ export function createAudio({ solo = null } = {}) {
 
   // ---- the airframe and the thunder ---------------------------------------------------------
   const knocks = knockSounds(ctx);
+  const strike = strikeSounds(ctx);
+  let struck = false;
   // Thunder is made in a worker, at a rate that holds its highs (it has few above 8 kHz).
   const THUNDER_RATE = 24000;
   const worker = new Worker(new URL("./thunder.worker.js", import.meta.url), { type: "module" });
@@ -347,8 +416,9 @@ export function createAudio({ solo = null } = {}) {
     if (thunders >= 8) return;
     const r = rng(event.id * 7919 + 13);
     let segments;
-    if (kind === "cg" && event.bolt) {
-      segments = finer(event.bolt, 25);
+    if ((kind === "cg" || kind === "strike" || kind === "spider") && event.bolt) {
+      // (A web of spider lightning is heard by its main channel, in coarser steps.)
+      segments = kind === "spider" ? finer(event.bolt.filter(s => s.main), 50) : finer(event.bolt, 25);
     } else if (kind === "flick") {
       const p = event.pos;
       const a = r() * Math.PI * 2;
@@ -471,6 +541,45 @@ export function createAudio({ solo = null } = {}) {
 
       // Gusts a moment ahead: the air swells, the airframe thuds, rattles, creaks; a strong one
       // makes a seam whistle.
+      // Another aircraft passing: heard where it was when the sound now arriving left it.
+      const tr = view.traffic;
+      if (tr && tr.on && tr.where) {
+        const me = [view.x, view.alt, view.z];
+        let p = tr.where(view.time);
+        for (let k = 0; k < 2; k++) p = tr.where(view.time - Math.hypot(p[0] - me[0], p[1] - me[1], p[2] - me[2]) / 343);
+        const rel = [p[0] - me[0], p[1] - me[1], p[2] - me[2]];
+        const dist = Math.max(Math.hypot(...rel), 1);
+        const mine = view.velocity || [0, 0, 0];
+        const away = ((tr.velocity[0] - mine[0]) * rel[0] + (tr.velocity[1] - mine[1]) * rel[1] + (tr.velocity[2] - mine[2]) * rel[2]) / dist;
+        const shift = 343 / (343 + away);
+        jetNoise.playbackRate.setTargetAtTime(shift, now, 0.05);
+        jetWhine.frequency.setTargetAtTime(1850 * shift, now, 0.05);
+        jetHum.frequency.setTargetAtTime(78 * shift, now, 0.05);
+        jetAir.frequency.setTargetAtTime(600 + 5400 * Math.exp(-dist / 350), now, 0.05);
+        jetLevel.gain.setTargetAtTime((MIX.jet * 60) / Math.max(dist, 30), now, 0.05);
+        jetPan.pan.setTargetAtTime(Math.max(-1, Math.min(1, (rel[0] * view.right.x + rel[1] * view.right.y + rel[2] * view.right.z) / dist)), now, 0.05);
+      } else {
+        jetLevel.gain.setTargetAtTime(0, now, 0.3);
+      }
+
+      // The strike: the bang, the ears, the power gone and back.
+      if (!struck && view.time >= STRIKE.t - 0.25 && view.time < STRIKE.t + 1) {
+        struck = true;
+        const at = Math.max(toAudio(STRIKE.t), now);
+        play(strike.bang, 1.6, 0, at);
+        hearing.frequency.setValueAtTime(20000, at);
+        hearing.frequency.setTargetAtTime(600, at + 0.004, 0.01);
+        hearing.frequency.setTargetAtTime(20000, at + 0.7, 1.5);
+        ringingLevel.gain.setTargetAtTime(0.006 * only("knocks"), at + 0.05, 0.2);
+        ringingLevel.gain.setTargetAtTime(0, at + 1, 2.8);
+        fanPower.gain.setTargetAtTime(0, at + 0.05, 0.9);
+        spin.offset.setTargetAtTime(-0.7, at + 0.05, 1.3);
+        const back = toAudio(STRIKE.t + STRIKE.dark + STRIKE.flicker);
+        fanPower.gain.setTargetAtTime(1, back, 0.7);
+        spin.offset.setTargetAtTime(0, back, 0.9);
+        for (const c of catchTimes()) play(strike.click, 0.35, 0.25, toAudio(c));
+      }
+
       const ahead = view.time + 0.15;
       if (gustEvents && ahead > gustsUntil) {
         const from = Math.max(gustsUntil, view.time - 0.05);
@@ -498,7 +607,8 @@ export function createAudio({ solo = null } = {}) {
       const f = lit && lit.flash;
       if (f && f.event && f.event.id !== lastFlash) {
         lastFlash = f.event.id;
-        thunder(f.event, f.event.kind, view, f.event.kind === "cg" ? 1 : 0.6);
+        // (The strike is mostly its bang, in the cabin; its channel rolls on outside, quieter.)
+        thunder(f.event, f.event.kind, view, { ic: 0.6, strike: 0.15 }[f.event.kind] ?? 1);
       }
       const k = lit && lit.flick;
       if (k && k.event && k.event.id !== lastFlick) {

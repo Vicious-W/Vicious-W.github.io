@@ -486,8 +486,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
           uFlickPower: { value: 0 },
           uFlickColor: compositePass.uniforms.uFlickColor,
           uFlickDepth: cu0.uFlickDepth,
-          uLampPos: { value: Array.from({ length: 4 }, () => new THREE.Vector3()) },
-          uLamp: { value: Array.from({ length: 4 }, () => new THREE.Vector3()) },
+          uLampPos: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) },
+          uLamp: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) },
           uTurbA: { value: new THREE.Vector3() },
           uTurbB: { value: new THREE.Vector3() },
           uShutter: { value: new THREE.Vector3() },
@@ -721,6 +721,13 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
             m.uLamp.value[k].copy(view.lamps.light[k]);
           } else {
             m.uLamp.value[k].set(0, 0, 0);
+          }
+          // Another aircraft's (moments.js).
+          if (view.traffic && view.traffic.on) {
+            m.uLampPos.value[4 + k].copy(view.traffic.pos[k]);
+            m.uLamp.value[4 + k].copy(view.traffic.light[k]).multiplyScalar(4);
+          } else {
+            m.uLamp.value[4 + k].set(0, 0, 0);
           }
         }
         mistPass.render(renderer, mistTarget);

@@ -379,6 +379,7 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
       uShieldHalf: { value: new THREE.Vector2(0.285, 0.105).multiplyScalar(CONSOLE_SCALE) },
       uGlow: { value: Array.from({ length: streamers.max }, () => new THREE.Vector4()) },
       uExposure: { value: 8 },
+      uDazzle: { value: 0 },
       uScreen: { value: new THREE.Vector2(1, 1) },
       uFrame: { value: 0 }
     }
@@ -435,7 +436,10 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
       const cabin = view.cabin;
       const t = view.time;
       inverse.copy(view.qAircraft).invert();
-      instruments.update(view, t);
+      // The power (it fails after the strike: moments.js).
+      const power = view.power ?? { on: 1, booting: false };
+      instruments.update(view, t, power);
+      shared.uFaceGain.value = 0.014 * power.on;
 
       // The moon: seen from the aircraft or hidden by the storm (worked out in main.js).
       const moonSeen = view.moonSeen ?? 1;
@@ -456,12 +460,20 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
 
       // The aircraft's own lights. The beacons flash: a sharp rise, a short tail.
       const pulse = beaconPulse(t);
-      g.uBeacon.value.set(...BEACON_COLOR).multiplyScalar(BEACON_POWER * pulse);
+      g.uBeacon.value.set(...BEACON_COLOR).multiplyScalar(BEACON_POWER * pulse * power.on);
       // In cloud the beacons' flashes fill the cloud around, and the cabin with it.
       shared.uAmbient.value.addScaledVector(g.uBeacon.value, 0.003 * cabin.cloud);
-      screens.forEach((s, i) => shared.uPointLight.value[i].set(...s.color).multiplyScalar(0.0011));
-      NAV_COLORS.forEach((c, i) => shared.uPointLight.value[3 + i].set(...c).multiplyScalar(0.09));
-      shared.uPointLight.value[5].set(...BEACON_COLOR).multiplyScalar(0.5 * pulse);
+      screens.forEach((s, i) => shared.uPointLight.value[i].set(...s.color).multiplyScalar(0.0011 * power.on * (power.booting ? 0.6 : 1)));
+      NAV_COLORS.forEach((c, i) => {
+        shared.uPointLight.value[3 + i].set(...c).multiplyScalar(0.09 * power.on);
+        g.uNav.value[i].set(...c).multiplyScalar(NAV_POWER * power.on);
+        lampMats[i].uniforms.uEmissive.value.set(...c).multiplyScalar(0.8 * power.on);
+      });
+      shared.uPointLight.value[5].set(...BEACON_COLOR).multiplyScalar(0.5 * pulse * power.on);
+      // A strike right at the aircraft dazzles: the whole view goes white with its strokes.
+      // (its return strokes, not the glow between them).
+      const stroke = f && f.on && f.kind === "strike" && f.event ? f.power / f.event.scale : 0;
+      g.uDazzle.value = 0.06 * Math.max(stroke - 0.45, 0) ** 2;
 
       // St. Elmo's fire: streamers over the glass, and their violet light in the cabin.
       const fire = streamers.update(t, cabin.elmo);

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { coronaAround, TRAFFIC, trafficLamps } from "./moments.js";
 
 /**
  * The night journey: the aircraft flies itself along a fixed path through the thunderstorm.
@@ -248,6 +249,16 @@ export function createJourney(options = {}) {
     velocity: [0, 0, 0], // the aircraft's (world, m/s)
     air: [0, 0, 0], // how far the air has moved since the start (world, m)
     airVel: [0, 0, 0], // and how fast it moves now (m/s)
+    // Another aircraft (moments.js): its lamps relative to the eye in world axes and their
+    // light (position lights red and green at the wing tips with the strobes, a white one on
+    // the tail, the red beacon on its back), and where it is and how fast it goes (world).
+    traffic: {
+      on: false,
+      pos: Array.from({ length: 4 }, () => new THREE.Vector3()),
+      light: Array.from({ length: 4 }, () => new THREE.Vector3()),
+      at: [0, 0, 0],
+      velocity: [0, 0, 0]
+    },
     // The scud nearest the aircraft, for the cloud shaders (see storm.glsl).
     scud: {
       count: 0,
@@ -257,6 +268,46 @@ export function createJourney(options = {}) {
     }
   };
   const order = bodies.map((b, i) => i);
+
+  // The other aircraft's line: it crosses the path at TRAFFIC.cross, TRAFFIC.lead seconds before
+  // the aircraft gets there, flying from right to left and a little back towards it.
+  const trafficLine = (() => {
+    const s = TRAFFIC.cross * SPEED;
+    const x = path.position(s);
+    x[1] += TRAFFIC.up;
+    const a = path.position(s + 60);
+    const b = path.position(s - 60);
+    const h = Math.atan2(a[0] - b[0], -(a[2] - b[2]));
+    const k = THREE.MathUtils.degToRad(TRAFFIC.angle);
+    const d = [-Math.cos(h) * Math.cos(k) - Math.sin(h) * Math.sin(k), 0, -Math.sin(h) * Math.cos(k) + Math.cos(h) * Math.sin(k)];
+    return { x, d, t: TRAFFIC.cross - TRAFFIC.lead };
+  })();
+  function trafficAt(t, out) {
+    const dt = t - trafficLine.t;
+    out.on = dt > -14 && dt < 8;
+    if (!out.on) {
+      for (const l of out.light) l.set(0, 0, 0);
+      return;
+    }
+    const { x, d } = trafficLine;
+    const v = TRAFFIC.speed;
+    const at = [x[0] + d[0] * v * dt, x[1], x[2] + d[2] * v * dt];
+    out.at = at;
+    out.velocity = [d[0] * v, 0, d[2] * v];
+    // Where it was at time u (for its sound, which takes a while to arrive).
+    out.where = u => [x[0] + d[0] * v * (u - trafficLine.t), x[1], x[2] + d[2] * v * (u - trafficLine.t)];
+    const right = [-d[2], 0, d[0]];
+    const lamps = trafficLamps(t);
+    const place = (i, r, u, f, colour, k) => {
+      out.pos[i].set(at[0] + right[0] * r + d[0] * f - state.x, at[1] + u - state.alt, at[2] + right[2] * r + d[2] * f - state.z);
+      out.light[i].set(colour[0] * k, colour[1] * k, colour[2] * k);
+    };
+    const white = [1, 1, 1];
+    place(0, -7, 0.4, 0, [1, 0.05 + 0.95 * Math.min(1, lamps.strobe / 2), 0.035 + 0.965 * Math.min(1, lamps.strobe / 2)], lamps.steady + lamps.strobe);
+    place(1, 7, 0.4, 0, [0.05 + 0.95 * Math.min(1, lamps.strobe / 2), 1, 0.3 + 0.7 * Math.min(1, lamps.strobe / 2)], lamps.steady + lamps.strobe);
+    place(2, 0, 1.4, -9, white, lamps.steady * 0.6);
+    place(3, 0, 1.6, 1, [1, 0.045, 0.03], lamps.beacon);
+  }
 
   // Capture aid: options.hold keeps the aircraft where it was at that time while time runs on
   // (the air, the mist and the lightning go on), to see the mist move by itself.
@@ -347,7 +398,7 @@ export function createJourney(options = {}) {
       cloud,
       rain: fixed.rain ?? rain,
       hail: fixed.hail ?? hail,
-      elmo: fixed.elmo ?? elmo,
+      elmo: fixed.elmo ?? Math.min(1, elmo * coronaAround(t)),
       turb: fixed.turb ?? Math.min(turb, 1)
     };
   };
@@ -485,6 +536,7 @@ export function createJourney(options = {}) {
       airAt(t, view.air);
       // Rain and mist in the air around the aircraft: the storm's showers (see mist.frag).
       view.airMist = cabin.storm * Math.min(1, 0.35 + cabin.rain);
+      trafficAt(t, view.traffic);
       {
         const a = path.position(t * SPEED + 34);
         const b = path.position(t * SPEED - 34);

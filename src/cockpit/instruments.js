@@ -50,6 +50,7 @@ export function createInstruments({ stormSD = () => -1500 } = {}) {
   const ER = 300;
   let sweepAt = -1; // last azimuth column painted
   let drawnAt = -1e9;
+  let lastMode = 2;
   const euler = new THREE.Euler();
 
   // One radar beam: echo levels along it, weaker behind heavy rain (the beam is used up).
@@ -383,11 +384,32 @@ export function createInstruments({ stormSD = () => -1500 } = {}) {
 
   return {
     texture,
-    /** Redraws when a tenth of a second has passed (or the time jumped). */
-    update(view, t) {
-      if (t >= drawnAt && t - drawnAt < 0.1) return;
+    /**
+     * Redraws when a tenth of a second has passed (or the time jumped). power (moments.js): while
+     * the screens start up after a power failure they show only their backlight, and the lamps
+     * and dials are dark.
+     */
+    update(view, t, power = { on: 1, booting: false }) {
+      const mode = power.on ? (power.booting ? 1 : 2) : 0;
+      if (t >= drawnAt && t - drawnAt < 0.1 && mode === lastMode) return;
       drawnAt = t;
-      draw(view, t);
+      lastMode = mode;
+      if (mode === 2) draw(view, t);
+      else {
+        g.fillStyle = "#07090b";
+        g.fillRect(0, 0, W, H);
+        if (mode === 1) {
+          // The two screens lit, blank: a cold, uneven backlight.
+          for (const x0 of [28, 404]) {
+            const glow = g.createRadialGradient(x0 + 176, 204, 40, x0 + 176, 204, 260);
+            glow.addColorStop(0, "#4f7187");
+            glow.addColorStop(1, "#2a3d4a");
+            g.fillStyle = glow;
+            roundRect(g, x0, 28, 352, 352, 14);
+            g.fill();
+          }
+        }
+      }
       texture.needsUpdate = true;
     }
   };

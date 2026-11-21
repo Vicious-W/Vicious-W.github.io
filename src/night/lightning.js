@@ -1,5 +1,6 @@
 import { mulberry32 } from "../sky/cumulus.js";
 import { STORM, WELLS } from "./storm.js";
+import { STRIKE, SPIDERS } from "./moments.js";
 
 /**
  * Lightning of the night journey. Two lights at any time:
@@ -76,6 +77,12 @@ function makeStrokes(rand, count, lingering = false) {
   return { strokes, duration: end + 0.1 };
 }
 
+// The leaders' light while a web of spider lightning spreads: dim, flickering.
+function crawlLight(t, crawl) {
+  if (t < 0 || t > crawl + 0.05) return 0;
+  return 0.12 + 0.08 * Math.sin(t * 61) * Math.sin(t * 23 + 1);
+}
+
 function strokePower(strokes, t) {
   let p = 0;
   for (const s of strokes) {
@@ -91,6 +98,14 @@ function strokePower(strokes, t) {
 // light over a few frames (the power is still zero), so the first stroke is already clean.
 const LEAD = 0.14;
 
+// A vector of the airframe (x right, y up, -z ahead) in the world, for its attitude q.
+function airframe(q, [x, y, z]) {
+  const tx = 2 * (q.y * z - q.z * y);
+  const ty = 2 * (q.z * x - q.x * z);
+  const tz = 2 * (q.x * y - q.y * x);
+  return [x + q.w * tx + (q.y * tz - q.z * ty), y + q.w * ty + (q.z * tx - q.x * tz), z + q.w * tz + (q.x * ty - q.y * tx)];
+}
+
 /**
  * stormSD(x, y, z): the baked storm distance (m, positive inside), to seat lightning inside
  * the cloud near its surface: lit from within, a cloud glows; lit from the open air, it would
@@ -103,6 +118,7 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
   let flick = null;
   let nextFlash = 1.5;
   let nextFlick = 0.2;
+  const spidersDone = SPIDERS.map(() => false);
   let id = 0;
   const state = {
     flash: { on: false, id: -1, power: 0, pos: [[0, 0, 0], [0, 0, 0], [0, 0, 0]], weight: [1, 0, 0], color: COLOR_IC, depth: 0, bolt: null, boltPower: 0 },
@@ -243,6 +259,151 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     return { id: id++, kind, start: 0, strokes, duration, sources, weight: w.map(v => v / sum), scale, strength, bolt, depth, color: kind === "cg" ? COLOR_CG : COLOR_IC };
   }
 
+  /**
+   * The strike (moments.js): the aircraft becomes part of a channel that comes down out of the
+   * cloud ahead and above to its nose and leaves from its tail towards the sea. The channel is
+   * drawn where the aircraft was when it struck (anchor): in the half second of its strokes the
+   * aircraft drags it along, as a struck aircraft does.
+   */
+  function createStrike(view) {
+    const q = view.qAircraft;
+    const at = v => {
+      const w = airframe(q, v);
+      return [view.x + w[0], view.alt + w[1], view.z + w[2]];
+    };
+    const nose = at([0, -0.75, -2.6]);
+    const tail = at([0, 0.35, 6.8]);
+    const eye = [view.x, view.alt, view.z];
+    // Crooked at every scale: near the eye it is split down to a metre or two.
+    const bolt = [];
+    const split = (p, q, width) => {
+      const len = Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]);
+      const mid = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2];
+      const near = Math.hypot(mid[0] - eye[0], mid[1] - eye[1], mid[2] - eye[2]);
+      if (len < Math.max(1.2, near * 0.06)) {
+        bolt.push({ a: p, b: q, width, glow: 1 });
+        return;
+      }
+      const off = len * 0.28;
+      mid[0] += (rand() - 0.5) * off;
+      mid[1] += (rand() - 0.5) * off * 0.6;
+      mid[2] += (rand() - 0.5) * off;
+      split(p, mid, width);
+      split(mid, q, width);
+    };
+    split(at([-90, 430, -180]), nose, 1);
+    split(tail, at([120, -980, 240]), 1);
+    // A few branches off the upper channel, away from the aircraft.
+    const main = bolt.slice();
+    for (let k = 0; k < 4; k++) {
+      const s = main[Math.floor(rand() * main.length * 0.6)];
+      const len = 60 + 140 * rand();
+      const a = rand() * Math.PI * 2;
+      bolt.push(...makeChannel(rand, s.b, [s.b[0] + Math.cos(a) * len, s.b[1] - len * (0.3 + 0.4 * rand()), s.b[2] + Math.sin(a) * len], { depth: 3, rough: 0.35, branches: 0 }).map(b => ({ ...b, width: 0.5, glow: 0.5 })));
+    }
+    // Four strokes a few hundredths of a second apart, each a blinding peak with little glow
+    // between: the flicker of a strike seen from inside it.
+    const strokes = [0, 0.07, 0.16, 0.29].map((t, i) => ({ t: t + 0.02 * rand(), a: [1.4, 0.8, 0.65, 0.5][i], tau: 0.025, glow: 0.06 + 0.04 * rand(), hold: 0.05 }));
+    const duration = 0.6;
+    return {
+      id: id++,
+      kind: "strike",
+      start: STRIKE.t,
+      strokes,
+      duration: Math.max(duration, 0.6),
+      sources: [nose, at([0, 70, -50]), at([0, -90, 70])],
+      weight: [0.5, 0.25, 0.25],
+      scale: 10,
+      strength: 1.4,
+      bolt,
+      anchor: [view.x, view.alt, view.z],
+      depth: 0,
+      color: COLOR_CG
+    };
+  }
+
+  /**
+   * Spider lightning (moments.js): a web of channels that crawls along the underside of the
+   * anvil, from far ahead towards and over the aircraft, a few hundred metres under the cloud
+   * (keeping to the cloud's base where it rises and falls), branching as it goes; when it has
+   * spread, its return strokes light the whole web. Each segment knows when the leader reached
+   * it (at, s from the start), so the web is drawn as it grows.
+   */
+  function createSpider(view, crawl) {
+    // The underside of the anvil above (x, z): open air from the aircraft's height up to it
+    // (not a tower's flank), and high.
+    const ceiling = (x, z) => {
+      for (let y = view.alt + 300; y < 14000; y += 100) if (stormSD(x, y, z) > 0) return y >= 8500 ? y : null;
+      return null;
+    };
+    const fx = view.forward.x;
+    const fz = view.forward.z;
+    const fl = Math.hypot(fx, fz) || 1;
+    const ahead = [fx / fl, fz / fl];
+    const side = range(-1, 1);
+    let start = null;
+    for (let i = 0; i < 12 && !start; i++) {
+      const d = range(6000, 12000);
+      const x = view.x + ahead[0] * d - ahead[1] * side * 2000;
+      const z = view.z + ahead[1] * d + ahead[0] * side * 2000;
+      const c = ceiling(x, z);
+      if (c) start = [x, c - range(400, 700), z];
+    }
+    if (!start) return null;
+    const speed = 11000 / crawl; // the web spreads about 11 km in crawl seconds
+    const bolt = [];
+    const grow = (p, heading, length, at, width, depth) => {
+      let q = p;
+      let h = heading;
+      let t = at;
+      for (let walked = 0; walked < length; ) {
+        const step = range(200, 380);
+        h += range(-0.35, 0.35);
+        const x = q[0] + Math.cos(h) * step;
+        const z = q[2] + Math.sin(h) * step;
+        const c = ceiling(x, z);
+        if (!c) return;
+        // Under the cloud, rising and falling with it, but gently.
+        const next = [x, Math.min(c - 300, Math.max(q[1] - 50, Math.min(q[1] + 50, c - range(400, 700)))), z];
+        const seg = Math.hypot(next[0] - q[0], next[1] - q[1], next[2] - q[2]);
+        bolt.push({ a: q, b: next, width, glow: 1, at: t, main: depth === 0 });
+        t += seg / speed;
+        walked += seg;
+        q = next;
+        if (depth < 2 && rand() < (depth === 0 ? 0.16 : 0.08)) {
+          grow(q, h + (rand() < 0.5 ? -1 : 1) * range(0.5, 1.3), length * range(0.25, 0.5), t, width * 0.6, depth + 1);
+        }
+        if (bolt.length > 700) return;
+      }
+    };
+    // Towards the aircraft and past it, spreading to both sides.
+    const back = Math.atan2(view.z - start[2], view.x - start[0]);
+    grow(start, back + range(-0.4, 0.4), range(9000, 13000), 0, 0.6, 0);
+    grow(start, back + range(1.2, 2.0) * (rand() < 0.5 ? -1 : 1), range(3000, 6000), 0.05, 0.45, 1);
+    if (bolt.length < 10) return null;
+    // The light: in the cloud just above the channel, where the leader is and has been.
+    const main = bolt.filter(s => s.main);
+    const pick = f => main[Math.min(main.length - 1, Math.floor(f * main.length))].b;
+    const lift = p => [p[0], p[1] + 250, p[2]];
+    const { strokes, duration } = makeStrokes(rand, 2 + Math.floor(rand() * 2));
+    for (const s of strokes) s.t += crawl;
+    return {
+      id: id++,
+      kind: "spider",
+      start: 0,
+      crawl,
+      strokes,
+      duration: duration + crawl,
+      sources: [lift(pick(0.15)), lift(pick(0.5)), lift(pick(0.85))],
+      weight: [0.34, 0.33, 0.33],
+      scale: range(10, 18),
+      strength: 1,
+      bolt,
+      depth: 120,
+      color: COLOR_IC
+    };
+  }
+
   function createFlick(view) {
     // Away from the aircraft, so it shows the storm in depth rather than lighting what is near.
     const inside = centreDistance(view) < 11000;
@@ -291,6 +452,8 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     f.depth = flash.depth;
     f.bolt = flash.bolt;
     f.boltPower = flash.bolt ? Math.min(p, 1.5) : 0;
+    f.kind = flash.kind;
+    f.anchor = flash.anchor ?? null;
     // For the sound: the whole flash (when it starts, its strokes, its channel).
     f.event = flash;
   }
@@ -315,6 +478,20 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
 
     /** Advance to time t (s) of the journey; dt is the frame length. */
     update(view, t, dt) {
+      // The strike happens when it is due, whatever else is lit.
+      if (t >= STRIKE.t - LEAD && t < STRIKE.t + 0.5 && (!flash || flash.kind !== "strike")) {
+        flash = createStrike(view);
+      }
+      SPIDERS.forEach((sp, i) => {
+        if (!flash && !spidersDone[i] && t >= sp.t - LEAD && t < sp.t + 4) {
+          spidersDone[i] = true;
+          const web = createSpider(view, sp.crawl);
+          if (web) {
+            flash = web;
+            flash.start = Math.max(sp.t, t + LEAD * 0.5);
+          }
+        }
+      });
       if (!flash && t >= nextFlash - LEAD) {
         // Inside the storm: among its towers, or in its cloud.
         const inside = centreDistance(view) < 9500 || stormSD(view.x, view.alt, view.z) > -1000;
@@ -334,7 +511,8 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
         flick = null;
         nextFlick = t + LEAD + range(0, 0.3);
       }
-      writeFlash(flash ? framePower(flash.strokes, t - flash.start, dt) : 0);
+      writeFlash(flash ? framePower(flash.strokes, t - flash.start, dt) + (flash.kind === "spider" ? crawlLight(t - flash.start, flash.crawl) : 0) : 0);
+      if (flash) state.flash.age = t - flash.start;
       writeFlick(flick ? framePower(flick.strokes, t - flick.start, dt) : 0);
       state.glow = glowAt(view, t);
       return state;

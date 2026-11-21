@@ -37,8 +37,8 @@ uniform vec3 uFlickPos;
 uniform float uFlickPower;
 uniform vec3 uFlickColor;
 uniform float uFlickDepth;
-uniform vec3 uLampPos[4];     // the aircraft's lamps, relative to the eye in world axes (m)
-uniform vec3 uLamp[4];        // and their intensities
+uniform vec3 uLampPos[8];     // lamps, relative to the eye in world axes (m): the aircraft's
+uniform vec3 uLamp[8];        // four, then another's (moments.js); and their intensities
 uniform vec3 uTurbA;          // where the two layers of turbulence are (m, wrapped)
 uniform vec3 uTurbB;
 uniform vec3 uShutter;        // how far the aircraft flies while the eye takes a frame in (world, m)
@@ -216,7 +216,8 @@ void main() {
       if (uFlickPower > 0.0) S += uFlickColor * (uFlickPower * sourceFalloff(length(uFlickPos - p), 0.5) * flickLit);
       // The aircraft's lamps, dimmed by the mist between (its average along this ray so far).
       float sigmaBar = 0.5 * (sigma + odSum / max(t, 1.0));
-      for (int k = 0; k < 4; k++) {
+      for (int k = 0; k < 8; k++) {
+        if (uLamp[k].r + uLamp[k].g + uLamp[k].b <= 0.0) continue;
         vec3 lp = uLampPos[k] - (p - origin);
         float d2 = dot(lp, lp);
         float dl = sqrt(d2);

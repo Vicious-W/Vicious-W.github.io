@@ -23,7 +23,9 @@ uniform vec2 uTanHalf;
 uniform vec2 uScreen;
 uniform float uPixels;
 uniform float uNear;
+uniform float uPoint; // 1: each segment is a point (a lamp): a round glow
 out float vAcross;
+out float vAlong;
 out float vGlow;
 out float vWidth;
 out float vDist;
@@ -50,9 +52,10 @@ void main() {
   dir = len > 1e-3 ? dir / len : vec2(1.0, 0.0);
   vec2 nrm = vec2(-dir.y, dir.x);
   float halfWidth = uPixels * (0.5 + 0.5 * aWidth);
-  vec2 pos = mix(pa, pb, aCorner.x) + nrm * aCorner.y * halfWidth + dir * (aCorner.x * 2.0 - 1.0) * halfWidth * 0.5;
+  vec2 pos = mix(pa, pb, aCorner.x) + nrm * aCorner.y * halfWidth + dir * (aCorner.x * 2.0 - 1.0) * halfWidth * (uPoint > 0.5 ? 1.0 : 0.5);
   gl_Position = vec4(pos / (0.5 * uScreen), 0.0, 1.0);
   vAcross = aCorner.y * halfWidth;
+  vAlong = uPoint > 0.5 ? (aCorner.x * 2.0 - 1.0) * halfWidth : 0.0;
   vGlow = aGlow;
   vWidth = aWidth;
   vDist = mix(length(va), length(vb), aCorner.x);
@@ -68,7 +71,9 @@ uniform float uPower;
 uniform vec3 uColor;
 uniform float uCoreScale;
 uniform float uOcclude; // 1: hide what lies behind the clouds
+uniform float uPoint;
 in float vAcross;
+in float vAlong;
 in float vGlow;
 in float vWidth;
 in float vDist;
@@ -83,9 +88,11 @@ void main() {
     float distKm = vDist * 1e-3;
     seen = (depthKm < 0.0 || distKm < depthKm - 0.2) ? 1.0 : visibility;
   }
-  float x = abs(vAcross) / uCoreScale;
+  float x = length(vec2(vAcross, vAlong)) / uCoreScale;
   float core = exp(-x * x / (vWidth * vWidth + 0.05)) * 1.6;
   float halo = exp(-x / 4.0) * 0.22;
+  // A lamp in rain and mist, seen by the eye: a wide, faint glare around the point.
+  if (uPoint > 0.5) halo += exp(-x / 9.0) * 0.06 + exp(-x / 28.0) * 0.012;
   float i = (core + halo) * vGlow * uPower * seen;
   outColor = vec4(uColor * i, 1.0);
 }
@@ -133,6 +140,7 @@ export function createRibbons(renderer, maxSegments = 1200) {
       uScreen: { value: new THREE.Vector2(1, 1) },
       uPixels: { value: 12 },
       uNear: { value: 5 },
+      uPoint: { value: 0 },
       uCoreScale: { value: 1 },
       uOcclude: { value: 0 },
       uScene: { value: null },
@@ -179,8 +187,9 @@ export function createRibbons(renderer, maxSegments = 1200) {
      * segments; pixels: half-width of the ribbon on screen; occlusion: the cloud image
      * (textures[0] rgb + visibility, [1] depth) to hide what lies behind clouds, or null.
      */
-    render({ eye, right, up, forward, tanHalf, width, height, power, color, pixels, coreScale, near, occlusion = null }, target = null) {
+    render({ eye, right, up, forward, tanHalf, width, height, power, color, pixels, coreScale, near, occlusion = null, points = false }, target = null) {
       const u = material.uniforms;
+      u.uPoint.value = points ? 1 : 0;
       u.uCam.value.copy(eye);
       u.uCamRight.value.copy(right);
       u.uCamUp.value.copy(up);
@@ -204,6 +213,49 @@ export function createRibbons(renderer, maxSegments = 1200) {
   };
 }
 
+/**
+ * Lamps seen directly (another aircraft's: moments.js), as small round glows, dimmed by the
+ * clouds before them (the mist near the aircraft dims them in the glass pass). lamps: { pos,
+ * light } relative to the eye in world axes.
+ */
+export function createLampPoints(renderer, count = 4) {
+  const points = Array.from({ length: count }, () => createRibbons(renderer, 1));
+  const eye = new THREE.Vector3();
+  return {
+    render(view, lamps, sceneTarget, width, height, target = null, gain = 1) {
+      const coreScale = Math.max(height / 1080, 0.5);
+      eye.set(view.x, view.alt, view.z);
+      lamps.pos.forEach((p, i) => {
+        const l = lamps.light[i];
+        const intensity = Math.max(l.x, l.y, l.z);
+        if (intensity <= 0) return;
+        const d2 = Math.max(p.lengthSq(), 400);
+        const at = [view.x + p.x, view.alt + p.y, view.z + p.z];
+        points[i].set([{ a: at, b: at, width: 1, glow: 1 }]);
+        points[i].render(
+          {
+            eye,
+            right: view.right,
+            up: view.up,
+            forward: view.forward,
+            tanHalf: view.tanHalf,
+            width,
+            height,
+            power: (gain * 10000 * intensity) / d2,
+            color: [l.x / intensity, l.y / intensity, l.z / intensity],
+            pixels: 70 * coreScale,
+            coreScale,
+            near: 1,
+            occlusion: sceneTarget,
+            points: true
+          },
+          target
+        );
+      });
+    }
+  };
+}
+
 /** The visible channel of the current flash. */
 export function createBolts(renderer) {
   const ribbons = createRibbons(renderer, 1200);
@@ -215,28 +267,50 @@ export function createBolts(renderer) {
      * gain scales its light: 1 for a tone-mapped image, more for a linear one.
      */
     render(view, flash, sceneTarget, width, height, target = null, gain = 1) {
-      if (!flash || !flash.on || !flash.bolt || flash.boltPower <= 0.01) return;
-      if (flash.bolt !== current) {
-        ribbons.set(flash.bolt);
-        current = flash.bolt;
+      if (!flash || !flash.on || !flash.bolt) return;
+      const spider = flash.kind === "spider";
+      if (spider) {
+        // The web as far as its leaders have reached: the tips bright, behind them a glow that
+        // fades; then the strokes light all of it, the main channel most.
+        const age = flash.age ?? 0;
+        const crawl = flash.event ? flash.event.crawl : 1;
+        const lit = [];
+        for (const s of flash.bolt) {
+          const since = age - s.at;
+          if (since < 0) continue;
+          const lead = age < crawl + 0.05 ? 0.9 * Math.exp(-since / 0.06) + 0.25 * Math.exp(-since / 0.5) : 0;
+          const stroke = age >= crawl ? Math.min(flash.boltPower, 1.5) * (s.main ? 1 : 0.5) : 0;
+          const glow = lead + stroke;
+          if (glow > 0.01) lit.push({ a: s.a, b: s.b, width: s.width, glow });
+        }
+        ribbons.set(lit);
+        current = null;
+      } else {
+        if (flash.boltPower <= 0.01) return;
+        if (flash.bolt !== current) {
+          ribbons.set(flash.bolt);
+          current = flash.bolt;
+        }
       }
-      // About 2 px of core at 1080 lines, a halo of a few times that.
+      // About 2 px of core at 1080 lines, a halo of a few times that. The strike's channel is
+      // metres away: wide, blinding, in front of any cloud, and it moves with the aircraft.
       const coreScale = Math.max(height / 1080, 0.5);
+      const strike = flash.kind === "strike";
       ribbons.render(
         {
-          eye: eye.set(view.x, view.alt, view.z),
+          eye: strike && flash.anchor ? eye.set(...flash.anchor) : eye.set(view.x, view.alt, view.z),
           right: view.right,
           up: view.up,
           forward: view.forward,
           tanHalf: view.tanHalf,
           width,
           height,
-          power: flash.boltPower * gain,
+          power: (spider ? 1 : flash.boltPower) * gain * (strike ? 4 : 1),
           color: flash.color,
-          pixels: 14 * coreScale,
-          coreScale,
-          near: 5,
-          occlusion: sceneTarget
+          pixels: (strike ? 40 : 14) * coreScale,
+          coreScale: strike ? coreScale * 3 : coreScale,
+          near: strike ? 1.5 : 5,
+          occlusion: strike ? null : sceneTarget
         },
         target
       );

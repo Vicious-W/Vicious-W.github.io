@@ -49,6 +49,7 @@ uniform vec3 uShieldV;
 uniform vec2 uShieldHalf;
 uniform vec4 uGlow[GLOWS];    // St. Elmo's fire: where a discharge clings (xyz), how bright (w)
 uniform float uExposure;
+uniform float uDazzle;        // a strike at the aircraft: light over everything the eye sees
 uniform vec2 uScreen;
 uniform float uFrame;
 out vec4 outColor;
@@ -366,6 +367,7 @@ void main() {
   // The cockpit on top.
   vec4 ck = texture(uCockpit, vUv);
   col = col * (1.0 - clamp(ck.a, 0.0, 1.0)) + ck.rgb * uExposure;
+  col += vec3(0.9, 0.93, 1.0) * uDazzle * uExposure;
   col = linearToSrgb(agxLook(col, NIGHT_CONTRAST, 1.0));
   float dither = (h21(gl_FragCoord.xy + mod(uFrame, 16.0) * 7.31) + h21(gl_FragCoord.yx * 1.37 + 3.1) - 1.0) / 255.0;
   if (uShow == 1) col = linearToSrgb(agx(mist.rgb * 4.0));
