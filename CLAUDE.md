@@ -12,7 +12,7 @@
   夜航做好后再考虑其他）。改共用代码时白天不能变。
 - 场景二《夜航雷暴》：夜里飞进雷暴，越飞越深，最终飞进异星云海（恐怖）。已是独立的部分，
   **主人全权交给你**（2026-11-21）：里程碑由你按 `PLAN.md` 的通过标准自己判断，做完就上线。
-  N2 通过（第五版，2026-11-18）；N3 声音第三版（2026-11-21）；接着做 N4–N6。
+  N2 通过（第五版，2026-11-18）；N3 声音（第三版）、N4 第一片雷暴（2026-11-21）完成；接着做 N5。
 - 主人的长期设想：做成一款充满未知、可以不断探索的恐怖航行游戏。
 
 ## 和主人合作的规则
@@ -113,14 +113,16 @@ npm run check          # 运行几个场景，报告控制台错误和所用的�
 - `src/shaders/`：`common.glsl`（大气、相函数、AgX 调色）、`transmittance/multiscatter/skyview`（Hillaire 2020）、
   `noise.frag`（烘焙用，含 2 m 精度的雾噪声）、`cloudmap/cloudslope`（布云）、`clouds.frag`（光线步进：密度、光照、雷暴和闪电）、
   `storm.glsl`（雷暴的云：形状、雾的边缘带、碎云和空腔、雷暴的光照；`clouds.frag` 和 `mist.frag` 共用）、
-  `mist.frag`/`misttemporal.frag`（近处雾和它的时间混合）、
+  `mist.frag`/`misttemporal.frag`（近处雾和它的时间混合）、`funnel.frag`（龙卷，画在合成之后）、
   `temporal.frag`、`composite.frag`、`glass.frag`（夜里的最后一道：玻璃、水、雨、灯光、调色）。
 - `src/night/`：`storm.js`（烘焙的雷暴距离场：塔、云砧、低云层、竖井、云洞）、`journey.js`（航线、
-  航线上的碎云和空腔 `SCUD`、座舱时间线、颠簸）、`lightning.js`（主闪电和远处闪烁的调度）、`bolts.js`（发光的线：闪电通道、电弧）。
+  航线上的碎云和空腔 `SCUD`、座舱时间线、颠簸、另一架飞机的位置）、`moments.js`（第一片雷暴里一次性的
+  事件和它们的时间：龙卷、蛛网闪电、另一架飞机、被击中和断电、精灵闪电）、`lightning.js`（主闪电和远处闪烁的调度）、`bolts.js`（发光的线：闪电通道、电弧）。
 - `src/cockpit/`：`cockpit.js`（座舱几何、照明、玻璃一道的参数）、`lamps.js`（机上的灯：座舱和近处雾共用）、`instruments.js`（仪表画面，
   无文字；雷达读取雷暴）、`streamers.js`（圣埃尔摩之火的电弧）。
 - `src/audio/`：`audio.js`（声音的总装：座舱、颠簸、雷的安排，第一次点击后淡入）、`weather.worklet.js`
   （音频线程上的雨、冰雹、电弧声）、`thunder.js`（闪电通道的形状）、`thunder.worker.js`/`thundersynth.js`
   （后台线程合成雷声）。
+- `index.html`：页面；`#door` 是白天和夜航之间的入口（右下角的小圆点）。
 - `tools/`：上表的检查工具（只用于开发，不会部署）。
 - `docs/reference/past-vision.md`：旧项目构想的摘录，仅供参考。
