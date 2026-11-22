@@ -1,6 +1,6 @@
 import { channelThrough, finer, flatten } from "./thunder.js";
 import { echoResponse } from "./thundersynth.js";
-import { ORB, RADIO, STRIKE, catchTimes, radioCalls } from "../night/moments.js";
+import { CREATURE, ORB, RADIO, STRIKE, catchTimes, radioCalls } from "../night/moments.js";
 import { createRadio } from "./radio.js";
 
 /**
@@ -17,6 +17,8 @@ import { createRadio } from "./radio.js";
  * - another aircraft passing close (moments.js): the roar of its engines, rising in pitch as it
  *   comes and falling as it goes, from where it is;
  * - the orb (moments.js): an unsteady electric hum, a hiss and crackle, from where it is;
+ * - the creature (moments.js): when it shows close, a long, very low moan reaches the cabin
+ *   seconds after the flash, from where it is;
  * - the radio (radio.js): from the second storm on, static that crackles with the lightning, and
  *   now and then a voice in it, too broken to make out;
  * - thunder: every flash's channel heard part by part as its sound arrives (thunder.js,
@@ -389,6 +391,37 @@ export function createAudio({ solo = null } = {}) {
     return b;
   });
 
+  // ---- the creature's moan ------------------------------------------------------------------
+  // Three harmonics of a very low voice, sliding down, through the dark air (low-passed), with a
+  // slow beat in it; made each time it is heard.
+  const moaned = new Set();
+  function moan(at, pan, level) {
+    const out = new GainNode(ctx, { gain: 0 });
+    const air = new BiquadFilterNode(ctx, { type: "lowpass", frequency: 190, Q: 0.8 });
+    const beat = new OscillatorNode(ctx, { frequency: 1.1 + 0.4 * rand() });
+    const depth = new GainNode(ctx, { gain: 0.35 });
+    const swell = new GainNode(ctx, { gain: 0.65 });
+    beat.connect(depth).connect(swell.gain);
+    air.connect(swell).connect(out).connect(new StereoPannerNode(ctx, { pan })).connect(new GainNode(ctx, { gain: only("thunder") })).connect(canopy);
+    const f0 = 29 + 6 * rand();
+    const voices = [1, 1.5, 2.02].map((k, i) => {
+      const o = new OscillatorNode(ctx, { type: "sawtooth", frequency: f0 * k });
+      o.frequency.setValueAtTime(f0 * k, at);
+      o.frequency.exponentialRampToValueAtTime(f0 * k * 0.82, at + 6.5);
+      o.connect(new GainNode(ctx, { gain: [1, 0.45, 0.25][i] })).connect(air);
+      return o;
+    });
+    out.gain.setValueAtTime(0, at);
+    out.gain.linearRampToValueAtTime(level, at + 1.8);
+    out.gain.setTargetAtTime(level * 0.8, at + 1.8, 1.5);
+    out.gain.setTargetAtTime(0, at + 4.2, 1.1);
+    for (const o of [...voices, beat]) {
+      o.start(at);
+      o.stop(at + 9);
+    }
+    voices[0].onended = () => out.disconnect();
+  }
+
   // ---- the radio -------------------------------------------------------------------------------
   const radioBus = new GainNode(ctx, { gain: MIX.radio * only("radio") });
   radioBus.connect(cabin);
@@ -605,6 +638,18 @@ export function createAudio({ solo = null } = {}) {
         if (rand() < dt * 6 * k) play(crackles[Math.floor(rand() * 3)], (MIX.orb * 60 * k) / dist, pan, now, canopy);
       } else {
         orbLevel.gain.setTargetAtTime(0, now, 0.3);
+      }
+
+      // The creature, close: its moan, as long after the flash as sound takes to come.
+      const cr = view.creature;
+      if (cr && cr.on && cr.world) {
+        CREATURE.forEach((c, i) => {
+          if (moaned.has(i) || c.size <= 0 || c.along > 4000 || view.time < c.flashes[0] || view.time > c.until) return;
+          moaned.add(i);
+          const dist = Math.hypot(cr.pos.x, cr.pos.y - view.alt, cr.pos.z);
+          const pan = Math.max(-1, Math.min(1, (cr.pos.x * view.right.x + cr.pos.z * view.right.z) / Math.max(Math.hypot(cr.pos.x, cr.pos.z), 1)));
+          moan(Math.max(toAudio(c.flashes[0] + dist / 343), now), pan, 0.35 * Math.min(1, 2500 / dist));
+        });
       }
 
       // The radio: alive from the second storm on, with its calls.
