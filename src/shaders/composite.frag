@@ -30,6 +30,7 @@ uniform vec3 uFlickColor;
 uniform float uLinearOut; // 1: leave the image linear (exposed) for the cockpit's glass pass to finish
 uniform float uAlien;       // the abyss (storm.glsl): no sea, no moon; the dark below
 uniform float uAbyssTop;    // the top of its topmost deck (m)
+uniform vec3 uAbyssHaze;    // its air, lit from below by the deep (clouds.frag): radiance, far off
 uniform vec4 uSprite;       // a red sprite: where it stands (x, z relative to the camera, m), how bright, how many columns
 uniform float uSpriteSeed;
 uniform float uTime;
@@ -232,10 +233,11 @@ void main() {
   vec3 color = sky * scene.a + scene.rgb;
 #ifdef NIGHT
   // In the abyss the sky is seen only up through its topmost deck, through the haze on the way
-  // there; between the decks the view ends in the dark, a dim violet glow rising from deep down.
+  // there; between the decks the view ends in its haze, lit from below, and further down in the
+  // violet glow rising from the deep.
   if (uAlien > 0.0) {
     float down = clamp(-dir.y, 0.0, 1.0);
-    vec3 abyss = vec3(0.0010, 0.0004, 0.0014) * (0.15 + 0.85 * pow(down, 1.3));
+    vec3 abyss = uAbyssHaze * (1.0 + 3.0 * pow(down, 1.3));
     float rise = max(uAbyssTop - camAlt, 0.0);
     float clear = dir.y > 1e-4 ? exp(-rise / (dir.y * ABYSS_HAZE)) : 0.0;
     color = mix(color, mix(abyss, sky, clear) * scene.a + scene.rgb, uAlien);

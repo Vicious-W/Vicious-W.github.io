@@ -6,6 +6,7 @@ import { createInstruments } from "./instruments.js";
 import { createStreamers } from "./streamers.js";
 import { WING, BEACONS, NAV, BEACON_COLOR, NAV_COLORS, BEACON_POWER, NAV_POWER, beaconPulse } from "./lamps.js";
 import { deepLight } from "../night/abyss.js";
+import { TWIN } from "../night/moments.js";
 import vertexShader from "../shaders/fullscreen.vert?raw";
 import common from "../shaders/common.glsl?raw";
 import glassSrc from "../shaders/glass.frag?raw";
@@ -432,6 +433,25 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
   twinGroup.add(bubble);
   const twinCamera = new THREE.PerspectiveCamera(60, 1, 0.3, 8000);
   let twinLayer = null;
+  // Its shaders are compiled now, in the background, then drawn once into a layer like its own
+  // (the driver finishes a shader at its first draw): not when it first shows, which would stall
+  // the frames it comes in. (Bound to such a layer, they are the same programs.)
+  {
+    const probe = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true, samples: 4 });
+    let previous = renderer.getRenderTarget();
+    renderer.setRenderTarget(probe);
+    const compiled = renderer.compileAsync ? renderer.compileAsync(twinScene, twinCamera) : Promise.resolve(renderer.compile(twinScene, twinCamera));
+    renderer.setRenderTarget(previous);
+    compiled
+      .then(() => {
+        previous = renderer.getRenderTarget();
+        renderer.setRenderTarget(probe);
+        renderer.render(twinScene, twinCamera);
+        renderer.setRenderTarget(previous);
+      })
+      .catch(() => {})
+      .finally(() => probe.dispose());
+  }
 
   // Where the instruments' face and the glare shield are, for their reflections in the glass
   // and for the light they shed.
@@ -646,6 +666,22 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
       // (in this eye's world frame), and by its own lamps and screens.
       const tw = view.twin;
       const twinOn = !!(tw && tw.on);
+      // Its layer (large: making it stalls a frame) is made a while before it comes, and let go
+      // once it has gone.
+      const twinNear = view.time > TWIN.t - 20 && view.time < TWIN.gone + 2;
+      if ((twinNear || twinOn) && (!twinLayer || twinLayer.width !== width || twinLayer.height !== height)) {
+        twinLayer?.dispose();
+        twinLayer = new THREE.WebGLRenderTarget(width, height, {
+          type: THREE.HalfFloatType,
+          format: THREE.RGBAFormat,
+          depthBuffer: true,
+          stencilBuffer: false,
+          samples: 4
+        });
+      } else if (!twinNear && !twinOn && twinLayer) {
+        twinLayer.dispose();
+        twinLayer = null;
+      }
       if (twinOn) {
         const qa = view.qAircraft;
         const ts = twinShared;
@@ -678,16 +714,6 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
         // (Its screens a little brighter than this one's: they light its empty seat.)
         for (let i = 0; i < 3; i++) ts.uPointLight.value[i].multiplyScalar(3);
         ts.uFaceGain.value = shared.uFaceGain.value * tw.lit;
-        if (!twinLayer || twinLayer.width !== width || twinLayer.height !== height) {
-          twinLayer?.dispose();
-          twinLayer = new THREE.WebGLRenderTarget(width, height, {
-            type: THREE.HalfFloatType,
-            format: THREE.RGBAFormat,
-            depthBuffer: true,
-            stencilBuffer: false,
-            samples: 4
-          });
-        }
         twinCamera.position.copy(ts.uEye.value);
         twinCamera.quaternion.copy(qa).multiply(view.qHead);
         twinCamera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(view.tanHalf.y));

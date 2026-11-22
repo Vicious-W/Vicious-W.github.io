@@ -16,7 +16,7 @@ import mistSrc from "../shaders/mist.frag?raw";
 import mistTemporalSrc from "../shaders/misttemporal.frag?raw";
 import funnelSrc from "../shaders/funnel.frag?raw";
 import orbSrc from "../shaders/orb.frag?raw";
-import { DECKS, DECK_MARCHED_LOW, deepLight, SWIRLS } from "../night/abyss.js";
+import { DECKS, DECK_MARCHED_LOW, DEEP, deepLight, SWIRLS } from "../night/abyss.js";
 
 // An empty 1x1x1 volume, for a storm not baked yet.
 function placeholder3D() {
@@ -392,6 +392,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
             SWIRL: { value: SWIRLS.map(s => new THREE.Vector4(...s)) },
             uSlabBottom: { value: night.base },
             uAbyssGlow: { value: new THREE.Vector3() },
+            uAbyssHaze: { value: new THREE.Vector3() },
             // The creature (clouds.frag, moments.js).
             uCreature: { value: new THREE.Vector4() },
             uCreatureTurn: { value: new THREE.Vector2(1, 0) },
@@ -454,6 +455,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
             uFlickColor: { value: new THREE.Vector3(0.72, 0.82, 1.0) },
             uAlien: { value: 0 },
             uAbyssTop: { value: Math.max(...DECKS.map(([mid, half]) => mid + half)) },
+            uAbyssHaze: { value: new THREE.Vector3() },
             uSprite: { value: new THREE.Vector4() },
             uSpriteSeed: { value: 0 },
             uTime: { value: 0 },
@@ -644,6 +646,18 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         }
       })
     : null;
+  // (Compiled in the background from the start too, then drawn once where it does not show (the
+  // driver finishes a shader at its first draw): else the frames the orb shows in stall.)
+  orbPass
+    ?.compile(renderer)
+    .then(() => {
+      const probe = floatTarget(1, 1);
+      const previous = renderer.getRenderTarget();
+      orbPass.render(renderer, probe);
+      renderer.setRenderTarget(previous);
+      probe.dispose();
+    })
+    .catch(() => {});
 
   let mistTarget = null; // this frame's march: light and transmittance, depth
   let mistHistory = [null, null];
@@ -673,15 +687,24 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
     alt: 3000
   };
 
-  function allocate() {
+  // The clouds' targets at the current scale. The history keeps the image it holds through a
+  // change of scale (the temporal pass reads it by its uv), so the safety net's steps do not
+  // flash the picture back to noise: each history target is remade at the new size only when it
+  // is next written (render).
+  const cloudSize = () => [Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale))];
+  function allocateClouds() {
     cloudTarget?.dispose();
-    history.forEach(target => target?.dispose());
-    const w = Math.max(1, Math.round(width * scale));
-    const h = Math.max(1, Math.round(height * scale));
+    const [w, h] = cloudSize();
     // Checkerboard: the cloud pass renders half the pixels each frame into a half-width target.
     cloudTarget = floatTarget(Math.ceil(w / 2), h, { count: targets });
-    history = [floatTarget(w, h, { count: targets }), floatTarget(w, h, { count: targets })];
     cloudPass.uniforms.uResolution.value.set(w, h);
+  }
+
+  function allocate() {
+    allocateClouds();
+    history.forEach(target => target?.dispose());
+    const [w, h] = cloudSize();
+    history = [floatTarget(w, h, { count: targets }), floatTarget(w, h, { count: targets })];
     if (mistPass) {
       mistTarget?.dispose();
       mistHistory.forEach(target => target?.dispose());
@@ -735,7 +758,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
     setCloudScale(next) {
       if (Math.abs(next - scale) < 1e-3) return;
       scale = next;
-      allocate();
+      allocateClouds();
     },
 
     resetHistory() {
@@ -828,6 +851,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         u.uAlien.value = alien;
         u.uSlabBottom.value = alien > 0 ? DECK_MARCHED_LOW : night.base;
         u.uAbyssGlow.value.set(...deepLight(-Infinity, view.deepGlow ?? 0)).multiplyScalar(alien);
+        u.uAbyssHaze.value.set(...deepLight(view.alt, view.deepGlow ?? 0)).multiplyScalar(DEEP.haze);
+        compositePass.uniforms.uAbyssHaze.value.copy(u.uAbyssHaze.value);
         sunIlluminance.copy(moonFull).multiplyScalar(1 - alien);
         const cr = view.creature;
         if (cr && cr.on) {
@@ -920,7 +945,14 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
       }
 
       const read = history[historyIndex];
-      const write = history[1 - historyIndex];
+      let write = history[1 - historyIndex];
+      {
+        const [w, h] = cloudSize();
+        if (write.width !== w || write.height !== h) {
+          write.dispose();
+          write = history[1 - historyIndex] = floatTarget(w, h, { count: targets });
+        }
+      }
       const tu = temporalPass.uniforms;
       setCamera(tu, view);
       tu.uCamAlt.value = view.alt;

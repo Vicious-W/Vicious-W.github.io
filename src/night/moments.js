@@ -137,7 +137,7 @@ export function trafficLamps(t) {
  * the base and is lost in the cloud. Times (s): it shows, it is alongside, it leaves, it is gone.
  * radius (m); power: its intensity (scene units per steradian); its colour.
  */
-export const ORB = Object.freeze({ t: 1197, settle: 1207, leave: 1231, gone: 1252, radius: 0.7, power: 24, color: [0.5, 0.72, 1.0] });
+export const ORB = Object.freeze({ t: 1197, settle: 1207, leave: 1231, rise: 18, gone: 1262, radius: 0.7, power: 24, color: [0.5, 0.72, 1.0], away: [160, 420] });
 
 const ease = u => u * u * (3 - 2 * u);
 
@@ -166,11 +166,12 @@ export function orbAt(t, ceiling = 520) {
     return { at: from.map((v, i) => v + (side[i] - v) * u), light: glow * ease(Math.min(1, (t - ORB.t) / 3)) };
   }
   if (t < ORB.leave) return { at: side, light: glow };
-  // Up and away into the base above, still keeping pace; in the cloud it slows, a glow in the
-  // dark of it, and goes out.
-  const v = (t - ORB.leave) / (ORB.gone - ORB.leave);
-  const up = ease(Math.min(1, v / 0.85));
-  return { at: [side[0] + 40 * up, side[1] + (ceiling - side[1]) * up, side[2] - 30 * up], light: glow * (1 - ease(Math.max(0, (v - 0.72) / 0.28))) };
+  // Up and away ahead into the base above, about 50 degrees up from the cockpit all the way (the
+  // head can look up only so far, and straight overhead is the canopy's frame); in the cloud it
+  // slows, a glow spreading in the dark of it, and slowly goes out.
+  const up = ease(Math.min(1, (t - ORB.leave) / ORB.rise));
+  const out = Math.max(0, (t - ORB.leave - ORB.rise + 2) / (ORB.gone - ORB.leave - ORB.rise + 2));
+  return { at: [side[0] + ORB.away[0] * up, side[1] + (ceiling - side[1]) * up, side[2] - ORB.away[1] * up], light: glow * (1 - ease(Math.min(1, out))) };
 }
 
 /**

@@ -230,6 +230,9 @@ function start() {
     };
   }
   const bolts = night ? createBolts(renderer) : null;
+  // (Its shader, which the lamps of other aircraft and the sparks on the glass share, compiled in
+  // the background: else the first flash stalls its frame.)
+  bolts?.compile().catch(() => {});
   const trafficPoints = night ? createLampPoints(renderer) : null;
   let flashControl = null;
   let last = performance.now();

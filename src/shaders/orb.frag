@@ -79,8 +79,10 @@ void main() {
   if (cloud.r > 0.0 && I > 0.0) {
     vec3 p = dir * surface;
     vec3 l = c - p;
-    float soft = 0.6 * uOrbInside;
-    L += uOrbLight * cloud.g * 0.4 * exp(-uOrbInside / 150.0) / (dot(l, l) + R * R + soft * soft);
+    // (Cloud loses almost none of it: what goes in comes out, mostly near it, about half of it
+    // from the side it is nearest; and it is brighter than it looks, as said above.)
+    float soft = 30.0 + 0.8 * uOrbInside;
+    L += uOrbLight * cloud.g * 3.5 * exp(-uOrbInside / 250.0) / (dot(l, l) + R * R + soft * soft);
   }
 
   outColor = vec4(L * uExposure, 1.0);

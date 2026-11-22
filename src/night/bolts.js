@@ -172,6 +172,11 @@ export function createRibbons(renderer, maxSegments = 1200) {
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
   return {
+    /** Compiles its shader in the background, ahead of its first use (all ribbons share it). */
+    compile() {
+      return renderer.compileAsync ? renderer.compileAsync(scene, camera) : Promise.resolve(renderer.compile(scene, camera));
+    },
+
     set(segments) {
       const n = Math.min(segments.length, maxSegments);
       for (let s = 0; s < n; s++) {
@@ -268,6 +273,7 @@ export function createBolts(renderer) {
   const eye = new THREE.Vector3();
   let current = null;
   return {
+    compile: () => ribbons.compile(),
     /**
      * Draws the channel of the flash (if it has one) over the frame in target (or the screen).
      * gain scales its light: 1 for a tone-mapped image, more for a linear one.

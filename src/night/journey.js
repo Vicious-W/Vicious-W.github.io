@@ -1,9 +1,10 @@
 import * as THREE from "three";
 import { mulberry32 } from "../sky/cumulus.js";
-import { coronaAround, CREATURE, FUNNEL, ORB, orbAt, SPRITES, STORM_CENTRE, spritePower, TRAFFIC, trafficLamps, twinAt } from "./moments.js";
+import { coronaAround, CREATURE, FUNNEL, ORB, orbAt, SPRITES, STORM_CENTRE, spritePower, TRAFFIC, trafficLamps, TWIN, twinAt } from "./moments.js";
 import { BEACONS, BEACON_COLOR, BEACON_POWER, beaconPulse, NAV, NAV_COLORS, NAV_POWER } from "../cockpit/lamps.js";
 // (Read only when the journey runs: storm.js imports this module too.)
 import { SECOND_CENTRE, STORM } from "./storm.js";
+import { eyeDistance } from "./abyss.js";
 
 /**
  * The night journey: the aircraft flies itself along a fixed path through the thunderstorm.
@@ -494,13 +495,24 @@ export function createJourney(options = {}) {
     const hail2 = 0.7 * blind2 * (0.7 + 0.3 * noise1(t * 0.8, 23));
     const elmo2 = 0.85 * blind2 * (0.6 + 0.4 * noise1(t * 0.4, 24));
     const turb2 = storm2 * (0.3 + 0.15 * noise1(s / 2000, 25)) + 0.7 * blind2;
+    // Over the abyss, once its scripted moments are over (the twin gone a while), the air is never
+    // still for long: now and then it is rough for a minute or so, rougher near a vortex's eye;
+    // now and then a shower falls from the deck above.
+    let rough = 0;
+    let shower = 0;
+    const abyss = Math.min(smooth(s, m2.leave, m2.leave + 3000), smooth(t, TWIN.gone + 40, TWIN.gone + 100));
+    if (abyss > 0) {
+      const p = path.position(s);
+      rough = abyss * (0.3 * Math.max(0, noise1(t / 75, 51)) ** 1.5 + 0.25 * (1 - smooth(eyeDistance(p[0], p[2]), 1, 3)));
+      shower = abyss * 0.45 * smooth(noise1(t / 130, 71), 0.4, 0.8) * (0.8 + 0.2 * noise1(t * 0.3, 54));
+    }
     return {
       storm: Math.max(storm, storm2),
       cloud,
-      rain: fixed.rain ?? Math.max(rain, rain2),
+      rain: fixed.rain ?? Math.max(rain, rain2, shower),
       hail: fixed.hail ?? Math.max(hail, hail2),
       elmo: fixed.elmo ?? Math.min(1, Math.max(elmo * coronaAround(t), elmo2)),
-      turb: fixed.turb ?? Math.min(Math.max(turb, 0.07 + turb2), 1)
+      turb: fixed.turb ?? Math.min(Math.max(turb, 0.07 + turb2, 0.07 + rough), 1)
     };
   };
 
@@ -511,25 +523,38 @@ export function createJourney(options = {}) {
   const airVelocity = (s, t, out) => {
     const storm = smooth(s, mark.anvil - 900, mark.anvil + 900) * (1 - smooth(s, mark.out - 200, mark.out + 900));
     const churn = smooth(s, mark.wall - 300, mark.wall + 700) * (1 - smooth(s, mark.out - 500, mark.out + 300));
-    const k = 0.25 + 0.75 * storm + 0.8 * churn;
+    // (And so in the second storm, its wall most.)
+    const m2 = second();
+    const storm2 = Math.min(smooth(s, m2.anvil - 900, m2.anvil + 900), 1 - smooth(s, m2.leave - 300, m2.leave + 900));
+    const churn2 = smooth(s, m2.wall - 300, m2.wall + 700) * (1 - smooth(s, m2.base - 400, m2.base + 200));
+    const k = 0.25 + 0.75 * Math.max(storm, storm2) + 0.8 * Math.max(churn, churn2);
     out[0] = k * (3.5 * noise1(t * 0.19, 43) + 1.5 * noise1(t * 0.83, 46));
     out[1] = k * (4 * noise1(t * 0.23, 41) + 2.5 * noise1(t * 0.71, 42)) + 13 * bump(s, mark.updraft, 2200) + 6 * bump(s, mark.well, 1500);
     out[2] = k * (3.5 * noise1(t * 0.17, 44) + 1.5 * noise1(t * 0.77, 47));
     return out;
   };
+  // (The table grows as the journey goes on: it has no end.)
   const AIR_DT = 0.05;
-  const AIR_N = 24000; // 1200 s
-  const airTable = new Float32Array((AIR_N + 1) * 3);
-  {
-    const v = [0, 0, 0];
-    for (let i = 1; i <= AIR_N; i++) {
-      const t = (i - 0.5) * AIR_DT;
-      airVelocity(t * SPEED, t, v);
-      for (let c = 0; c < 3; c++) airTable[i * 3 + c] = airTable[(i - 1) * 3 + c] + v[c] * AIR_DT;
+  let airTable = new Float32Array(24001 * 3);
+  let airN = 0; // filled up to here
+  const airVel = [0, 0, 0];
+  const airFill = n => {
+    if ((n + 1) * 3 > airTable.length) {
+      const grown = new Float32Array(Math.max(airTable.length * 2, (n + 1) * 3));
+      grown.set(airTable);
+      airTable = grown;
     }
-  }
+    for (let i = airN + 1; i <= n; i++) {
+      const t = (i - 0.5) * AIR_DT;
+      airVelocity(t * SPEED, t, airVel);
+      for (let c = 0; c < 3; c++) airTable[i * 3 + c] = airTable[(i - 1) * 3 + c] + airVel[c] * AIR_DT;
+    }
+    airN = Math.max(airN, n);
+  };
+  airFill(24000);
   const airAt = (t, out) => {
-    const x = Math.min(Math.max(t / AIR_DT, 0), AIR_N - 1e-6);
+    const x = Math.max(t / AIR_DT, 0);
+    if (x + 1 > airN) airFill(Math.ceil(x) + 2400);
     const i = Math.floor(x);
     const f = x - i;
     for (let c = 0; c < 3; c++) out[c] = airTable[i * 3 + c] + (airTable[(i + 1) * 3 + c] - airTable[i * 3 + c]) * f;
@@ -666,15 +691,20 @@ export function createJourney(options = {}) {
         }
       }
       {
-        // Where the base's cloud is, above the orb as it leaves (once).
+        // Where the base's cloud is, over where the orb goes into it (once): from where the
+        // aircraft will be then.
         if (orbCeiling === null && t >= ORB.leave - 1) {
-          const o = orbAt(ORB.leave);
-          const h = state.heading;
-          const wx = state.x + Math.cos(h) * o.at[0] - Math.sin(h) * o.at[2];
-          const wz = state.z + Math.sin(h) * o.at[0] + Math.cos(h) * o.at[2];
+          const s = ORB.gone * SPEED;
+          const p = path.position(s);
+          const a = path.position(s + 120);
+          const b = path.position(s - 120);
+          const h = Math.atan2(a[0] - b[0], -(a[2] - b[2]));
+          const o = orbAt(ORB.gone);
+          const wx = p[0] + Math.cos(h) * o.at[0] - Math.sin(h) * o.at[2];
+          const wz = p[2] + Math.sin(h) * o.at[0] + Math.cos(h) * o.at[2];
           orbCeiling = 520;
           for (let y = 100; y < 1500; y += 20) {
-            if (stormSD(wx, state.alt + y, wz) > 60) {
+            if (stormSD(wx, p[1] + y, wz) > 60) {
               orbCeiling = y;
               break;
             }

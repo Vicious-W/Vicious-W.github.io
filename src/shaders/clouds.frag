@@ -388,8 +388,9 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, float lodM, int detai
       // The storm: its edge detail, then the fringe of mist (storm.glsl). Where the mist is
       // smaller than a pixel only its average is left, which needs no look-up.
       // (one level smoother than the pixel: its creases drew thin veins over the faces)
-      // (Far off, a deck's edge detail is lost in the dark: not worth its look-ups.)
-      if (detail > 0 && shape > -2.2 * edge && !(gDeck && gT > 9000.0)) shape += stormEdge(p, gDeck ? 1000.0 : z, lodD + 1.2, detail > 1) * edgeK;
+      // (Not on the abyss's decks: added to their flat tops, the 3D detail folds them into
+      // stacked shells, seen from above as contour lines, like a map's.)
+      if (detail > 0 && shape > -2.2 * edge && !gDeck) shape += stormEdge(p, z, lodD + 1.2, detail > 1) * edgeK;
       float e = 0.5;
       // The mist's tangle belongs to the air close by (the mist pass draws it in full): from a few
       // hundred metres on a cloud's surface is its rounded bulges alone, smooth (the tangle, even
@@ -771,7 +772,14 @@ void main() {
           mode = MARCH;
           inside = false;
           emptyRun = 0;
+#ifdef ABYSS
+          // The strides that close in on a deck (by its distance) end up in the same places in
+          // every frame, whatever the jitter: a back-off that changes every frame keeps the
+          // steps after it jittered, or they would slice the decks' tops into contour lines.
+          t = max(t - dt * (gDeck ? 1.6 + fract(jitter + 0.29) : 1.6), t0);
+#else
           t = max(t - dt * 1.6, t0);
+#endif
         } else {
           // Longer strides where no cloud is within reach at all.
 #ifdef NIGHT
@@ -841,7 +849,8 @@ void main() {
             litMoon = uAlien < 1.0 ? moonFar(p) : 0.0;
             litOd = litMoon > 0.004 ? stormDepth(p, uSunDir, 50.0, 2.2, 6, 3000.0, lodB, fract(jitter + 0.37)) : 200.0;
 #ifdef ABYSS
-            litDeep = deck ? stormDepth(p, vec3(0.0, -1.0, 0.0), 40.0, 2.2, 6, 2000.0, lodB, fract(jitter + 0.53)) : 200.0;
+            // (The storm that is left over the abyss is lit from below as its decks are.)
+            litDeep = deck || uAlien > 0.5 ? stormDepth(p, vec3(0.0, -1.0, 0.0), 40.0, 2.2, 6, 2000.0, lodB, fract(jitter + 0.53)) : 200.0;
             // (The abyss has no sky to speak of: its decks need no look at what is over them.)
             litOpen = deck ? vec2(1.0) : skyOpen(p, lodB);
 #else
@@ -888,8 +897,8 @@ void main() {
 #ifdef ABYSS
           // In the abyss, light rises from the deep: it lights the decks from below, shines
           // through where they are thin and round their holes, and lights the undersides of the
-          // decks above.
-          if (deck) {
+          // decks above, and of the storm's base.
+          if (deck || uAlien > 0.5) {
             // (Without the sun's widest lobe: a thick deck lets little through, so its thin
             // parts stand out.)
             float deep = phD.x * exp(-litDeep)
@@ -977,8 +986,9 @@ void main() {
 #ifdef NIGHT
     // (The Earth's air, whose model thickens without end below the sea, is not the abyss's.)
     if (uAlien > 0.0) {
+      // Its own haze, lit from below by the deep: far decks fade into a dim glow, not into black.
       apT = mix(apT, vec3(exp(-depth / ABYSS_HAZE)), uAlien);
-      apL *= 1.0 - uAlien;
+      apL = mix(apL, uAbyssHaze * (1.0 - exp(-depth / ABYSS_HAZE)), uAlien);
     }
 #endif
     radiance = L * apT + apL * (1.0 - T);
@@ -998,6 +1008,10 @@ void main() {
     radiance *= Tf;
     Lf *= Tf;
     visibility *= exp(-sigmaF * 20000.0);
+#ifdef ABYSS
+    // (Over the abyss the rain is lit from below by the deep, as the air is.)
+    if (uAlien > 0.0) radiance += uAlien * uAbyssHaze * ((1.0 - T) * (1.0 - Tf) + T * (1.0 - exp(-sigmaF * 20000.0)));
+#endif
     if (uFlashOn + uFlickOn > 0.5) {
       float len = min(far, 9000.0);
       vec2 acc = vec2(0.0);

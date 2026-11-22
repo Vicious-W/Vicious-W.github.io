@@ -283,6 +283,7 @@ float deckSlab(float alt) {
 // The light of the deep (uAbyssGlow, from under the last deck) that reaches a deck at alt from
 // below: each deck under it lets 60% of it through, by its holes and through its thin parts.
 uniform vec3 uAbyssGlow; // irradiance
+uniform vec3 uAbyssHaze; // the abyss's air at the camera, lit by the deep: radiance, far off
 vec3 deepLight(vec3 p, float alt) {
   float k = 1.0;
   for (int i = 0; i < DECKS; i++) {
