@@ -12,11 +12,20 @@
     #view.dragging { cursor: grabbing; }
     #veil { position: fixed; inset: 0; background: #0a2440; pointer-events: none; transition: opacity 2.4s ease; }
     #veil.gone { opacity: 0; }
+    /* The way between the day and the night: a small dot in the corner, no words. */
+    #door { position: fixed; right: 18px; bottom: 18px; width: 11px; height: 11px; border-radius: 50%;
+      background: rgba(3, 7, 13, 0.6); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.07); cursor: pointer;
+      opacity: 0; transition: opacity 3s ease, box-shadow 0.4s ease, background 0.4s ease; }
+    #door.shown { opacity: 1; }
+    #door:hover { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2), 0 0 10px 2px rgba(0, 0, 0, 0.35); }
+    #door.night { background: rgba(120, 160, 210, 0.28); box-shadow: 0 0 0 1px rgba(160, 190, 230, 0.12); }
+    #door.night:hover { background: rgba(140, 180, 230, 0.45); box-shadow: 0 0 0 1px rgba(170, 200, 240, 0.3), 0 0 10px 2px rgba(90, 130, 190, 0.25); }
   </style>
 </head>
 <body>
   <canvas id="view"></canvas>
   <div id="veil"></div>
+  <a id="door" href="?night" aria-label="night"></a>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

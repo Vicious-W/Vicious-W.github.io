@@ -12,6 +12,7 @@ import { createAudio } from "./audio/audio.js";
 
 const canvas = document.getElementById("view");
 const veil = document.getElementById("veil");
+const door = document.getElementById("door");
 const params = new URLSearchParams(location.search);
 const still = params.has("still");
 // Capture aid: "still&motion" flies 1/60 s per frame with the live temporal filter, to see
@@ -138,6 +139,25 @@ function start() {
     // The night opens out of black.
     document.body.style.background = "#000";
     veil.style.background = "#000";
+  }
+
+  // The way between the day and the night (a dot in the corner, PLAN.md 5.6): the picture goes
+  // dark, then the other one opens. Not in captures.
+  if (door && !still) {
+    door.href = night ? location.pathname : "?night";
+    door.setAttribute("aria-label", night ? "day" : "night");
+    if (night) door.classList.add("night");
+    setTimeout(() => door.classList.add("shown"), 4000);
+    door.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      veil.style.transition = "opacity 1.6s ease";
+      veil.style.background = night ? "#0a2440" : "#000";
+      veil.classList.remove("gone");
+      setTimeout(() => (location.href = door.href), 1700);
+    });
+  } else if (door) {
+    door.remove();
   }
   if (still) {
     flight.snapLook();

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { coronaAround, TRAFFIC, trafficLamps } from "./moments.js";
+import { coronaAround, FUNNEL, SPRITES, STORM_CENTRE, spritePower, TRAFFIC, trafficLamps } from "./moments.js";
 
 /**
  * The night journey: the aircraft flies itself along a fixed path through the thunderstorm.
@@ -259,6 +259,12 @@ export function createJourney(options = {}) {
       at: [0, 0, 0],
       velocity: [0, 0, 0]
     },
+    // The tornado (moments.js): its foot relative to the camera (x, z), on or not, the base it
+    // hangs from, how far it has turned.
+    funnel: { on: false, x: 0, z: 0, top: FUNNEL.top, spin: 0 },
+    // A red sprite (moments.js): where it stands relative to the camera (x, z, m), how bright,
+    // how many columns, its seed.
+    sprite: { power: 0, x: 0, z: 0, count: 0, seed: 0 },
     // The scud nearest the aircraft, for the cloud shaders (see storm.glsl).
     scud: {
       count: 0,
@@ -537,6 +543,27 @@ export function createJourney(options = {}) {
       // Rain and mist in the air around the aircraft: the storm's showers (see mist.frag).
       view.airMist = cabin.storm * Math.min(1, 0.35 + cabin.rain);
       trafficAt(t, view.traffic);
+      view.funnel.on = t < FUNNEL.until;
+      view.funnel.x = FUNNEL.x - state.x;
+      view.funnel.z = FUNNEL.z - state.z;
+      view.funnel.spin = (t * FUNNEL.spin) % (Math.PI * 2000);
+      view.sprite.power = 0;
+      for (const sp of SPRITES) {
+        const k = spritePower(t - sp.t);
+        if (k <= 0) continue;
+        // Beyond the storm's centre as seen from where the aircraft is when it flashes.
+        const p = path.position(sp.t * SPEED);
+        const dx = STORM_CENTRE[0] - p[0];
+        const dz = STORM_CENTRE[1] - p[2];
+        const d = Math.hypot(dx, dz) || 1;
+        const ux = dx / d;
+        const uz = dz / d;
+        view.sprite.power = k;
+        view.sprite.x = p[0] + ux * sp.along * 1000 - uz * sp.side * 1000 - state.x;
+        view.sprite.z = p[2] + uz * sp.along * 1000 + ux * sp.side * 1000 - state.z;
+        view.sprite.count = sp.count;
+        view.sprite.seed = sp.seed;
+      }
       {
         const a = path.position(t * SPEED + 34);
         const b = path.position(t * SPEED - 34);

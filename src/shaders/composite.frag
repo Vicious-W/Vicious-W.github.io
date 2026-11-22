@@ -28,8 +28,63 @@ uniform vec3 uFlashColor;
 uniform float uFlickPower;
 uniform vec3 uFlickColor;
 uniform float uLinearOut; // 1: leave the image linear (exposed) for the cockpit's glass pass to finish
+uniform vec3 uFlashPos[3];  // where the flash's light comes from, relative to the camera (y: altitude)
+uniform vec3 uFlashWeight;
+uniform vec3 uFlickPos;
+uniform vec4 uSprite;       // a red sprite: where it stands (x, z relative to the camera, m), how bright, how many columns
+uniform float uSpriteSeed;
 uniform float uTime;
 uniform vec2 uScreen; // output size in pixels
+
+float spriteHash(float n) {
+  return fract(sin(n * 12.9898) * 43758.5453);
+}
+
+// A cluster of red sprites, seen on a plane facing the camera at the cluster: x across, y up (km,
+// y the height). Each column has a bright red head 66 to 74 km up, a red glow above it, and
+// tendrils that hang 15 to 25 km below it, fanning out, turning blue-violet.
+vec3 spriteGlow(float x, float y, float count, float seed) {
+  vec3 col = vec3(0.0);
+  for (int k = 0; k < 8; k++) {
+    if (float(k) >= count) break;
+    float fk = float(k);
+    float xk = (spriteHash(seed + fk * 1.31) - 0.5) * 24.0;
+    float w = 0.5 + 1.3 * spriteHash(seed + fk * 2.17);
+    float yh = 66.0 + 8.0 * spriteHash(seed + fk * 3.71);
+    float dx = x - xk;
+    float head = exp(-dx * dx / (w * w)) * exp(-(y - yh) * (y - yh) / 9.0);
+    float above = exp(-dx * dx / (w * w * 3.0)) * smoothstep(yh - 2.0, yh + 2.0, y) * exp(-max(y - yh, 0.0) / 8.0) * 0.45;
+    float strands = 0.0;
+    float depth = yh - y;
+    if (depth > 0.0) {
+      float reach = 15.0 + 10.0 * spriteHash(seed + fk * 5.3);
+      for (int s = 0; s < 5; s++) {
+        float fan = (spriteHash(seed + fk * 7.1 + float(s) * 1.7) - 0.5) * 0.5;
+        float xs = xk + fan * depth;
+        float ws = 0.1 + 0.012 * depth;
+        strands += exp(-(x - xs) * (x - xs) / (ws * ws)) * exp(-depth / 10.0) * (1.0 - smoothstep(reach - 4.0, reach, depth));
+      }
+    }
+    // (Deeper than they are: the night grade takes most of the colour out of what is outside.)
+    vec3 tendril = mix(vec3(0.3, 0.05, 1.0), vec3(1.0, 0.0, 0.06), smoothstep(yh - 12.0, yh - 1.0, y));
+    col += vec3(1.0, 0.0, 0.05) * (head + above) + tendril * strands * 0.5;
+  }
+  return col;
+}
+
+// The sea at night: black, but lightning over it lights the water around it and shines in it,
+// a broad glossy smear (the storm's wind roughens the water). Per unit of irradiance at 1 km.
+vec3 seaLit(vec3 dir, float camAlt, vec3 src, float weight) {
+  vec3 p = vec3(dir.xz * (camAlt / -dir.y), 0.0).xzy;
+  vec3 s = src - p;
+  float d = length(s);
+  vec3 l = s / max(d, 1.0);
+  float dKm = d * 1e-3;
+  float e = weight * exp(-dKm / 8.0) / (dKm * dKm + 0.02);
+  float diffuse = 0.05 / PI * max(l.y, 0.0);
+  float gloss = 0.012 * exp((max(dot(reflect(dir, vec3(0.0, 1.0, 0.0)), l), 0.0) - 1.0) / 0.012);
+  return vec3(e * (diffuse + gloss));
+}
 
 // Stars on a fixed celestial grid: a cell of a 3D grid around the viewer may hold one star,
 // kept away from the cell walls so a single look-up finds it. Brightness follows a steep power
@@ -116,6 +171,18 @@ void main() {
   if (!belowHorizon) {
     sky += starField(dir, pixelAngle) * tView;
     sky += moonDisc(dir, uSunDir, transmittanceToTop(uTransmittance, uCamR, uSunDir.y));
+    // A red sprite, far beyond the storm.
+    if (uSprite.z > 0.0) {
+      float D = length(uSprite.xy);
+      vec2 n = uSprite.xy / max(D, 1.0);
+      float along = dot(dir.xz, n);
+      if (along > 0.05) {
+        float t = D / along;
+        float x = dot(dir.xz * t, vec2(-n.y, n.x)) * 1e-3;
+        float y = ((uCamR - RG) * 1000.0 + dir.y * t) * 1e-3;
+        sky += spriteGlow(x, y, uSprite.w, uSpriteSeed) * (uSprite.z * 0.06) * tView;
+      }
+    }
   }
 #else
   // Solar disc with limb darkening.
@@ -137,6 +204,15 @@ void main() {
 
   vec3 color = sky * scene.a + scene.rgb;
 #ifdef NIGHT
+  if (belowHorizon && dir.y < -1e-3) {
+    float seaAlt = (uCamR - RG) * 1000.0;
+    vec3 sea = vec3(0.0);
+    if (uFlashPower > 0.0) {
+      for (int k = 0; k < 3; k++) sea += uFlashColor * uFlashPower * seaLit(dir, seaAlt, uFlashPos[k], uFlashWeight[k]);
+    }
+    if (uFlickPower > 0.0) sea += uFlickColor * uFlickPower * seaLit(dir, seaAlt, uFlickPos, 1.0);
+    color += sea * scene.a;
+  }
   vec2 lightning = texture(uFlash, vUv).rg;
   color += uFlashColor * (uFlashPower * lightning.r) + uFlickColor * (uFlickPower * lightning.g);
 #endif

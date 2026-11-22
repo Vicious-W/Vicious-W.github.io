@@ -14,6 +14,7 @@ import cloudsSrc from "../shaders/clouds.frag?raw";
 import stormSrc from "../shaders/storm.glsl?raw";
 import mistSrc from "../shaders/mist.frag?raw";
 import mistTemporalSrc from "../shaders/misttemporal.frag?raw";
+import funnelSrc from "../shaders/funnel.frag?raw";
 import temporalSrc from "../shaders/temporal.frag?raw";
 import compositeSrc from "../shaders/composite.frag?raw";
 
@@ -423,6 +424,11 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
             uLinearOut: { value: 0 },
             uFlickPower: { value: 0 },
             uFlickColor: { value: new THREE.Vector3(0.72, 0.82, 1.0) },
+            uFlashPos: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
+            uFlashWeight: { value: new THREE.Vector3(1, 0, 0) },
+            uFlickPos: { value: new THREE.Vector3() },
+            uSprite: { value: new THREE.Vector4() },
+            uSpriteSeed: { value: 0 },
             uTime: { value: 0 },
             uScreen: { value: new THREE.Vector2(1, 1) }
           }
@@ -516,6 +522,54 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         }
       })
     : null;
+  // A tornado under the storm's base (night, moments.js), drawn over the finished outside.
+  const funnelPass = night
+    ? createPass({
+        vertexShader,
+        fragmentShader: fragment(withStorm(funnelSrc)),
+        defines: cloudDefines,
+        over: true,
+        uniforms: {
+          ...camUniforms(),
+          uTransmittance: cu0.uTransmittance,
+          uSkyView: cu0.uSkyView,
+          uBaseNoise: cu0.uBaseNoise,
+          uDetailNoise: cu0.uDetailNoise,
+          uBlueNoise: cu0.uBlueNoise,
+          uBaseOffset: cu0.uBaseOffset,
+          uDetailOffset: cu0.uDetailOffset,
+          uStorm: cu0.uStorm,
+          uStormCam: cu0.uStormCam,
+          uMistNoise: cu0.uMistNoise,
+          uMistOffset: cu0.uMistOffset,
+          uScudPos: cu0.uScudPos,
+          uScudSize: cu0.uScudSize,
+          uScudTurn: cu0.uScudTurn,
+          uCamAlt: cu0.uCamAlt,
+          uResolution: { value: new THREE.Vector2(1, 1) },
+          uFrame: cu0.uFrame,
+          uSunDir: cu0.uSunDir,
+          uSunIlluminance: cu0.uSunIlluminance,
+          uDensityScale: cu0.uDensityScale,
+          uExposure: compositePass.uniforms.uExposure,
+          uStormGlow: cu0.uStormGlow,
+          uFlashPos: cu0.uFlashPos,
+          uFlashWeight: cu0.uFlashWeight,
+          uFlashPower: { value: 0 },
+          uFlashColor: compositePass.uniforms.uFlashColor,
+          uFlashDepth: cu0.uFlashDepth,
+          uFlickPos: cu0.uFlickPos,
+          uFlickPower: { value: 0 },
+          uFlickColor: compositePass.uniforms.uFlickColor,
+          uFlickDepth: cu0.uFlickDepth,
+          uFunnel: { value: new THREE.Vector4() },
+          uFunnelTop: { value: 1300 },
+          uFunnelSpin: { value: 0 },
+          uSceneDepth: { value: null }
+        }
+      })
+    : null;
+
   let mistTarget = null; // this frame's march: light and transmittance, depth
   let mistHistory = [null, null];
   let mistIndex = 0;
@@ -696,6 +750,16 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
           u.uFlickDepth.value = flick.depth;
         }
       }
+      if (night) {
+        // The composite lights the sea with them (the same sources).
+        const cpu = compositePass.uniforms;
+        for (let k = 0; k < 3; k++) cpu.uFlashPos.value[k].copy(u.uFlashPos.value[k]);
+        cpu.uFlashWeight.value.copy(u.uFlashWeight.value);
+        cpu.uFlickPos.value.copy(u.uFlickPos.value);
+        const sp = view.sprite;
+        cpu.uSprite.value.set(sp ? sp.x : 0, sp ? sp.z : 0, sp ? sp.power : 0, sp ? sp.count : 0);
+        cpu.uSpriteSeed.value = sp ? sp.seed : 0;
+      }
       cloudPass.render(renderer, cloudTarget);
       if (mistOn) {
         const m = mistPass.uniforms;
@@ -813,6 +877,20 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         cu.uSunOnScreen.value = 0;
       }
       compositePass.render(renderer, target);
+      // The tornado, over it.
+      if (funnelPass && view.funnel && view.funnel.on) {
+        const fu = funnelPass.uniforms;
+        for (const k of ["uCamRight", "uCamUp", "uCamForward"]) fu[k].value.copy(view[{ uCamRight: "right", uCamUp: "up", uCamForward: "forward" }[k]]);
+        fu.uTanHalf.value.copy(view.tanHalf);
+        fu.uResolution.value.set(target ? target.width : renderer.domElement.width, target ? target.height : renderer.domElement.height);
+        fu.uFunnel.value.set(view.funnel.x, 0, view.funnel.z, 1);
+        fu.uFunnelTop.value = view.funnel.top;
+        fu.uFunnelSpin.value = view.funnel.spin;
+        fu.uFlashPower.value = view.flash && view.flash.on ? view.flash.power : 0;
+        fu.uFlickPower.value = view.flick && view.flick.on ? view.flick.power : 0;
+        fu.uSceneDepth.value = history[historyIndex].textures[1];
+        funnelPass.render(renderer, target);
+      }
 
       prev.right.copy(view.right);
       prev.up.copy(view.up);

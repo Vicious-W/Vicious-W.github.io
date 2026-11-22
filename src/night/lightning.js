@@ -1,6 +1,6 @@
 import { mulberry32 } from "../sky/cumulus.js";
 import { STORM, WELLS } from "./storm.js";
-import { STRIKE, SPIDERS } from "./moments.js";
+import { STRIKE, SPIDERS, FUNNEL } from "./moments.js";
 
 /**
  * Lightning of the night journey. Two lights at any time:
@@ -119,6 +119,7 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
   let nextFlash = 1.5;
   let nextFlick = 0.2;
   const spidersDone = SPIDERS.map(() => false);
+  const funnelDone = FUNNEL.strikes.map(() => false);
   let id = 0;
   const state = {
     flash: { on: false, id: -1, power: 0, pos: [[0, 0, 0], [0, 0, 0], [0, 0, 0]], weight: [1, 0, 0], color: COLOR_IC, depth: 0, bolt: null, boltPower: 0 },
@@ -178,7 +179,8 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     return [view.x + Math.cos(a) * r, view.alt + range(-below, above), view.z + Math.sin(a) * r];
   };
 
-  function createFlash(view, kind, near) {
+  // at: for a strike to the sea, where it hits ([x, z]); otherwise chosen here.
+  function createFlash(view, kind, near, at = null) {
     let sources;
     let bolt = null;
     let depth = 0;
@@ -199,7 +201,10 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
         }
         return true;
       };
-      if (near === "well" || (near && rand() < 0.7)) {
+      if (at) {
+        x = at[0];
+        z = at[1];
+      } else if (near === "well" || (near && rand() < 0.7)) {
         // The nearest well most of the time.
         const byDistance = WELLS.slice().sort((a, b) => Math.hypot(a.x - view.x, a.z - view.z) - Math.hypot(b.x - view.x, b.z - view.z));
         const w = byDistance[near === "well" || rand() < 0.7 ? 0 : 1 + Math.floor(rand() * (WELLS.length - 1))];
@@ -482,6 +487,18 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
       if (t >= STRIKE.t - LEAD && t < STRIKE.t + 0.5 && (!flash || flash.kind !== "strike")) {
         flash = createStrike(view);
       }
+      // Strikes that light the tornado as the aircraft comes in.
+      FUNNEL.strikes.forEach((s, i) => {
+        if (!flash && !funnelDone[i] && t >= s.t - LEAD && t < s.t + 3) {
+          funnelDone[i] = true;
+          flash = createFlash(view, "cg", false, [FUNNEL.x + s.at[0], FUNNEL.z + s.at[1]]);
+          flash.scale = range(10, 16);
+          flash.sources[0] = [flash.sources[0][0], STORM.base + 450, flash.sources[0][2]];
+          flash.weight = [0.55, 0.25, 0.2];
+          flash.depth = 220;
+          flash.start = Math.max(s.t, t + LEAD * 0.5);
+        }
+      });
       SPIDERS.forEach((sp, i) => {
         if (!flash && !spidersDone[i] && t >= sp.t - LEAD && t < sp.t + 4) {
           spidersDone[i] = true;

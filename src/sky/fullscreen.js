@@ -4,8 +4,12 @@ const geometry = new THREE.BufferGeometry();
 geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-/** A full-screen triangle drawn with a raw GLSL 3 shader. */
-export function createPass({ vertexShader, fragmentShader, uniforms, defines = {} }) {
+/**
+ * A full-screen triangle drawn with a raw GLSL 3 shader. over: draw over what is in the target,
+ * the shader giving light (rgb) and how much of what is there shows through (a); the target's
+ * alpha is kept.
+ */
+export function createPass({ vertexShader, fragmentShader, uniforms, defines = {}, over = false }) {
   const material = new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
     vertexShader,
@@ -13,7 +17,18 @@ export function createPass({ vertexShader, fragmentShader, uniforms, defines = {
     uniforms,
     defines,
     depthTest: false,
-    depthWrite: false
+    depthWrite: false,
+    ...(over
+      ? {
+          transparent: true,
+          blending: THREE.CustomBlending,
+          blendEquation: THREE.AddEquation,
+          blendSrc: THREE.OneFactor,
+          blendDst: THREE.SrcAlphaFactor,
+          blendSrcAlpha: THREE.ZeroFactor,
+          blendDstAlpha: THREE.OneFactor
+        }
+      : {})
   });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
@@ -24,7 +39,11 @@ export function createPass({ vertexShader, fragmentShader, uniforms, defines = {
     uniforms,
     render(renderer, target = null) {
       renderer.setRenderTarget(target);
+      // Drawn over the target: it must not be cleared first.
+      const autoClear = renderer.autoClear;
+      if (over) renderer.autoClear = false;
       renderer.render(scene, camera);
+      renderer.autoClear = autoClear;
     },
     dispose() {
       material.dispose();

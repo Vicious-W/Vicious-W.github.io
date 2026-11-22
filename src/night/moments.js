@@ -50,6 +50,28 @@ export function coronaAround(t) {
 }
 
 /**
+ * A tornado under the storm's southern base, ahead and to the right as the aircraft comes in:
+ * a funnel from the base to the sea, seen only when lightning lights it. Its foot (storm frame,
+ * m), the height of the base it hangs from, until when it is drawn (s; behind the aircraft
+ * after that), how fast its surface turns (rad/s), and the strikes beside it that show it: when
+ * (s) and where they hit the sea, from its foot (m).
+ */
+export const FUNNEL = Object.freeze({
+  x: 2750,
+  z: 10500,
+  top: 1340, // the storm's base (storm.js: STORM.base) and a little
+  until: 150,
+  spin: 1.3,
+  // (Most on the near side, which they light; one behind, which shows it black against its glow.)
+  strikes: [
+    { t: 12, at: [-600, 900] },
+    { t: 23, at: [700, 800] },
+    { t: 33, at: [-1100, 500] },
+    { t: 42, at: [500, -1000] }
+  ]
+});
+
+/**
  * Lightning that crawls along the underside of the anvil (an "anvil crawler", spider
  * lightning): under the anvil as it closes over the aircraft, and over the hall. Times of the
  * first leader (s); the web spreads for crawl seconds before its return strokes.
@@ -58,6 +80,33 @@ export const SPIDERS = Object.freeze([
   { t: 162, crawl: 1.0 },
   { t: 253, crawl: 1.1 }
 ]);
+
+/**
+ * Red sprites, once the aircraft has left the storm well behind (until then the tower it came
+ * out of fills the sky behind): high over the storm system (50 to 90 km up, above its trailing
+ * anvil far beyond the core), clusters of red columns with blue
+ * tendrils hanging from them, each there for a fifth of a second. Seen looking back, above the
+ * storm's top. When (s), how far beyond the aircraft towards the storm's centre (km), how far
+ * to the side (km), how many columns, and a seed for their shapes.
+ */
+export const SPRITES = Object.freeze([
+  { t: 548, along: 46, side: -6, count: 5, seed: 3.1 },
+  { t: 566, along: 50, side: 8, count: 3, seed: 7.7 },
+  { t: 583, along: 47, side: -9, count: 7, seed: 12.4 },
+  { t: 604, along: 52, side: 5, count: 4, seed: 18.9 },
+  { t: 627, along: 48, side: -4, count: 6, seed: 25.3 },
+  { t: 655, along: 51, side: 9, count: 5, seed: 31.7 },
+  { t: 688, along: 49, side: -7, count: 8, seed: 38.2 },
+  { t: 724, along: 52, side: 6, count: 4, seed: 44.9 }
+]);
+// The storm's centre (storm frame), which the sprites stand beyond.
+export const STORM_CENTRE = Object.freeze([2000, -1500]);
+
+/** How bright a sprite is dt seconds after it begins: a flash and a short glow. */
+export function spritePower(dt) {
+  if (dt < 0 || dt > 0.45) return 0;
+  return dt < 0.008 ? dt / 0.008 : Math.exp(-(dt - 0.008) / 0.07);
+}
 
 /**
  * Another aircraft in the storm: as the aircraft breaks out of the cloud into the cave in the
