@@ -79,6 +79,9 @@ const float NIGHT_SKYLIGHT = 2.6;
 // Rain and haze between the towers: extinction (1/m), and how brightly lightning shows in it.
 const float HAZE_SIGMA = 1.6e-4;
 const float HAZE_GLOW = 0.06;
+// How much of the deep's steady glow the creature hides (the rest its skin gives back): a shape
+// barely there, until a flash lights the cloud behind it.
+const float CREATURE_SEEN = 0.2;
 #endif
 
 const float MAX_DIST = 64000.0;
@@ -677,9 +680,13 @@ void main() {
 #ifdef NIGHT
   gRise = dir.y;
   gCurve = (1.0 - dir.y * dir.y) / RG_M;
-  // The creature: what lies beyond it is hidden, from where it begins along the ray.
+  // The creature: what lies beyond it is hidden, from where it begins along the ray; but in the
+  // deep's steady glow it all but hides (its skin glows as the glow behind it does, as some
+  // deep-sea animals' bellies do): only the flashes' light it cannot match, and against cloud
+  // they light it shows, black. cFlash: what of their light comes through it.
   float cThrough;
   float cAt;
+  float cFlash = 1.0;
 #ifdef ABYSS
   creatureMarch(dir, pixelAngle, cThrough, cAt);
 #else
@@ -715,7 +722,8 @@ void main() {
       float ts = mode == REFINE ? 0.5 * (ra + rb) : t;
 #ifdef NIGHT
       if (!cDone && ts >= cAt) {
-        T *= cThrough;
+        T *= mix(1.0, cThrough, CREATURE_SEEN);
+        cFlash = cThrough;
         cDone = true;
       }
       // Far away, what is left behind 3% is not seen (the storm's misty edge is long to cross);
@@ -916,7 +924,7 @@ void main() {
         L += S * absorbed;
 #ifdef NIGHT
         if (storm) {
-          Lf += absorbed * litFlash * ALBEDO;
+          Lf += absorbed * cFlash * litFlash * ALBEDO;
         } else {
           // Far fair-weather clouds only catch a little of it: no march.
           if (uFlashOn > 0.5) Lf.r += absorbed * flashFalloff(p) * (0.09 * ALBEDO);
@@ -942,7 +950,10 @@ void main() {
   }
 
 #ifdef NIGHT
-  if (!cDone) T *= cThrough;
+  if (!cDone) {
+    T *= mix(1.0, cThrough, CREATURE_SEEN);
+    cFlash = cThrough;
+  }
 #endif
 #ifdef ABYSS
   // Below the decks the march goes through (uSlabBottom), the deeper ones are seen only through
@@ -966,8 +977,8 @@ void main() {
         vec3 lit = deepLight(q, top) * (0.022 + 0.035 * rim) * ALBEDO;
         float a = T * solid;
         L += lit * a;
-        if (uFlashOn > 0.5) Lf.x += a * flashFalloff(q) * (0.03 * ALBEDO);
-        if (uFlickOn > 0.5) Lf.y += a * sourceFalloff(length(uFlickPos - q), 0.5) * (0.03 * ALBEDO);
+        if (uFlashOn > 0.5) Lf.x += a * cFlash * flashFalloff(q) * (0.03 * ALBEDO);
+        if (uFlickOn > 0.5) Lf.y += a * cFlash * sourceFalloff(length(uFlickPos - q), 0.5) * (0.03 * ALBEDO);
         dsum += th * a;
         wsum += a;
         T *= 1.0 - solid;
