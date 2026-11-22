@@ -378,6 +378,11 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, float lodM, int detai
 
   if (shape > -1e3) {
     if (detail < 0) shape += edge * 2.6 + soft;
+#ifdef ABYSS
+    // Outside a deck, how far off its surface is (inflated as the search sees it) bounds a safe
+    // stride: its shape is no steeper than a distance.
+    if (gDeck && detail < 0 && shape < 0.0) gSafe = max(gSafe, -0.7 * shape);
+#endif
 #ifdef NIGHT
     if (gStorm) {
       // The storm: its edge detail, then the fringe of mist (storm.glsl). Where the mist is
@@ -712,8 +717,19 @@ void main() {
         T *= cThrough;
         cDone = true;
       }
-      // Far away, what is left behind 3% is not seen (the storm's misty edge is long to cross).
-      if (i >= uMaxSteps || ts >= t1 || T < (ts > 3000.0 ? 0.03 : 0.01)) break;
+      // Far away, what is left behind 3% is not seen (the storm's misty edge is long to cross);
+      // in the dark of the abyss, behind 8%.
+#ifdef ABYSS
+      const float FAR_LEFT = 0.08;
+#else
+      const float FAR_LEFT = 0.03;
+#endif
+#ifdef ABYSS
+      // (In the abyss's dark, what the last steps would add is too dim to see.)
+      if (i >= min(uMaxSteps, 320) || ts >= t1 || T < (ts > 3000.0 ? FAR_LEFT : 0.01)) break;
+#else
+      if (i >= uMaxSteps || ts >= t1 || T < (ts > 3000.0 ? FAR_LEFT : 0.01)) break;
+#endif
 #else
       if (i >= uMaxSteps || ts >= t1 || T < 0.01) break;
 #endif
@@ -801,6 +817,10 @@ void main() {
         // Short steps through the dense outer layer, where nearly all the light we see comes
         // from; thin cloud keeps the long steps.
         float dtIn = (shortSteps > 0 || dens > 0.05) ? min(dtF, 12.0 + 0.002 * t) : dtF;
+#ifdef ABYSS
+        // (The decks' misty tops are smoother than the storm's: half as many steps through them.)
+        if (gDeck) dtIn = min(dtF, 2.0 * dtIn);
+#endif
         shortSteps--;
         float sigma = dens * uDensityScale;
 #ifdef NIGHT
@@ -914,6 +934,37 @@ void main() {
 
 #ifdef NIGHT
   if (!cDone) T *= cThrough;
+#endif
+#ifdef ABYSS
+  // Below the decks the march goes through (uSlabBottom), the deeper ones are seen only through
+  // their holes, far off in the dark: drawn as their lit tops alone, cheaply. The same holes,
+  // brighter round their rims where the light from under them comes through.
+  if (uAlien > 0.5 && dir.y < -0.002 && T > 0.02) {
+    for (int i = 0; i < DECKS; i++) {
+      float top = DECK[i].x + DECK[i].y;
+      float th = (top - uCamAlt) / dir.y;
+      if (top < uSlabBottom && th > 0.0 && th < 1.1 * ABYSS_HAZE && T > 0.02) {
+        vec3 q = vec3(0.0, uCamAlt, 0.0) + dir * th;
+        vec2 world = worldXZ(q);
+        vec2 w = abyssWarp(world);
+        float lod = max(log2(max(th * pixelAngle, 1.0) / (BASE_PERIOD / 128.0)) - 2.0, 0.0);
+        float c = 0.62 * textureLod(uBaseNoise, vec3(w.x, 917.0 * float(i), w.y) / 23000.0, lod).r
+                + 0.38 * textureLod(uBaseNoise, vec3(w.x + 7100.0, 1531.0 * float(i) + 300.0, w.y - 3900.0) / 37700.0, lod).r;
+        c = 0.5 + (c - 0.5) / 0.73;
+        float solid = smoothstep(0.47, 0.58, c);
+        for (int k = 0; k < 3; k++) solid *= smoothstep(0.98, 1.06, length(world - swirlCentre(k, world)) / (0.15 * SWIRL[k].z));
+        float rim = 1.0 - smoothstep(0.5, 0.75, c);
+        vec3 lit = deepLight(q, top) * (0.022 + 0.035 * rim) * ALBEDO;
+        float a = T * solid;
+        L += lit * a;
+        if (uFlashOn > 0.5) Lf.x += a * flashFalloff(q) * (0.03 * ALBEDO);
+        if (uFlickOn > 0.5) Lf.y += a * sourceFalloff(length(uFlickPos - q), 0.5) * (0.03 * ALBEDO);
+        dsum += th * a;
+        wsum += a;
+        T *= 1.0 - solid;
+      }
+    }
+  }
 #endif
   vec3 radiance = vec3(0.0);
   float depthKm = -1.0;

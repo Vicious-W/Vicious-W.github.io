@@ -21,6 +21,9 @@ export const SWIRLS = Object.freeze([
   [-185000, -24000, 30000, 2.8]
 ]);
 export const DECK_LOW = -17500;
+// The march goes through the top three decks; deeper ones are drawn as their tops alone
+// (clouds.frag), seen only through the holes above them.
+export const DECK_MARCHED_LOW = -5300;
 
 /** How far inside the nearest deck's slab y is (m; holes not counted). */
 export function deckSlab(y) {

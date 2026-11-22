@@ -16,7 +16,7 @@ import mistSrc from "../shaders/mist.frag?raw";
 import mistTemporalSrc from "../shaders/misttemporal.frag?raw";
 import funnelSrc from "../shaders/funnel.frag?raw";
 import orbSrc from "../shaders/orb.frag?raw";
-import { DECKS, DECK_LOW, deepLight, SWIRLS } from "../night/abyss.js";
+import { DECKS, DECK_MARCHED_LOW, deepLight, SWIRLS } from "../night/abyss.js";
 
 // An empty 1x1x1 volume, for a storm not baked yet.
 function placeholder3D() {
@@ -826,7 +826,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         // with the discharges down there.
         const alien = view.alien ?? 0;
         u.uAlien.value = alien;
-        u.uSlabBottom.value = alien > 0 ? DECK_LOW : night.base;
+        u.uSlabBottom.value = alien > 0 ? DECK_MARCHED_LOW : night.base;
         u.uAbyssGlow.value.set(...deepLight(-Infinity, view.deepGlow ?? 0)).multiplyScalar(alien);
         sunIlluminance.copy(moonFull).multiplyScalar(1 - alien);
         const cr = view.creature;

@@ -292,7 +292,7 @@ vec3 deepLight(vec3 p, float alt) {
 }
 
 // The decks at p: metres inside their outer edge, with their holes (lodB: mip of the noise).
-float deckShape(vec3 p, float alt, float lodB) {
+float deckShapeOf(vec3 p, float alt, float lodB, bool coarse) {
   float shape = -STORM_RANGE;
   if (uAlien > 0.0) {
     vec2 world = worldXZ(p);
@@ -302,9 +302,11 @@ float deckShape(vec3 p, float alt, float lodB) {
       if (slab > -900.0) {
         // Two scales that never line up, so the pattern of holes does not come round again.
         float lod = max(lodB - 2.0, 0.0);
-        float c = 0.62 * textureLod(uBaseNoise, vec3(w.x, 917.0 * float(i), w.y) / 23000.0, lod).r
-                + 0.38 * textureLod(uBaseNoise, vec3(w.x + 7100.0, 1531.0 * float(i) + 300.0, w.y - 3900.0) / 37700.0, lod).r;
-        c = 0.5 + (c - 0.5) / 0.73;
+        float c = textureLod(uBaseNoise, vec3(w.x, 917.0 * float(i), w.y) / 23000.0, lod).r;
+        if (!coarse) {
+          c = 0.62 * c + 0.38 * textureLod(uBaseNoise, vec3(w.x + 7100.0, 1531.0 * float(i) + 300.0, w.y - 3900.0) / 37700.0, lod).r;
+          c = 0.5 + (c - 0.5) / 0.73;
+        }
         // The holes widen towards the deck's top and bottom: their rims are rounded.
         float y = (alt - DECK[i].x) / DECK[i].y;
         shape = max(shape, min(slab, (c - 0.44) * 3000.0 - 260.0 * y * y));
@@ -314,11 +316,24 @@ float deckShape(vec3 p, float alt, float lodB) {
     for (int i = 0; i < 3; i++) {
       vec2 v = world - swirlCentre(i, world);
       float r = length(v);
-      float rag = 1.0 + 0.12 * sin(5.0 * atan(v.y, v.x) + r / 900.0);
-      shape = min(shape, (r - 0.15 * SWIRL[i].z * rag) * 0.8);
+      float eye = 0.15 * SWIRL[i].z;
+      if (r < 1.6 * eye) {
+        float rag = coarse ? 1.0 : 1.0 + 0.12 * sin(5.0 * atan(v.y, v.x) + r / 900.0);
+        shape = min(shape, (r - eye * rag) * 0.8);
+      }
     }
   }
   return shape;
+}
+
+float deckShape(vec3 p, float alt, float lodB) {
+  return deckShapeOf(p, alt, lodB, false);
+}
+
+// The decks for the light marches: their holes from the coarser noise alone, without the
+// vortices' eyes (light does not need their detail; the march takes several of these a sample).
+float deckShapeLight(vec3 p, float alt, float lodB) {
+  return deckShapeOf(p, alt, lodB, true);
 }
 
 // Density of the storm's cloud (0..1) at shape metres inside the outer edge of its shape, where
@@ -344,7 +359,7 @@ float stormShape(vec3 p, float lodB) {
     if (shape >= -700.0) shape += stormBillows(textureLod(uBaseNoise, (p + uBaseOffset) * vec3(1.0, BASE_Y_SCALE, 1.0) / BASE_PERIOD, lodB), alt);
   }
   // The abyss's decks: their light and shadows are the storm's.
-  if (IN_ABYSS && deckSlab(alt) > -900.0) shape = max(shape, deckShape(p, alt, lodB));
+  if (IN_ABYSS && deckSlab(alt) > -900.0) shape = max(shape, deckShapeLight(p, alt, lodB));
   return shape;
 }
 
