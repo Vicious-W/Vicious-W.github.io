@@ -65,6 +65,70 @@ export const WELLS = [
 // The cave inside the rear tower, around this point of the path.
 export const CAVE = { x: -1650, y: 4540, z: -10600 };
 
+/**
+ * A storm's design, for bakeStorm: frame (where its volume lies, its grid and base), its towers,
+ * anvil, wells and the bubbles of clear air of a cave ([x, y, z, r]), overshooting tops ([dx, y,
+ * dz, r] from the first tower), the low deck between the towers' feet (where and how many
+ * heaps), where along the journey's path a corridor is carved through it (corridor(p)), and its
+ * seed. This one is the first storm.
+ */
+export const FIRST = Object.freeze({
+  frame: STORM,
+  towers: TOWERS,
+  anvil: ANVIL,
+  wells: WELLS,
+  cave: [[0, 0, 0, 760], [330, 120, 560, 560], [-300, -80, -540, 600], [520, -150, -200, 480], [-560, 200, 250, 460]].map(([ox, oy, oz, r]) => [CAVE.x + ox, CAVE.y + oy, CAVE.z + oz, r]),
+  overshoot: [[500, 11900, 0, 1500], [-300, 11700, 900, 1100]],
+  deck: { x: [-4200, 5200], z: [-8200, 9800], count: 230 },
+  corridor: p => p[2] < 9500 && p[2] > -6000,
+  seed: 77
+});
+
+/**
+ * The second storm (PLAN.md 5.2: each one bigger and stranger), further west: a giant main
+ * tower under a wider, higher anvil, a wall of towers to the east where the journey comes in, a
+ * thick low deck; no wells and no sea under it (the abyss: see the journey). Its own volume, the
+ * same size as the first's; the journey flies into its wall blind and down out of its base.
+ */
+export const SECOND_CENTRE = Object.freeze([-47000, -32000]);
+const C2 = SECOND_CENTRE;
+export const STORM2 = Object.freeze({
+  min: [C2[0] - 27000, C2[1] - 24000],
+  size: STORM.size,
+  grid: STORM.grid,
+  range: STORM.range,
+  base: STORM.base,
+  calm: [C2[0], C2[1], 23000, 29000]
+});
+export const SECOND = Object.freeze({
+  frame: STORM2,
+  towers: [
+    { name: "main", x: C2[0] - 1500, z: C2[1] + 500, r: 5600, top: 13300, flare: 0.9, lean: 0.03 },
+    // The eastern wall the journey flies into.
+    { x: C2[0] + 8500, z: C2[1] + 1500, r: 3800, top: 12400, flare: 0.35 },
+    { x: C2[0] + 8000, z: C2[1] - 5500, r: 3500, top: 11600 },
+    { x: C2[0] + 7200, z: C2[1] + 7800, r: 3300, top: 10900 },
+    { x: C2[0] + 2500, z: C2[1] - 9500, r: 3200, top: 12100, flare: 0.25 },
+    { x: C2[0] - 9000, z: C2[1] - 6000, r: 3600, top: 12600, flare: 0.3 },
+    { x: C2[0] - 8000, z: C2[1] + 8000, r: 3400, top: 11800 },
+    { x: C2[0] + 1500, z: C2[1] + 10500, r: 3000, top: 11200 },
+    { x: C2[0] - 13500, z: C2[1] + 1500, r: 2800, top: 10100 },
+    // Lesser ones outside, stepping down.
+    { x: C2[0] + 13500, z: C2[1] - 1500, r: 2400, top: 8600 },
+    { x: C2[0] + 12500, z: C2[1] + 7000, r: 2100, top: 7400 },
+    { x: C2[0] + 14500, z: C2[1] - 8500, r: 2000, top: 6900 },
+    { x: C2[0] - 3000, z: C2[1] - 13500, r: 2400, top: 8800 },
+    { x: C2[0] - 12000, z: C2[1] - 11000, r: 2200, top: 8200 }
+  ],
+  anvil: { x: C2[0] - 1500, z: C2[1] + 500, down: 24000, up: 14000, north: 12500, south: 13500, top: 13700, bottom: 10400, from: 8200 },
+  wells: [],
+  cave: [],
+  overshoot: [[700, 12700, 0, 1000], [-500, 12500, 1000, 900]],
+  deck: { x: [C2[0] - 6500, C2[0] + 7500], z: [C2[1] - 9500, C2[1] + 9500], count: 360 },
+  corridor: () => false,
+  seed: 131
+});
+
 const smoothstep = (a, b, x) => {
   const t = Math.min(Math.max((x - a) / (b - a), 0), 1);
   return t * t * (3 - 2 * t);
@@ -105,11 +169,12 @@ function makeNoise2(seed) {
  * (radius r, half-height h). A tower is a column of discs that follows a radius profile, with
  * bubbles bulging from its flanks, and a domed, cauliflower head unless it feeds the anvil.
  */
-function buildShapes(rand, clearOfPath) {
+function buildShapes(rand, clearOfPath, design) {
   const shapes = [];
   const range = (lo, hi) => lo + (hi - lo) * rand();
-  for (const t of TOWERS) {
-    const height = t.top - STORM.base;
+  const BASE = design.frame.base;
+  for (const t of design.towers) {
+    const height = t.top - BASE;
     const lean = t.lean ?? range(0.05, 0.11);
     // Wide foot, narrower waist; then a head, or a flare into the anvil.
     const profile = f =>
@@ -121,12 +186,12 @@ function buildShapes(rand, clearOfPath) {
     const step = 850;
     let ox = 0;
     let oz = 0;
-    for (let y = STORM.base + 200; y <= columnTop; y += step) {
-      const f = (y - STORM.base) / height;
+    for (let y = BASE + 200; y <= columnTop; y += step) {
+      const f = (y - BASE) / height;
       ox += (rand() - 0.5) * 0.09 * t.r;
       oz += (rand() - 0.5) * 0.09 * t.r;
       const r = t.r * profile(f) * range(0.94, 1.06);
-      const cx = t.x + ox + lean * (y - STORM.base);
+      const cx = t.x + ox + lean * (y - BASE);
       const cz = t.z + oz;
       shapes.push({ x: cx, y, z: cz, r, h: step * 0.75, round: Math.min(450, r * 0.3) });
       // Bubbles on the flanks: a few large buttresses, more small turrets.
@@ -142,7 +207,7 @@ function buildShapes(rand, clearOfPath) {
     }
     if (!t.flare) {
       // Head: a dome with a crown of bubbles.
-      const hx = t.x + ox + lean * (t.top - headR - STORM.base);
+      const hx = t.x + ox + lean * (t.top - headR - BASE);
       const hz = t.z + oz;
       const hy = t.top - headR;
       shapes.push({ x: hx, y: hy, z: hz, r: headR });
@@ -162,24 +227,31 @@ function buildShapes(rand, clearOfPath) {
     }
   }
   // Overshooting top above the main updraft.
-  const main = TOWERS[0];
-  shapes.push({ x: main.x + 500, y: 11900, z: main.z, r: 1500 });
-  shapes.push({ x: main.x - 300, y: 11700, z: main.z + 900, r: 1100 });
+  const main = design.towers[0];
+  for (const [dx, y, dz, r] of design.overshoot) shapes.push({ x: main.x + dx, y, z: main.z + dz, r });
 
   // The low deck: heaps of cloud between the feet of the towers, except over the wells.
-  const inWell = (x, z, margin) => WELLS.some(w => Math.hypot(x - w.x, z - w.z) < w.r + margin);
-  for (let n = 0; n < 230; n++) {
-    const x = range(-4200, 5200);
-    const z = range(-8200, 9800);
+  const inWell = (x, z, margin) => design.wells.some(w => Math.hypot(x - w.x, z - w.z) < w.r + margin);
+  const deck = design.deck;
+  for (let n = 0; n < deck.count; n++) {
+    const x = range(deck.x[0], deck.x[1]);
+    const z = range(deck.z[0], deck.z[1]);
     const r = range(900, 1500);
     if (inWell(x, z, r * 0.8)) continue;
-    shapes.push({ x, y: STORM.base + range(200, 1100), z, r });
+    shapes.push({ x, y: BASE + range(200, 1100), z, r });
   }
   return shapes;
 }
 
-/** Bakes the storm and returns its texture, its field and a sampler of the baked distance. */
-export function bakeStorm(seed = 77) {
+/**
+ * Bakes a storm (FIRST unless another design is given; path: the journey's) and returns its
+ * texture (none when noTexture: in a worker), its field, its data (bytes, as in the texture), the
+ * frame and a sampler of the baked distance.
+ */
+export function bakeStorm(design = FIRST, path = createPath(), { noTexture = false } = {}) {
+  const STORM = design.frame;
+  const ANVIL = design.anvil;
+  const seed = design.seed;
   const [nx, ny, nz] = STORM.grid;
   const [sx, sy, sz] = STORM.size;
   const vx = sx / nx;
@@ -216,7 +288,6 @@ export function bakeStorm(seed = 77) {
   // Towers and deck: smooth union of the shapes.
   const blend = 700;
   // The journey's way: flank bubbles keep clear of it.
-  const path = createPath();
   const route = [];
   for (let s = 0; s <= path.length; s += 150) route.push(path.position(s));
   const clearOfPath = b => {
@@ -226,7 +297,7 @@ export function bakeStorm(seed = 77) {
     }
     return true;
   };
-  for (const s of buildShapes(rand, clearOfPath)) {
+  for (const s of buildShapes(rand, clearOfPath, design)) {
     if (s.h === undefined) {
       within(s.x, s.y, s.z, s.r + R, s.r + R, (x, y, z, idx) => {
         const d = s.r - Math.hypot(x - s.x, y - s.y, z - s.z);
@@ -262,7 +333,7 @@ export function bakeStorm(seed = 77) {
       const r2 = Math.min(r1 * r1, 1.3);
       const top = ANVIL.top - 500 * r2 + 250 * (noise(x / 3000 + 40, z / 3000) - 0.5);
       const bottom = Math.min(ANVIL.bottom + 2300 * Math.sqrt(r2), top - 300);
-      for (let j = Math.floor(7500 / vy); j < ny; j++) {
+      for (let j = Math.floor((ANVIL.from ?? 7500) / vy); j < ny; j++) {
         const y = cy(j);
         const d = Math.min(top - y, y - bottom, edge);
         if (d > -R) {
@@ -284,34 +355,34 @@ export function bakeStorm(seed = 77) {
   };
   for (let s = 0; s <= path.length; s += 200) {
     const p = path.position(s);
-    if (p[2] < 9500 && p[2] > -6000) carve(p[0], p[1], p[2], 800, 1.0, 600);
+    if (design.corridor(p)) carve(p[0], p[1], p[2], 800, 1.0, 600);
   }
-  for (const w of WELLS) {
+  for (const w of design.wells) {
     for (let y = 300; y <= 3600; y += 300) {
       const wobble = noise(y / 900 + w.x, w.z) - 0.5;
       carve(w.x + wobble * 500, y, w.z + (noise(w.x, y / 900 + w.z) - 0.5) * 500, w.r * (0.75 + 0.3 * noise(y / 700, w.x + w.z)), 0.55, 500);
     }
   }
-  for (const [ox, oy, oz, r] of [[0, 0, 0, 760], [330, 120, 560, 560], [-300, -80, -540, 600], [520, -150, -200, 480], [-560, 200, 250, 460]]) {
-    carve(CAVE.x + ox, CAVE.y + oy, CAVE.z + oz, r, 1.15, 450);
-  }
+  for (const [x, y, z, r] of design.cave) carve(x, y, z, r, 1.15, 450);
 
   const data = new Uint8Array(field.length);
   for (let n = 0; n < field.length; n++) {
     data[n] = Math.round((Math.min(Math.max(field[n] / R, -1), 1) * 0.5 + 0.5) * 255);
   }
-  const texture = new THREE.Data3DTexture(data, nx, ny, nz);
-  texture.format = THREE.RedFormat;
-  texture.type = THREE.UnsignedByteType;
-  texture.wrapS = texture.wrapT = texture.wrapR = THREE.ClampToEdgeWrapping;
-  texture.minFilter = THREE.LinearMipmapLinearFilter;
-  texture.magFilter = THREE.LinearFilter;
-  texture.generateMipmaps = true;
-  texture.unpackAlignment = 1;
-  texture.needsUpdate = true;
+  const texture = noTexture ? null : stormTexture(data, STORM);
 
-  // Trilinear look-up of the baked distance (m), for placing lightning and timing the cabin.
-  const sample = (x, y, z) => {
+  return { texture, field, data, frame: STORM, sample: makeSampler(field, STORM) };
+}
+
+/** Trilinear look-up of a baked distance (m), for placing lightning and timing the cabin. */
+export function makeSampler(field, STORM) {
+  const [nx, ny, nz] = STORM.grid;
+  const vx = STORM.size[0] / nx;
+  const vy = STORM.size[1] / ny;
+  const vz = STORM.size[2] / nz;
+  const R = STORM.range;
+  const index = (i, j, k) => i + nx * (j + ny * k);
+  return (x, y, z) => {
     const gx = (x - STORM.min[0]) / vx - 0.5;
     const gy = y / vy - 0.5;
     const gz = (z - STORM.min[1]) / vz - 0.5;
@@ -329,7 +400,22 @@ export function bakeStorm(seed = 77) {
     const x11 = at(0, 1, 1) + (at(1, 1, 1) - at(0, 1, 1)) * fx;
     const y0 = x00 + (x10 - x00) * fy;
     const y1 = x01 + (x11 - x01) * fy;
-    return y0 + (y1 - y0) * fz;
+    // Nothing under the base (the shaders cut the cloud there).
+    return Math.min(y0 + (y1 - y0) * fz, y - STORM.base);
   };
-  return { texture, field, sample };
+}
+
+/** The GPU volume of a baked storm's bytes. */
+export function stormTexture(data, frame) {
+  const [nx, ny, nz] = frame.grid;
+  const texture = new THREE.Data3DTexture(data, nx, ny, nz);
+  texture.format = THREE.RedFormat;
+  texture.type = THREE.UnsignedByteType;
+  texture.wrapS = texture.wrapT = texture.wrapR = THREE.ClampToEdgeWrapping;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = true;
+  texture.unpackAlignment = 1;
+  texture.needsUpdate = true;
+  return texture;
 }

@@ -15,6 +15,17 @@ import stormSrc from "../shaders/storm.glsl?raw";
 import mistSrc from "../shaders/mist.frag?raw";
 import mistTemporalSrc from "../shaders/misttemporal.frag?raw";
 import funnelSrc from "../shaders/funnel.frag?raw";
+import orbSrc from "../shaders/orb.frag?raw";
+import { DECKS, DECK_LOW, deepLight, SWIRLS } from "../night/abyss.js";
+
+// An empty 1x1x1 volume, for a storm not baked yet.
+function placeholder3D() {
+  const t = new THREE.Data3DTexture(new Uint8Array([0]), 1, 1, 1);
+  t.format = THREE.RedFormat;
+  t.type = THREE.UnsignedByteType;
+  t.needsUpdate = true;
+  return t;
+}
 import temporalSrc from "../shaders/temporal.frag?raw";
 import compositeSrc from "../shaders/composite.frag?raw";
 
@@ -201,6 +212,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
   const sunIlluminance = night
     ? new THREE.Vector3(0.55, 0.68, 1.0).multiplyScalar(0.06)
     : new THREE.Vector3(1.0, 1.0, 1.0);
+  // (In the abyss the moon is gone: this is dimmed to nothing, see render.)
+  const moonFull = sunIlluminance.clone();
   const wind = night ? { x: 0, z: 0 } : CLOUD.wind;
   const targets = night ? 3 : 2;
 
@@ -368,6 +381,21 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         ? {
             uStorm: { value: night.storm },
             uStormCam: { value: new THREE.Vector2() },
+            // The second storm: a placeholder until it is baked (setSecondStorm).
+            uStorm2: { value: placeholder3D() },
+            uStorm2At: { value: new THREE.Vector3(0, 0, 0) },
+            uStorm2Calm: { value: new THREE.Vector4(...(night.calm2 ?? [0, 0, -1, -1])) },
+            // The abyss (storm.glsl): how far the world has turned into it, the lowest a cloud
+            // can then be, and the light that rises from its deep.
+            uAlien: { value: 0 },
+            DECK: { value: DECKS.map(d => new THREE.Vector2(...d)) },
+            SWIRL: { value: SWIRLS.map(s => new THREE.Vector4(...s)) },
+            uSlabBottom: { value: night.base },
+            uAbyssGlow: { value: new THREE.Vector3() },
+            // The creature (clouds.frag, moments.js).
+            uCreature: { value: new THREE.Vector4() },
+            uCreatureTurn: { value: new THREE.Vector2(1, 0) },
+            uCreaturePhase: { value: 0 },
             uMistNoise: { value: mistNoise },
             uMistOffset: { value: new THREE.Vector3() },
             uNearDist: { value: 0 },
@@ -424,9 +452,8 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
             uLinearOut: { value: 0 },
             uFlickPower: { value: 0 },
             uFlickColor: { value: new THREE.Vector3(0.72, 0.82, 1.0) },
-            uFlashPos: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
-            uFlashWeight: { value: new THREE.Vector3(1, 0, 0) },
-            uFlickPos: { value: new THREE.Vector3() },
+            uAlien: { value: 0 },
+            uAbyssTop: { value: Math.max(...DECKS.map(([mid, half]) => mid + half)) },
             uSprite: { value: new THREE.Vector4() },
             uSpriteSeed: { value: 0 },
             uTime: { value: 0 },
@@ -467,6 +494,13 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
           uDetailOffset: cu0.uDetailOffset,
           uStorm: cu0.uStorm,
           uStormCam: cu0.uStormCam,
+          uStorm2: cu0.uStorm2,
+          uStorm2At: cu0.uStorm2At,
+          uStorm2Calm: cu0.uStorm2Calm,
+          uAlien: cu0.uAlien,
+          uAbyssGlow: cu0.uAbyssGlow,
+          DECK: cu0.DECK,
+          SWIRL: cu0.SWIRL,
           uMistNoise: cu0.uMistNoise,
           uMistOffset: cu0.uMistOffset,
           uScudPos: cu0.uScudPos,
@@ -501,6 +535,19 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         }
       })
     : null;
+  // The same two passes with the abyss compiled in (storm.glsl's ABYSS), for once the world has
+  // turned into it; compiled in the background from the start, so the switch does not stall.
+  const abyssDefines = { ...cloudDefines, ABYSS: "1" };
+  const cloudAbyssPass = night ? createPass({ vertexShader, fragmentShader: fragment(withStorm(cloudsSrc)), defines: abyssDefines, uniforms: cloudPass.uniforms }) : null;
+  const mistAbyssPass = night ? createPass({ vertexShader, fragmentShader: fragment(withStorm(mistSrc)), defines: abyssDefines, uniforms: mistPass.uniforms }) : null;
+  let abyssReady = false;
+  if (night) {
+    Promise.all([cloudAbyssPass.compile(renderer), mistAbyssPass.compile(renderer)])
+      .then(() => (abyssReady = true))
+      .catch(() => (abyssReady = true));
+  }
+  // (Before it is ready, a frame that needs it compiles it there and then.)
+  const inAbyss = () => night && cloudPass.uniforms.uAlien.value > 0;
   const mistTemporalPass = night
     ? createPass({
         vertexShader,
@@ -540,6 +587,13 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
           uDetailOffset: cu0.uDetailOffset,
           uStorm: cu0.uStorm,
           uStormCam: cu0.uStormCam,
+          uStorm2: cu0.uStorm2,
+          uStorm2At: cu0.uStorm2At,
+          uStorm2Calm: cu0.uStorm2Calm,
+          uAlien: cu0.uAlien,
+          uAbyssGlow: cu0.uAbyssGlow,
+          DECK: cu0.DECK,
+          SWIRL: cu0.SWIRL,
           uMistNoise: cu0.uMistNoise,
           uMistOffset: cu0.uMistOffset,
           uScudPos: cu0.uScudPos,
@@ -566,6 +620,27 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
           uFunnelTop: { value: 1300 },
           uFunnelSpin: { value: 0 },
           uSceneDepth: { value: null }
+        }
+      })
+    : null;
+  // The orb (night, moments.js), drawn over the finished outside.
+  const orbPass = night
+    ? createPass({
+        vertexShader,
+        fragmentShader: fragment(orbSrc),
+        defines: nightDefines,
+        over: true,
+        uniforms: {
+          ...camUniforms(),
+          uResolution: { value: new THREE.Vector2(1, 1) },
+          uExposure: compositePass.uniforms.uExposure,
+          uTime: { value: 0 },
+          uOrb: { value: new THREE.Vector4() },
+          uOrbLight: { value: new THREE.Vector3() },
+          uOrbInside: { value: 0 },
+          uHaze: { value: 0 },
+          uSceneDepth: { value: null },
+          uDetailNoise: cu0.uDetailNoise
         }
       })
     : null;
@@ -636,6 +711,16 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
     get exposure() { return compositePass.uniforms.uExposure.value; },
     /** The reconstructed cloud image of the last frame: rgb + sky visibility, and depth. */
     get scene() { return history[historyIndex]; },
+
+    /**
+     * The second storm, once baked (night): its volume (texture), where its corner lies (min,
+     * world x, z) and its calm (centre x, z and radii).
+     */
+    setSecondStorm(texture, min) {
+      const u = cloudPass.uniforms;
+      u.uStorm2.value = texture;
+      u.uStorm2At.value.set(min[0] - night.min[0], 1, min[1] - night.min[1]);
+    },
     get frame() { return frame; },
     /** The mist around the aircraft (night): rgb = its light (exposed), a = what shows through; null when off. */
     get mist() { return mistOn ? mistHistory[mistIndex].texture : null; },
@@ -737,6 +822,22 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         mistOn = (view.near ?? 0) > 0;
         u.uNearDist.value = mistOn ? view.near : 0;
         u.uStormGlow.value = view.stormGlow ?? 0;
+        // The abyss: its decks, no sea, no moon; light from the deep, violet and dim, swelling
+        // with the discharges down there.
+        const alien = view.alien ?? 0;
+        u.uAlien.value = alien;
+        u.uSlabBottom.value = alien > 0 ? DECK_LOW : night.base;
+        u.uAbyssGlow.value.set(...deepLight(-Infinity, view.deepGlow ?? 0)).multiplyScalar(alien);
+        sunIlluminance.copy(moonFull).multiplyScalar(1 - alien);
+        const cr = view.creature;
+        if (cr && cr.on) {
+          u.uCreature.value.set(cr.pos.x, cr.pos.y, cr.pos.z, cr.size);
+          u.uCreatureTurn.value.set(Math.cos(cr.heading), Math.sin(cr.heading));
+          u.uCreaturePhase.value = cr.phase;
+        } else {
+          u.uCreature.value.w = 0;
+        }
+        compositePass.uniforms.uAlien.value = alien;
         u.uFlashOn.value = flash ? 1 : 0;
         u.uFlickOn.value = flick ? 1 : 0;
         // Sources relative to the camera (y stays altitude, as in the cloud shader).
@@ -751,16 +852,12 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         }
       }
       if (night) {
-        // The composite lights the sea with them (the same sources).
         const cpu = compositePass.uniforms;
-        for (let k = 0; k < 3; k++) cpu.uFlashPos.value[k].copy(u.uFlashPos.value[k]);
-        cpu.uFlashWeight.value.copy(u.uFlashWeight.value);
-        cpu.uFlickPos.value.copy(u.uFlickPos.value);
         const sp = view.sprite;
         cpu.uSprite.value.set(sp ? sp.x : 0, sp ? sp.z : 0, sp ? sp.power : 0, sp ? sp.count : 0);
         cpu.uSpriteSeed.value = sp ? sp.seed : 0;
       }
-      cloudPass.render(renderer, cloudTarget);
+      (inAbyss() ? cloudAbyssPass : cloudPass).render(renderer, cloudTarget);
       if (mistOn) {
         const m = mistPass.uniforms;
         setCamera(m, view);
@@ -778,6 +875,7 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         m.uOpen.value.set(...(view.open ?? [1, 1]));
         m.uFlashPower.value = flash ? flash.power : 0;
         if (flash) compositePass.uniforms.uFlashColor.value.set(...flash.color);
+        if (flick && flick.color) compositePass.uniforms.uFlickColor.value.set(...flick.color);
         m.uFlickPower.value = flick ? flick.power : 0;
         for (let k = 0; k < 4; k++) {
           if (view.lamps) {
@@ -786,15 +884,18 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
           } else {
             m.uLamp.value[k].set(0, 0, 0);
           }
-          // Another aircraft's (moments.js).
+          // Another aircraft's (moments.js), or the orb.
           if (view.traffic && view.traffic.on) {
             m.uLampPos.value[4 + k].copy(view.traffic.pos[k]);
             m.uLamp.value[4 + k].copy(view.traffic.light[k]).multiplyScalar(4);
+          } else if (k === 0 && view.orb && view.orb.on) {
+            m.uLampPos.value[4].copy(view.orb.pos);
+            m.uLamp.value[4].copy(view.orb.light);
           } else {
             m.uLamp.value[4 + k].set(0, 0, 0);
           }
         }
-        mistPass.render(renderer, mistTarget);
+        (inAbyss() ? mistAbyssPass : mistPass).render(renderer, mistTarget);
         // Resolve: blend with the last frames, reprojected at the mist's depth.
         const r = mistTemporalPass.uniforms;
         setCamera(r, view);
@@ -890,6 +991,22 @@ export function createSky(renderer, { cloudScale = 0.5, quality = "normal", nigh
         fu.uFlickPower.value = view.flick && view.flick.on ? view.flick.power : 0;
         fu.uSceneDepth.value = history[historyIndex].textures[1];
         funnelPass.render(renderer, target);
+      }
+      // The orb, over it.
+      if (orbPass && view.orb && view.orb.on) {
+        const ou = orbPass.uniforms;
+        ou.uCamRight.value.copy(view.right);
+        ou.uCamUp.value.copy(view.up);
+        ou.uCamForward.value.copy(view.forward);
+        ou.uTanHalf.value.copy(view.tanHalf);
+        ou.uResolution.value.set(target ? target.width : renderer.domElement.width, target ? target.height : renderer.domElement.height);
+        ou.uOrb.value.set(view.orb.pos.x, view.orb.pos.y, view.orb.pos.z, view.orb.radius);
+        ou.uOrbLight.value.copy(view.orb.light);
+        ou.uOrbInside.value = view.orb.inside;
+        ou.uHaze.value = view.cabin ? view.cabin.rain : 0;
+        ou.uTime.value = view.time ?? 0;
+        ou.uSceneDepth.value = history[historyIndex].textures[1];
+        orbPass.render(renderer, target);
       }
 
       prev.right.copy(view.right);

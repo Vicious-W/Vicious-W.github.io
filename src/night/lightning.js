@@ -1,6 +1,7 @@
 import { mulberry32 } from "../sky/cumulus.js";
-import { STORM, WELLS } from "./storm.js";
-import { STRIKE, SPIDERS, FUNNEL } from "./moments.js";
+import { SECOND_CENTRE, STORM, WELLS } from "./storm.js";
+import { CREATURE, STRIKE, SPIDERS, FUNNEL, TWIN } from "./moments.js";
+import { DECKS } from "./abyss.js";
 
 /**
  * Lightning of the night journey. Two lights at any time:
@@ -15,6 +16,9 @@ import { STRIKE, SPIDERS, FUNNEL } from "./moments.js";
 const COLOR_IC = [0.72, 0.82, 1.0]; // inside cloud: scattered, bluish
 const COLOR_CG = [0.86, 0.9, 1.0]; // channel in clear air: bluish white
 const CENTRE = [2000, -1500]; // middle of the cluster of towers
+// Near the second storm (storm.js) the lightning's colour is wrong (PLAN.md 5.2), more so the
+// closer: one of these, mixed into its usual colour.
+const WRONG = [[0.45, 1.0, 0.5], [1.0, 0.35, 0.85], [1.0, 0.6, 0.25], [0.35, 1.0, 0.95], [0.75, 0.3, 1.0]];
 
 /** A jagged channel from a to b by midpoint displacement, with branches. */
 export function makeChannel(rand, a, b, { depth = 6, rough = 0.3, branches = 4 } = {}) {
@@ -120,11 +124,16 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
   let nextFlick = 0.2;
   const spidersDone = SPIDERS.map(() => false);
   const funnelDone = FUNNEL.strikes.map(() => false);
+  const creatureDone = new Set();
+  const twinDone = new Set();
   let id = 0;
   const state = {
     flash: { on: false, id: -1, power: 0, pos: [[0, 0, 0], [0, 0, 0], [0, 0, 0]], weight: [1, 0, 0], color: COLOR_IC, depth: 0, bolt: null, boltPower: 0 },
     flick: { on: false, id: -1, power: 0, pos: [0, 0, 0], color: COLOR_IC, depth: 0 },
-    glow: 0
+    glow: 0,
+    // The abyss's light from the deep: it swells with each discharge down there and dies away
+    // slowly (0 = its calm level).
+    deep: 0
   };
 
   // The storm's own glow around the aircraft: strongest inside, a slow uneven shimmer.
@@ -133,7 +142,25 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     return near * (0.7 + 0.2 * Math.sin(t * 2.3) * Math.sin(t * 0.7 + 1.3) + 0.1 * Math.sin(t * 5.1 + Math.sin(t * 1.7) * 2));
   };
 
-  const centreDistance = view => Math.hypot(view.x - CENTRE[0], view.z - CENTRE[1]);
+  // The storm whose centre is nearer: its centre, and whether it is the second one.
+  let centre = CENTRE;
+  let second = false;
+  const placeAt = view => {
+    second = Math.hypot(view.x - SECOND_CENTRE[0], view.z - SECOND_CENTRE[1]) < Math.hypot(view.x - CENTRE[0], view.z - CENTRE[1]);
+    centre = second ? SECOND_CENTRE : CENTRE;
+  };
+  const centreDistance = view => Math.hypot(view.x - centre[0], view.z - centre[1]);
+  // In the abyss (the journey's view.alien) the lightning lives in its decks.
+  let abyss = false;
+  // A colour for lightning: as it should be, or, near the second storm and in the abyss, gone
+  // wrong.
+  const tinted = (view, base) => {
+    if (!second && !abyss) return base;
+    const near = abyss ? 1 : 1 - Math.min(Math.max((centreDistance(view) - 9000) / 17000, 0), 1);
+    const w = near * range(0.45, 1);
+    const odd = WRONG[Math.floor(rand() * WRONG.length)];
+    return base.map((v, i) => v + (odd[i] - v) * w);
+  };
 
   /**
    * A seat for lightning among candidates from pick(): inside the cloud, a few hundred metres
@@ -171,7 +198,7 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
   const anywhere = () => {
     const a = rand() * Math.PI * 2;
     const r = Math.sqrt(rand()) * 11000;
-    return [CENTRE[0] + Math.cos(a) * r, range(3000, 10500), CENTRE[1] + Math.sin(a) * r];
+    return [centre[0] + Math.cos(a) * r, range(3000, 10500), centre[1] + Math.sin(a) * r];
   };
   const around = (view, rMin, rMax, below = 1500, above = 4200) => () => {
     const a = rand() * Math.PI * 2;
@@ -204,7 +231,7 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
       if (at) {
         x = at[0];
         z = at[1];
-      } else if (near === "well" || (near && rand() < 0.7)) {
+      } else if (!second && (near === "well" || (near && rand() < 0.7))) {
         // The nearest well most of the time.
         const byDistance = WELLS.slice().sort((a, b) => Math.hypot(a.x - view.x, a.z - view.z) - Math.hypot(b.x - view.x, b.z - view.z));
         const w = byDistance[near === "well" || rand() < 0.7 ? 0 : 1 + Math.floor(rand() * (WELLS.length - 1))];
@@ -215,8 +242,8 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
         for (let i = 0; i < 24; i++) {
           const a = rand() * Math.PI * 2;
           const r = range(1500, 12000);
-          const px = CENTRE[0] + Math.cos(a) * r;
-          const pz = CENTRE[1] + Math.sin(a) * r;
+          const px = centre[0] + Math.cos(a) * r;
+          const pz = centre[1] + Math.sin(a) * r;
           if (!farFromWells(px, pz)) continue;
           const s = (underCloud(px, pz) ? 1 : 0) + (seen(px, pz) ? 2 : 0) + rand() * 0.5;
           if (s > score) {
@@ -226,8 +253,8 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
           }
         }
         if (score < 0) {
-          x = CENTRE[0] + 9000;
-          z = CENTRE[1] + 6000;
+          x = centre[0] + 9000;
+          z = centre[1] + 6000;
         }
       }
       const top = [x + range(-1000, 1000), STORM.base + range(900, 2600), z + range(-1000, 1000)];
@@ -241,7 +268,7 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
       // the deck below it or a wall): blinding, and its thunder a crack a few seconds later.
       const close = near && !tight && rand() < 0.3;
       const pick = near ? (tight ? around(view, 500, 2200, 900, 1800) : close ? around(view, 300, 2400, 2200, 1400) : around(view, 1500, 6000)) : anywhere;
-      const at = seat(view, pick, near ? 32 : 16) || { pos: [CENTRE[0], 6000, CENTRE[1]], depth: 800 };
+      const at = seat(view, pick, near ? 32 : 16) || { pos: [centre[0], 6000, centre[1]], depth: 800 };
       depth = at.depth;
       const a = rand() * Math.PI * 2;
       const len = range(900, 2600);
@@ -261,7 +288,7 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     const [lo, hi] = kind === "cg" ? [3.5, 8] : near ? (tight ? [7, 14] : [26, 46]) : [12, 24];
     const scale = range(lo, hi);
     const strength = 0.6 + (0.8 * (scale - lo)) / (hi - lo);
-    return { id: id++, kind, start: 0, strokes, duration, sources, weight: w.map(v => v / sum), scale, strength, bolt, depth, color: kind === "cg" ? COLOR_CG : COLOR_IC };
+    return { id: id++, kind, start: 0, strokes, duration, sources, weight: w.map(v => v / sum), scale, strength, bolt, depth, color: tinted(view, kind === "cg" ? COLOR_CG : COLOR_IC) };
   }
 
   /**
@@ -409,7 +436,81 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     };
   }
 
+  /**
+   * A place for lightning in the abyss's decks: mostly deep below (deep: only there), a little in
+   * the deck overhead; rMin..rMax metres away across. depth: how far inside its deck.
+   */
+  function deckSeat(view, deep, rMin, rMax) {
+    const below = [];
+    let above = -1;
+    DECKS.forEach(([mid], i) => {
+      if (mid < view.alt - 600) below.push(i);
+      else if (mid > view.alt + 600 && above < 0) above = i;
+    });
+    let i = below.length ? below[Math.min(below.length - 1, Math.floor(Math.pow(rand(), deep ? 0.55 : 1.3) * below.length))] : 0;
+    if (!deep && above >= 0 && rand() < 0.2) i = above;
+    const [mid, half] = DECKS[i];
+    // Mostly where the aircraft is looking, ahead and to the sides: there they are seen.
+    const look = Math.atan2(view.forward.z, view.forward.x);
+    const a = rand() < 0.7 ? look + range(-1.9, 1.9) : rand() * Math.PI * 2;
+    const r = range(rMin, rMax);
+    const y = mid + range(-0.6, 0.6) * half;
+    return { pos: [view.x + Math.cos(a) * r, y, view.z + Math.sin(a) * r], depth: Math.max(80, half - Math.abs(y - mid)) };
+  }
+
+  /**
+   * A great flash in the deck beyond what is at `at` (world), as seen from the aircraft: it
+   * lights the cloud behind it far and wide (the creature, moments.js, shows against it).
+   */
+  function createBehind(view, at) {
+    const dx = at[0] - view.x;
+    const dz = at[2] - view.z;
+    const d = Math.hypot(dx, dz) || 1;
+    const ux = dx / d;
+    const uz = dz / d;
+    const cx = view.x + ux * d * 1.9;
+    const cz = view.z + uz * d * 1.9;
+    const sources = [-1, 0, 1].map(k => [cx - uz * k * 2400 + range(-300, 300), -650 + range(-150, 150), cz + ux * k * 2400 + range(-300, 300)]);
+    const { strokes, duration } = makeStrokes(rand, 3 + Math.floor(rand() * 3));
+    const scale = range(50, 70);
+    return { id: id++, kind: "ic", start: 0, strokes, duration, sources, weight: [0.36, 0.34, 0.3], scale, strength: 1.4, bolt: null, depth: 220, color: tinted(view, COLOR_IC) };
+  }
+
+  /** A flash in the deck overhead, a couple of kilometres from what is at `at` (world): it lights it from above. */
+  function createAbove(view, at) {
+    const a = rand() * Math.PI * 2;
+    const r = range(1200, 2400);
+    const [mid] = DECKS[0];
+    const c = [at[0] + Math.cos(a) * r, mid - 120, at[2] + Math.sin(a) * r];
+    const b = rand() * Math.PI * 2;
+    const sources = [-0.5, 0, 0.5].map(f => [c[0] + Math.cos(b) * 1800 * f, c[1] + range(-100, 100), c[2] + Math.sin(b) * 1800 * f]);
+    const { strokes, duration } = makeStrokes(rand, 2 + Math.floor(rand() * 3));
+    const scale = range(30, 45);
+    return { id: id++, kind: "ic", start: 0, strokes, duration, sources, weight: [0.3, 0.4, 0.3], scale, strength: 1.2, bolt: null, depth: 220, color: tinted(view, COLOR_IC) };
+  }
+
+  /** Lightning in a deck of the abyss: a discharge a kilometre or two long within it. */
+  function createDeep(view) {
+    const at = deckSeat(view, false, 1500, 14000);
+    const a = rand() * Math.PI * 2;
+    const len = range(900, 2600);
+    const sources = [-0.5, 0, 0.5].map(f => [at.pos[0] + Math.cos(a) * len * f, at.pos[1] + range(-120, 120), at.pos[2] + Math.sin(a) * len * f]);
+    const { strokes, duration } = makeStrokes(rand, 1 + Math.floor(rand() * 4));
+    // (The abyss's discharges are greater than any on Earth.)
+    const scale = range(18, 42);
+    const w = [range(0.45, 0.65), range(0.3, 0.5), range(0.25, 0.45)];
+    const sum = w[0] + w[1] + w[2];
+    return { id: id++, kind: "ic", start: 0, strokes, duration, sources, weight: w.map(v => v / sum), scale, strength: 0.6 + (0.8 * (scale - 18)) / 24, bolt: null, depth: at.depth, color: tinted(view, COLOR_IC) };
+  }
+
   function createFlick(view) {
+    // The abyss: its flicker never stops, deep down.
+    if (abyss) {
+      const at = deckSeat(view, true, 4000, 25000);
+      const { strokes, duration } = makeStrokes(rand, 1 + Math.floor(rand() * 3), true);
+      const scale = range(14, 36);
+      return { id: id++, start: 0, strokes, duration, pos: at.pos, depth: at.depth, scale, strength: 0.6 + (0.8 * (scale - 14)) / 22, color: tinted(view, COLOR_IC) };
+    }
     // Away from the aircraft, so it shows the storm in depth rather than lighting what is near.
     const inside = centreDistance(view) < 11000;
     const pick = () => {
@@ -419,14 +520,22 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
       }
       return anywhere();
     };
-    const at = seat(view, pick, 10) || { pos: [CENTRE[0], 7000, CENTRE[1]], depth: 900 };
+    const at = seat(view, pick, 10) || { pos: [centre[0], 7000, centre[1]], depth: 900 };
     const { strokes, duration } = makeStrokes(rand, 1 + Math.floor(rand() * 3), true);
     const scale = range(6, 15);
-    return { id: id++, start: 0, strokes, duration, pos: at.pos, depth: at.depth, scale, strength: 0.6 + (0.8 * (scale - 6)) / 9 };
+    return { id: id++, start: 0, strokes, duration, pos: at.pos, depth: at.depth, scale, strength: 0.6 + (0.8 * (scale - 6)) / 9, color: tinted(view, COLOR_IC) };
   }
 
   function flashRate(view) {
-    // Flashes per second: a distant storm flickers, inside it is relentless.
+    // Flashes per second: a distant storm flickers, inside it is relentless; the abyss is alive
+    // with it.
+    // (Down there it comes and goes: stretches of a few minutes when it never stops, others
+    // nearly still.)
+    if (abyss) {
+      const t = view.time ?? 0;
+      const activity = 0.5 + 0.5 * Math.sin(t / 61 + 1.3 * Math.sin(t / 37));
+      return Math.max(0.2 + 0.85 * activity, centreDistance(view) < 9500 ? 0.75 : 0);
+    }
     const d = centreDistance(view);
     if (d < 9500) return 0.75;
     if (d < 16000) return 0.5;
@@ -475,6 +584,7 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
     f.power = p * flick.scale;
     f.pos = flick.pos;
     f.depth = flick.depth;
+    f.color = flick.color;
     f.event = flick;
   }
 
@@ -483,6 +593,8 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
 
     /** Advance to time t (s) of the journey; dt is the frame length. */
     update(view, t, dt) {
+      placeAt(view);
+      abyss = (view.alien ?? 0) > 0.5;
       // The strike happens when it is due, whatever else is lit.
       if (t >= STRIKE.t - LEAD && t < STRIKE.t + 0.5 && (!flash || flash.kind !== "strike")) {
         flash = createStrike(view);
@@ -509,11 +621,35 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
           }
         }
       });
+      // The flashes that light the twin (moments.js).
+      TWIN.flashes.forEach((ft, j) => {
+        if (!flash && !twinDone.has(j) && t >= ft - LEAD && t < ft + 2 && view.twin && view.twin.on) {
+          twinDone.add(j);
+          flash = createAbove(view, [view.x + view.twin.pos.x, view.alt + view.twin.pos.y, view.z + view.twin.pos.z]);
+          flash.start = Math.max(ft, t + LEAD * 0.5);
+        }
+      });
+      // The flashes that show the creature (moments.js).
+      CREATURE.forEach((c, i) =>
+        c.flashes.forEach((ft, j) => {
+          const key = i * 8 + j;
+          if (!flash && !creatureDone.has(key) && t >= ft - LEAD && t < ft + 2 && view.creature && view.creature.world) {
+            creatureDone.add(key);
+            flash = createBehind(view, view.creature.world);
+            flash.start = Math.max(ft, t + LEAD * 0.5);
+          }
+        })
+      );
       if (!flash && t >= nextFlash - LEAD) {
-        // Inside the storm: among its towers, or in its cloud.
-        const inside = centreDistance(view) < 9500 || stormSD(view.x, view.alt, view.z) > -1000;
-        const kind = rand() < (inside ? 0.3 : 0.4) ? "cg" : "ic";
-        flash = createFlash(view, kind, inside && rand() < 0.75);
+        // In the abyss, in its decks (under the second storm, half of them still in the storm).
+        if (abyss && (stormSD(view.x, view.alt + 900, view.z) < 0 || rand() < 0.5)) {
+          flash = createDeep(view);
+        } else {
+          // Inside the storm: among its towers, or in its cloud.
+          const inside = centreDistance(view) < 9500 || stormSD(view.x, view.alt, view.z) > -1000;
+          const kind = rand() < (inside ? 0.3 : 0.4) ? "cg" : "ic";
+          flash = createFlash(view, kind, inside && rand() < 0.75);
+        }
         flash.start = Math.max(nextFlash, t + LEAD * 0.5);
       }
       if (flash && t - flash.start > flash.duration) {
@@ -532,17 +668,21 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
       if (flash) state.flash.age = t - flash.start;
       writeFlick(flick ? framePower(flick.strokes, t - flick.start, dt) : 0);
       state.glow = glowAt(view, t);
+      const swell = abyss && flick ? Math.min(state.flick.power / 14, 2.5) : 0;
+      state.deep += (swell - state.deep) * (1 - Math.exp(-dt / (swell > state.deep ? 0.06 : 1.4)));
       return state;
     },
 
     /**
      * For captures: hold lightning still. kind: "ic" (far), "near", "cg", "well" (a bolt under
-     * the nearest well) or "none" for the flash, ms after its first stroke; flick: whether the
-     * flicker is lit.
+     * the nearest well), "deep" (in the abyss's decks) or "none" for the flash, ms after its
+     * first stroke; flick: whether the flicker is lit.
      */
     force(view, kind, ms, flickOn) {
+      placeAt(view);
+      abyss = (view.alien ?? 0) > 0.5;
       const make = { ic: ["ic", false], near: ["ic", true], cg: ["cg", true], well: ["cg", "well"] }[kind];
-      const heldFlash = make ? createFlash(view, make[0], make[1]) : null;
+      const heldFlash = kind === "deep" ? createDeep(view) : make ? createFlash(view, make[0], make[1]) : null;
       const heldFlick = flickOn ? createFlick(view) : null;
       nextFlash = Infinity;
       nextFlick = Infinity;
@@ -553,6 +693,7 @@ export function createLightning({ seed = 9, stormSD = () => 1000 } = {}) {
           writeFlash(flash ? strokePower(flash.strokes, ms / 1000) : 0);
           writeFlick(flick ? 1 : 0);
           state.glow = glowAt(v, t);
+          state.deep = abyss && flick ? 1 : 0;
           return state;
         }
       };

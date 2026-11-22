@@ -45,6 +45,10 @@ export function createPass({ vertexShader, fragmentShader, uniforms, defines = {
       renderer.render(scene, camera);
       renderer.autoClear = autoClear;
     },
+    /** Compiles its shader without holding up the frames (where the browser can), ahead of its first use. */
+    compile(renderer) {
+      return renderer.compileAsync ? renderer.compileAsync(scene, camera) : Promise.resolve(renderer.compile(scene, camera));
+    },
     dispose() {
       material.dispose();
     }

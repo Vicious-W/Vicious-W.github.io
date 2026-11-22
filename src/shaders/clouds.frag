@@ -52,6 +52,7 @@ uniform float uFlickOn;
 uniform float uFlickDepth;
 uniform float uFog;         // rain and haze in the air of the storm, 0..1
 uniform float uStormGlow;   // the storm's own faint glow around the aircraft, 0..1
+uniform float uSlabBottom;  // the lowest a cloud can be (m): the storm's base, or in the abyss its last deck
 // Light of the flash (r) and of the flicker (g) per unit of their power; their flicker in time
 // is applied in composite.frag, so the temporal filter never smears it.
 layout(location = 2) out vec4 outFlash;
@@ -60,7 +61,13 @@ layout(location = 2) out vec4 outFlash;
 // the march to skip (only the storm knows one: its baked shape is a distance field), and
 // whether the density it returned belongs to the storm.
 float gSafe = 0.0;
+// The view ray, for skipping to the abyss's decks along it (alongToDeck): how fast its altitude
+// rises per metre, and how much faster still as the planet curves away beneath it.
+float gRise = 0.0;
+float gCurve = 0.0;
 bool gStorm = false;
+// Set by densityAt: the sample belongs to a deck of the abyss (storm.glsl).
+bool gDeck = false;
 // Set by densityAt when the storm's density is zero: how far in the cloud is likely to begin
 // (m; the mist eats away the outer part of its fringe, so that can be well inside its shape).
 float gGap = 0.0;
@@ -124,17 +131,22 @@ bool cloudInterval(float y0, vec3 d, out float t0, out float t1) {
   float a = dot(d.xz, d.xz) * (0.5 / RG_M);
   vec2 rb;
   vec2 rt;
-  int nb = quadRoots(a, d.y, y0 - CLOUD_BOTTOM, rb);
+#ifdef NIGHT
+  float bottom = uSlabBottom;
+#else
+  float bottom = CLOUD_BOTTOM;
+#endif
+  int nb = quadRoots(a, d.y, y0 - bottom, rb);
   int nt = quadRoots(a, d.y, y0 - CLOUD_TOP_MAX, rt);
   // A miss leaves t0 = t1 = -1. One exit only: Direct3D's shader compiler (Chrome on Windows)
   // warns of an uninitialized result when a nested branch returns early.
   t0 = -1.0;
   t1 = -1.0;
-  if (y0 >= CLOUD_BOTTOM && y0 <= CLOUD_TOP_MAX) {
+  if (y0 >= bottom && y0 <= CLOUD_TOP_MAX) {
     t0 = 0.0;
     t1 = nt > 0 ? rt.y : MAX_DIST;
     if (nb >= 1 && rb.x > 0.0) t1 = min(t1, rb.x);
-  } else if (y0 < CLOUD_BOTTOM) {
+  } else if (y0 < bottom) {
     if (nb > 0 && rb.y > 0.0) {
       t0 = rb.y;
       t1 = nt > 0 ? rt.y : MAX_DIST;
@@ -171,6 +183,31 @@ Weather weatherAt(vec2 xz, float lodLocal, float lodRegional) {
   return w;
 }
 
+#ifdef NIGHT
+// The decks are flat: how far along the view ray, from a sample at alt t metres along it, until
+// it comes within reach of one (m; 0 when it is within reach already). Its altitude goes as
+// alt + rate s + gCurve s^2 / 2 from there.
+float alongToDeck(float alt, float t) {
+  float rate = gRise + gCurve * t;
+  float best = 1e9;
+  for (int i = 0; i < DECKS; i++) {
+    float lo = DECK[i].x - DECK[i].y - 700.0;
+    float hi = DECK[i].x + DECK[i].y + 700.0;
+    if (alt >= lo && alt <= hi) {
+      best = 0.0;
+    } else if (lo > alt) {
+      float dA = lo - alt;
+      best = min(best, 2.0 * dA / (rate + sqrt(rate * rate + 2.0 * gCurve * dA)));
+    } else if (rate < 0.0) {
+      float dA = alt - hi;
+      float disc = rate * rate - 2.0 * gCurve * dA;
+      if (disc >= 0.0) best = min(best, 2.0 * dA / (-rate + sqrt(disc)));
+    }
+  }
+  return best;
+}
+#endif
+
 // detail: -1 = coarse probe (inflated), 0 = shape only, 1 = edge detail, 2 = detail plus a
 // finer octave (close range). soft: the least depth (m) over which the surface turns opaque.
 // Far away it is about half a march step, so a step landing in the edge gets part of the
@@ -179,7 +216,12 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, float lodM, int detai
   float alt = altitudeAt(p);
   float z = alt - CLOUD_BOTTOM;
   h = 1.0;
+#ifdef NIGHT
+  // Under the cloud base there is only the abyss's decks (storm.glsl), when there is the abyss.
+  if (z < 0.0 && (!IN_ABYSS || deckSlab(alt) < -900.0)) return 0.0;
+#else
   if (z < 0.0) return 0.0;
+#endif
 
   // Heaped clouds are looked up in cloud-map space: rotated, drifting with the wind, warped so
   // footprints are irregular and change with height, and leaning downwind with height (wind
@@ -189,12 +231,12 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, float lodM, int detai
 #ifdef NIGHT
   gSafe = 0.0;
   gStorm = false;
+  gDeck = false;
   gGap = 0.0;
   gScud = false;
-  // Fair-weather clouds keep away from the storm, so around it none of their look-ups are needed.
-  vec3 suv = stormUv(p, alt);
-  float calm = smoothstep(STORM_CALM.z, STORM_CALM.w, length(suv.xz * STORM_SIZE.xz + STORM_MIN - STORM_CALM.xy));
-  bool fair = calm > 0.0;
+  // Fair-weather clouds keep away from the storms, so around them none of their look-ups are needed.
+  float calm = stormCalm(p) * (1.0 - uAlien);
+  bool fair = calm > 0.0 && z >= 0.0;
 #else
   const float calm = 1.0;
   const bool fair = true;
@@ -221,8 +263,18 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, float lodM, int detai
 #ifdef NIGHT
   // The storm volume, tested at a coarse level first (its distances are clamped, so anything
   // above the floor means the storm is within reach).
-  bool inBox = all(greaterThan(suv, vec3(0.0))) && all(lessThan(suv, vec3(1.0)));
-  float coarse = inBox ? stormSD(suv, 2.0) : -STORM_RANGE;
+  bool inBox = z >= 0.0 && inAStorm(p, alt);
+  bool stormBox = inBox;
+  float coarse = inBox ? stormField(p, alt, 2.0) : -STORM_RANGE;
+  float stormSkip = inBox ? max(-coarse - 1000.0, 0.0) : 1e9;
+  // The abyss's decks (their holes can only take cloud away; the billows add a little). Along
+  // the view ray the next one may be much further off than straight up or down.
+  float deckSkip = 1e9;
+  if (IN_ABYSS) {
+    coarse = max(coarse, deckSlab(alt) + 200.0);
+    inBox = true;
+    deckSkip = gT >= 0.0 ? alongToDeck(alt, gT) : max(-deckSlab(alt) - 700.0, 0.0);
+  }
   stormNear = coarse > -STORM_RANGE + 60.0;
   // Near the storm no other cloud can be in the way, so its distance bounds a safe skip,
   // less the most that noise, detail and the soft surface could add (the coarse level is an
@@ -230,6 +282,7 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, float lodM, int detai
   float scudSafe = scudReach(p);
   stormNear = stormNear || scudSafe <= 0.0;
   if (!fair && inBox && coarse < -1000.0) gSafe = min(-coarse - 1000.0, max(scudSafe, 0.0));
+  if (!fair && IN_ABYSS) gSafe = max(gSafe, min(min(stormSkip, deckSkip), max(scudSafe, 0.0)));
 #endif
   if (!(mapNear || giantNear || sheetNear || altoNear || stormNear)) {
     h = -1.0; // nothing within reach: the caller may take a longer step
@@ -294,9 +347,25 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, float lodM, int detai
   float edgeK = 1.0;
   float thin = 1.0;
   if (stormNear) {
-    float sdFine = stormSD(suv, max(lodB - 3.0, 0.0));
-    if (!fair && sdFine < -900.0) gSafe = min(-sdFine - 900.0, max(scudSafe, 0.0));
+    float sdFine = z < 0.0 ? -STORM_RANGE : stormField(p, alt, max(lodB - 3.0, 0.0));
+    // (The decks bound the skip too: a slab's distance is how far above or below it p is, and
+    // along the view ray it can be far more.)
+    float reach = IN_ABYSS ? max(sdFine, deckSlab(alt) + 200.0) : sdFine;
+    if (!fair && reach < -900.0) gSafe = min(-reach - 900.0, max(scudSafe, 0.0));
+    if (!fair && IN_ABYSS) {
+      float storm = stormBox ? max(-sdFine - 900.0, 0.0) : 1e9;
+      gSafe = max(gSafe, min(min(storm, deckSkip), max(scudSafe, 0.0)));
+    }
     float sshape = withScud(p, n, sdFine + stormBillows(n, alt), edgeK, thin);
+    if (IN_ABYSS && deckSlab(alt) > -900.0) {
+      float dshape = deckShape(p, alt, lodB) + 0.4 * stormBillows(n, alt);
+      if (dshape > sshape) {
+        sshape = dshape;
+        gDeck = true;
+        edgeK = 1.0;
+        thin = 1.0;
+      }
+    }
     if (sshape > shape) {
       shape = sshape;
       edge = 90.0;
@@ -314,7 +383,8 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, float lodM, int detai
       // The storm: its edge detail, then the fringe of mist (storm.glsl). Where the mist is
       // smaller than a pixel only its average is left, which needs no look-up.
       // (one level smoother than the pixel: its creases drew thin veins over the faces)
-      if (detail > 0 && shape > -2.2 * edge) shape += stormEdge(p, z, lodD + 1.2, detail > 1) * edgeK;
+      // (Far off, a deck's edge detail is lost in the dark: not worth its look-ups.)
+      if (detail > 0 && shape > -2.2 * edge && !(gDeck && gT > 9000.0)) shape += stormEdge(p, gDeck ? 1000.0 : z, lodD + 1.2, detail > 1) * edgeK;
       float e = 0.5;
       // The mist's tangle belongs to the air close by (the mist pass draws it in full): from a few
       // hundred metres on a cloud's surface is its rounded bulges alone, smooth (the tangle, even
@@ -326,7 +396,7 @@ float densityAt(vec3 p, Weather w, float lodB, float lodD, float lodM, int detai
       // The search probe takes all the fringe; the surface search (detail 0) its average, so it
       // finds the surface where the mist has left it, not the outer edge of the shape.
       d = detail > 0 ? stormMist(shape, e) : (detail == 0 ? stormMist(shape, 0.5) : clamp(shape / max(FRINGE, soft), 0.0, 1.0));
-      d *= smoothstep(0.0, 30.0, z) * (detail < 0 ? 1.0 : thin);
+      d *= (gDeck ? 1.0 : smoothstep(0.0, 30.0, z)) * (detail < 0 ? 1.0 : thin);
       gScud = thin < 1.0;
       if (d <= 0.0) gGap = ERODE * e * FRINGE - shape;
       // (the surface search's average: stormMist(shape, 0.5) starts at 0.425 of the fringe)
@@ -412,8 +482,7 @@ float seaShadow(vec3 p, float jitter) {
 #ifdef NIGHT
   // Under the storm its shadow is all there is, and it is wide and soft: a few coarse taps
   // of the baked shape along the moonlight, instead of the full march.
-  vec2 fromStorm = p.xz + uStormCam + STORM_MIN - STORM_CALM.xy;
-  if (dot(fromStorm, fromStorm) < STORM_CALM.z * STORM_CALM.z) {
+  if (nearAStorm(p)) {
     lit = 1.0;
     for (int i = 0; i < 6; i++) {
       float alt = CLOUD_BOTTOM + 400.0 + 1900.0 * (float(i) + jitter);
@@ -473,6 +542,76 @@ vec3 shadeSea(vec3 dir, float tSea, float rCamKm, vec3 skyAvg, float jitter) {
   return skyR * F + glint + body;
 }
 
+#ifdef NIGHT
+// ---- the creature (night/moments.js): something vast in the abyss, seen only as an outline when
+// lightning lights the cloud behind it. A broad flat body, longer than wide, its rim rippling,
+// and long tendrils hanging from its underside, swaying, thinning to threads. It sends back no
+// light: it only hides what lies beyond it.
+uniform vec4 uCreature;      // its centre: x, z relative to the camera, y its height (m); w its size (0: none)
+uniform vec2 uCreatureTurn;  // cos and sin of its heading
+uniform float uCreaturePhase; // how far its ripples and sway have gone
+
+// Its shape (m, outside positive; a bound, not the exact distance) in its own frame: x along
+// it, y up, z across. A broad wing, thin at its rim and swelling into a long hump along its
+// back, its rim rippling up and down in slow waves that run back along it; long tendrils hang
+// from the back half of its underside, thinning to threads and curling as they sway.
+float creatureSD(vec3 q) {
+  vec2 e = q.xz / vec2(1800.0, 1250.0);
+  float rr = length(e); // 0 at its middle, 1 at its rim
+  float a = atan(q.z, q.x);
+  float mid = 150.0 * rr * rr * sin(2.0 * a + 3.0 * rr - uCreaturePhase) + 50.0 * rr * sin(5.0 * a - 1.3 * uCreaturePhase);
+  float thick = 35.0 + 230.0 * max(1.0 - rr * rr, 0.0);
+  vec2 h = q.xz / vec2(800.0, 280.0);
+  float hump = 300.0 * exp(-dot(h, h));
+  float dy = q.y - mid;
+  float dv = dy > 0.0 ? dy - thick - hump : -dy - 0.6 * thick;
+  float d = max(0.6 * dv, (rr - 1.0) * 1250.0);
+  if (dy < 0.0) {
+    for (int i = 0; i < 9; i++) {
+      float fi = float(i);
+      // Rooted over the back half of the body.
+      vec2 root = vec2(-0.1 - 0.75 * fract(fi * 0.618 + 0.13), 0.8 * (fract(fi * 0.382 + 0.41) * 2.0 - 1.0)) * vec2(1800.0, 1250.0);
+      float len = 1100.0 + 1300.0 * fract(fi * 0.737 + 0.29);
+      float y = mid - 0.3 * thick - q.y; // how far below the body
+      float u = clamp(y / len, 0.0, 1.0);
+      float sway = 420.0 * u * u;
+      vec2 axis = root + vec2(sin(y / (180.0 + 60.0 * fi) + fi * 1.7 + 0.6 * uCreaturePhase) - 0.6 * u, cos(y / (230.0 + 40.0 * fi) + fi * 2.3 + 0.5 * uCreaturePhase)) * sway;
+      float dt = 0.55 * (length(q.xz - axis) - mix(34.0, 4.0, u));
+      d = min(d, max(dt, max(-y, y - len)));
+    }
+  }
+  return d;
+}
+
+// How much of what lies beyond the creature shows through along dir (soft at its edges, over
+// the width of a pixel), and how far along the ray it begins (1e9: not on this ray).
+void creatureMarch(vec3 dir, float pixelAngle, out float through, out float at) {
+  through = 1.0;
+  at = 1e9;
+  float s = uCreature.w;
+  if (s > 0.0) {
+    vec3 c = vec3(uCreature.x, uCreature.y - uCamAlt, uCreature.z);
+    float b = dot(c, dir);
+    float disc = b * b - dot(c, c) + (3400.0 * s) * (3400.0 * s);
+    if (disc > 0.0) {
+      float sq = sqrt(disc);
+      float t = max(b - sq, 0.0);
+      for (int i = 0; i < 64; i++) {
+        if (t > b + sq || through < 0.01) break;
+        vec3 p = dir * t - c;
+        vec3 q = vec3(uCreatureTurn.x * p.x + uCreatureTurn.y * p.z, p.y, -uCreatureTurn.y * p.x + uCreatureTurn.x * p.z) / s;
+        float d = creatureSD(q) * s;
+        float w = max(t * pixelAngle, 1.0);
+        float k = clamp(d / w, 0.0, 1.0);
+        if (k < 1.0 && at > 1e8) at = t;
+        through = min(through, k);
+        t += max(d, 0.5 * w + 2.0);
+      }
+    }
+  }
+}
+#endif
+
 void main() {
   ivec2 fc = ivec2(gl_FragCoord.xy);
   vec2 pixel = vec2(float(fc.x * 2 + ((fc.y + uParity) & 1)), float(fc.y)) + 0.5;
@@ -485,6 +624,11 @@ void main() {
   float ph2 = cloudPhase(cosTheta, 0.36);
   float ph3 = cloudPhase(cosTheta, 0.2);
   float powderAmount = 0.35 * (1.0 - smoothstep(-0.2, 0.75, cosTheta));
+#ifdef NIGHT
+  // In the abyss the light comes from the deep, from straight below (deepLight, storm.glsl).
+  float cosD = -dir.y;
+  vec4 phD = vec4(cloudPhase(cosD, 1.0), cloudPhase(cosD, 0.6), cloudPhase(cosD, 0.36), cloudPhase(cosD, 0.2));
+#endif
 
   vec3 sunAtClouds = uSunIlluminance * transmittanceToSun(uTransmittance, RG + 3.0, uSunDir.y);
   vec3 skyZen = skyLookup(uSkyView, vec3(0.0, 1.0, 0.0), uSunDir, rCamKm);
@@ -494,6 +638,9 @@ void main() {
   vec3 ambBottom = skyAvg * 0.18;
 
   float tSea = seaHit(uCamAlt, dir);
+#ifdef NIGHT
+  if (uAlien > 0.5) tSea = -1.0;
+#endif
   float t0;
   float t1;
   bool hasLayer = cloudInterval(uCamAlt, dir, t0, t1);
@@ -501,6 +648,8 @@ void main() {
 #ifdef NIGHT
   // Up to uNearDist the storm is drawn by the mist pass, at full detail.
   t0 = max(t0, uNearDist);
+  // In the abyss the haze hides everything beyond a few dozen kilometres.
+  if (uAlien > 0.5) t1 = min(t1, 1.1 * ABYSS_HAZE);
 #endif
 
   vec3 L = vec3(0.0);
@@ -513,11 +662,26 @@ void main() {
   float litOd = 0.0;
   vec2 litOpen = vec2(0.0);
   vec2 litFlash = vec2(0.0);
+  float litDeep = 200.0; // a deck's optical depth down to the deep's light
 #endif
   float dsum = 0.0;
   float wsum = 0.0;
   // Per-pixel noise, advanced along a golden-ratio sequence every frame.
   float jitter = blueNoise(pixel, uFrame);
+#ifdef NIGHT
+  gRise = dir.y;
+  gCurve = (1.0 - dir.y * dir.y) / RG_M;
+  // The creature: what lies beyond it is hidden, from where it begins along the ray.
+  float cThrough;
+  float cAt;
+#ifdef ABYSS
+  creatureMarch(dir, pixelAngle, cThrough, cAt);
+#else
+  cThrough = 1.0;
+  cAt = 1e9;
+#endif
+  bool cDone = cAt > 1e8;
+#endif
   if (hasLayer && t1 > t0) {
     // The march is a small state machine with one density evaluation per iteration (the
     // density function is large, and every call site is a copy of it in the compiled shader):
@@ -544,6 +708,10 @@ void main() {
     for (int i = 0; i < 512; i++) {
       float ts = mode == REFINE ? 0.5 * (ra + rb) : t;
 #ifdef NIGHT
+      if (!cDone && ts >= cAt) {
+        T *= cThrough;
+        cDone = true;
+      }
       // Far away, what is left behind 3% is not seen (the storm's misty edge is long to cross).
       if (i >= uMaxSteps || ts >= t1 || T < (ts > 3000.0 ? 0.03 : 0.01)) break;
 #else
@@ -558,8 +726,7 @@ void main() {
 #ifdef NIGHT
       // Around the storm there is no fair-weather cloud: no weather to look up.
       Weather w;
-      vec2 fromStorm = p.xz + uStormCam + STORM_MIN - STORM_CALM.xy;
-      if (dot(fromStorm, fromStorm) < STORM_CALM.z * STORM_CALM.z) {
+      if (nearAStorm(p)) {
         w.sheet = 0.0;
         w.alto = 0.0;
         w.warp = vec2(0.0);
@@ -641,6 +808,7 @@ void main() {
         // day. Along the ray the storm's light changes slowly (light spreads through its misty
         // edge), so it is worked out every few tens of metres and kept for the samples between.
         bool storm = gStorm;
+        bool deck = gDeck;
         float moon = 1.0;
         vec2 open = vec2(1.0);
         float od;
@@ -649,9 +817,16 @@ void main() {
           // light changes with the storm around it, not with its own thin mist.
           if (t - litAt > max(1.6 * dtIn, (20.0 + 0.03 * t) * (gScud ? 2.5 : 1.0))) {
             litAt = t;
-            litMoon = moonFar(p);
+            // (No moon once the world has turned into the abyss.)
+            litMoon = uAlien < 1.0 ? moonFar(p) : 0.0;
             litOd = litMoon > 0.004 ? stormDepth(p, uSunDir, 50.0, 2.2, 6, 3000.0, lodB, fract(jitter + 0.37)) : 200.0;
+#ifdef ABYSS
+            litDeep = deck ? stormDepth(p, vec3(0.0, -1.0, 0.0), 40.0, 2.2, 6, 2000.0, lodB, fract(jitter + 0.53)) : 200.0;
+            // (The abyss has no sky to speak of: its decks need no look at what is over them.)
+            litOpen = deck ? vec2(1.0) : skyOpen(p, lodB);
+#else
             litOpen = skyOpen(p, lodB);
+#endif
             litFlash = vec2(0.0);
             if (uFlashOn > 0.5) litFlash.x = flashFalloff(p) * lightningLit(p, dir, flashCentre(), uFlashDepth, 380.0, 4, lodB, fract(jitter + 0.71));
             if (uFlickOn > 0.5) litFlash.y = sourceFalloff(length(uFlickPos - p), 0.5) * lightningLit(p, dir, uFlickPos, uFlickDepth, 650.0, 3, lodB, fract(jitter + 0.19));
@@ -690,6 +865,20 @@ void main() {
           // scattered from tower to tower, reaches everything a little, the tops of bulges most.
           amb = ambTop * NIGHT_SKYLIGHT * mix(0.16, 1.0, open.y)
               + vec3(0.0020, 0.0025, 0.0038) * (uStormGlow * (0.25 + 0.75 * open.x));
+#ifdef ABYSS
+          // In the abyss, light rises from the deep: it lights the decks from below, shines
+          // through where they are thin and round their holes, and lights the undersides of the
+          // decks above.
+          if (deck) {
+            // (Without the sun's widest lobe: a thick deck lets little through, so its thin
+            // parts stand out.)
+            float deep = phD.x * exp(-litDeep)
+                       + 1.2 * (0.85 * phD.y * exp(-litDeep * 0.25)
+                              + 0.65 * phD.z * exp(-litDeep * 0.0625)
+                              + 0.12 * phD.w * exp(-litDeep * 0.021));
+            amb += deepLight(p, altitudeAt(p)) * deep;
+          }
+#endif
         }
 #endif
         vec3 S = (sunAtClouds * sun + amb) * ALBEDO;
@@ -723,6 +912,9 @@ void main() {
     }
   }
 
+#ifdef NIGHT
+  if (!cDone) T *= cThrough;
+#endif
   vec3 radiance = vec3(0.0);
   float depthKm = -1.0;
   vec3 camKm = vec3(0.0, rCamKm, 0.0);
@@ -731,6 +923,13 @@ void main() {
     vec3 apT;
     vec3 apL = integrateScattering(uTransmittance, uMultiScatter, camKm, dir, uSunDir, uSunIlluminance,
                                    depth * 1e-3, 8, apT);
+#ifdef NIGHT
+    // (The Earth's air, whose model thickens without end below the sea, is not the abyss's.)
+    if (uAlien > 0.0) {
+      apT = mix(apT, vec3(exp(-depth / ABYSS_HAZE)), uAlien);
+      apL *= 1.0 - uAlien;
+    }
+#endif
     radiance = L * apT + apL * (1.0 - T);
     depthKm = depth * 1e-3;
 #ifdef NIGHT

@@ -1,6 +1,7 @@
 import { channelThrough, finer, flatten } from "./thunder.js";
 import { echoResponse } from "./thundersynth.js";
-import { STRIKE, catchTimes } from "../night/moments.js";
+import { ORB, RADIO, STRIKE, catchTimes, radioCalls } from "../night/moments.js";
+import { createRadio } from "./radio.js";
 
 /**
  * The sound of the night journey, all made in the browser (Web Audio):
@@ -15,6 +16,9 @@ import { STRIKE, catchTimes } from "../night/moments.js";
  *   fan dying with the power and starting again as the relays catch;
  * - another aircraft passing close (moments.js): the roar of its engines, rising in pitch as it
  *   comes and falling as it goes, from where it is;
+ * - the orb (moments.js): an unsteady electric hum, a hiss and crackle, from where it is;
+ * - the radio (radio.js): from the second storm on, static that crackles with the lightning, and
+ *   now and then a voice in it, too broken to make out;
  * - thunder: every flash's channel heard part by part as its sound arrives (thunder.js,
  *   thundersynth.js), through the canopy, from where each part is (it stays there as the head
  *   turns), with the echoes of the clouds and the sea; as strong as the flash was bright: far
@@ -24,7 +28,7 @@ import { STRIKE, catchTimes } from "../night/moments.js";
  */
 
 // Levels (linear gains); see the measurements in docs/HANDOVER.md.
-const MIX = Object.freeze({ master: 0.8, wind: 0.12, whistle: 0.9, fan: 0.008, engine: 0.013, weather: 0.2, knocks: 0.44, thunder: 42, jet: 3.5 });
+const MIX = Object.freeze({ master: 0.8, wind: 0.12, whistle: 0.9, fan: 0.008, engine: 0.013, weather: 0.2, knocks: 0.44, thunder: 42, jet: 3.5, orb: 0.05, radio: 1 });
 
 // Thunder as heard (thundersynth.js gives it in first-order ambisonics): each ear a virtual
 // microphone looking its way, omni + side * (the head's axis . direction); and the echoes, a
@@ -364,6 +368,33 @@ export function createAudio({ solo = null } = {}) {
   jetAir.connect(jetLevel).connect(jetPan).connect(new GainNode(ctx, { gain: only("thunder") })).connect(canopy);
   for (const s of [jetNoise, jetWhine, jetHum]) s.start();
 
+  // ---- the orb, outside ----------------------------------------------------------------------
+  // An electric hum with a buzz in it, unsteady; a hiss; crackle (played as it goes).
+  const orbHum = new OscillatorNode(ctx, { type: "sawtooth", frequency: 94 });
+  const orbWobble = new OscillatorNode(ctx, { frequency: 2.7 });
+  orbWobble.connect(new GainNode(ctx, { gain: 3 })).connect(orbHum.frequency);
+  const orbHiss = new AudioBufferSourceNode(ctx, { buffer: pinkNoise(ctx, 5, 77), loop: true });
+  const orbLevel = new GainNode(ctx, { gain: 0 });
+  const orbPan = new StereoPannerNode(ctx, { pan: 0 });
+  orbHum.connect(new BiquadFilterNode(ctx, { type: "bandpass", frequency: 380, Q: 0.9 })).connect(new GainNode(ctx, { gain: 0.6 })).connect(orbLevel);
+  orbHiss.connect(new BiquadFilterNode(ctx, { type: "highpass", frequency: 2600, Q: 0.7 })).connect(new GainNode(ctx, { gain: 0.5 })).connect(orbLevel);
+  orbLevel.connect(orbPan).connect(new GainNode(ctx, { gain: only("thunder") })).connect(canopy);
+  for (const s of [orbHum, orbWobble, orbHiss]) s.start();
+  const crackles = [0, 1, 2].map(i => {
+    const r = rng(301 + i);
+    const n = Math.floor((0.012 + 0.02 * i) * ctx.sampleRate);
+    const b = ctx.createBuffer(1, n, ctx.sampleRate);
+    const d = b.getChannelData(0);
+    for (let j = 0; j < n; j++) d[j] = (r() * 2 - 1) * Math.exp(-j / (0.15 * n)) * (r() < 0.3 ? 1 : 0.4);
+    return b;
+  });
+
+  // ---- the radio -------------------------------------------------------------------------------
+  const radioBus = new GainNode(ctx, { gain: MIX.radio * only("radio") });
+  radioBus.connect(cabin);
+  const radio = createRadio(ctx, radioBus, pinkNoise(ctx, 5, 61));
+  let radioUntil = null;
+
   // ---- weather on the glass (once the worklet is loaded) ------------------------------------
   let weather = null;
   const weatherOut = new GainNode(ctx, { gain: MIX.weather * only("weather") });
@@ -543,7 +574,8 @@ export function createAudio({ solo = null } = {}) {
       // makes a seam whistle.
       // Another aircraft passing: heard where it was when the sound now arriving left it.
       const tr = view.traffic;
-      if (tr && tr.on && tr.where) {
+      // (The twin, moments.js, makes no sound at all.)
+      if (tr && tr.on && tr.where && tr.kind !== "twin") {
         const me = [view.x, view.alt, view.z];
         let p = tr.where(view.time);
         for (let k = 0; k < 2; k++) p = tr.where(view.time - Math.hypot(p[0] - me[0], p[1] - me[1], p[2] - me[2]) / 343);
@@ -560,6 +592,27 @@ export function createAudio({ solo = null } = {}) {
         jetPan.pan.setTargetAtTime(Math.max(-1, Math.min(1, (rel[0] * view.right.x + rel[1] * view.right.y + rel[2] * view.right.z) / dist)), now, 0.05);
       } else {
         jetLevel.gain.setTargetAtTime(0, now, 0.3);
+      }
+
+      // The orb: heard from where it is, less once it is in cloud; crackling now and then.
+      const orb = view.orb;
+      if (orb && orb.on) {
+        const dist = Math.max(orb.pos.length(), 3);
+        const k = Math.min(1, orb.light.z / ORB.power) * (orb.inside > 0 ? 0.3 : 1);
+        const pan = Math.max(-1, Math.min(1, orb.pos.dot(view.right) / dist));
+        orbLevel.gain.setTargetAtTime((MIX.orb * 20 * k) / dist, now, 0.1);
+        orbPan.pan.setTargetAtTime(pan, now, 0.05);
+        if (rand() < dt * 6 * k) play(crackles[Math.floor(rand() * 3)], (MIX.orb * 60 * k) / dist, pan, now, canopy);
+      } else {
+        orbLevel.gain.setTargetAtTime(0, now, 0.3);
+      }
+
+      // The radio: alive from the second storm on, with its calls.
+      radio.set(view.time > RADIO.on ? 1 : 0, now);
+      if (radioUntil === null) radioUntil = view.time;
+      if (view.time + 0.4 > radioUntil) {
+        for (const c of radioCalls(radioUntil, view.time + 0.4)) radio.call(Math.max(toAudio(c), now));
+        radioUntil = view.time + 0.4;
       }
 
       // The strike: the bang, the ears, the power gone and back.
@@ -609,6 +662,8 @@ export function createAudio({ solo = null } = {}) {
         lastFlash = f.event.id;
         // (The strike is mostly its bang, in the cabin; its channel rolls on outside, quieter.)
         thunder(f.event, f.event.kind, view, { ic: 0.6, strike: 0.15 }[f.event.kind] ?? 1);
+        // The radio hears it at once.
+        radio.sferic(Math.max(toAudio(f.event.start ?? view.time), now), f.event.strength ?? 1);
       }
       const k = lit && lit.flick;
       if (k && k.event && k.event.id !== lastFlick) {

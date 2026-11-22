@@ -17,6 +17,9 @@ const float MIE_G = 0.8;
 const vec3  OZONE_ABSORPTION = vec3(0.650e-3, 1.881e-3, 0.085e-3);
 const float SUN_ANGULAR_RADIUS = 0.004675;
 const float GROUND_ALBEDO = 0.12;
+// The night's abyss (storm.glsl) has none of the Earth's air: a dark haze instead, alike for
+// every colour; light fades to 1/e over this distance (m).
+const float ABYSS_HAZE = 45000.0;
 
 const vec2 TRANSMITTANCE_SIZE = vec2(256.0, 64.0);
 const vec2 MULTISCATTER_SIZE = vec2(32.0, 32.0);

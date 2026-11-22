@@ -14,6 +14,8 @@
 
 uniform sampler2D uOutside;
 uniform sampler2D uCockpit;
+uniform sampler2D uTwin;      // the twin (moments.js) as seen from here: premultiplied, scene units
+uniform float uTwinOn;
 uniform sampler2D uMist;      // the mist around the aircraft (see mist.frag): light, and what shows through
 uniform float uMistOn;
 uniform int uShow;            // debugging: 1 the mist alone, 2 the outside without the mist
@@ -27,6 +29,7 @@ uniform float uTime;
 uniform float uRain;
 uniform float uHail;
 uniform float uCloud;         // in cloud, 0..1
+uniform float uVivid;         // the abyss (storm.glsl): bright things there keep their colours
 uniform float uMotes;         // how much cloud there is right around the aircraft, 0..1
 uniform float uHaze;          // in the rain and haze of the storm, 0..1
 uniform vec3 uWindAxis;       // where the drops go, relative to the cabin
@@ -287,6 +290,16 @@ vec3 reflectInstruments(vec3 g, vec3 rd) {
   return textureLod(uAtlas, uv * 0.5 + 0.5, 2.0).rgb * uFaceGain;
 }
 
+// The outside at uv, with the twin (moments.js) over it when it is there.
+vec3 outsideAt(vec2 uv) {
+  vec3 c = texture(uOutside, uv).rgb;
+  if (uTwinOn > 0.5) {
+    vec4 tw = texture(uTwin, uv);
+    c = c * (1.0 - tw.a) + tw.rgb * uExposure;
+  }
+  return c;
+}
+
 void main() {
   vec2 ndc = vUv * 2.0 - 1.0;
   vec3 dir = normalize(uHeadForward + ndc.x * uTanHalf.x * uHeadRight + ndc.y * uTanHalf.y * uHeadUp);
@@ -306,7 +319,7 @@ void main() {
   float hw = uRain > 0.0 ? water(s, uTime) : 0.0;
   vec2 slope = vec2(dFdx(hw), dFdy(hw)) * 1e-3 / max(tGlass * pix, 1e-5);
 
-  vec3 col = texture(uOutside, vUv).rgb;
+  vec3 col = outsideAt(vUv);
   vec4 mist = uMistOn > 0.5 ? texture(uMist, vUv) : vec4(0.0, 0.0, 0.0, 1.0);
   if (g.z < BACK_Z) {
     float steep = length(slope);
@@ -314,7 +327,7 @@ void main() {
       // Each run of water is a small lens: the view behind it is shifted, and its steep rims
       // reflect the dark cabin rather than let the outside through.
       vec2 shift = 0.15 * slope / (2.0 * uTanHalf);
-      col = texture(uOutside, vUv - shift).rgb;
+      col = outsideAt(vUv - shift);
       if (uMistOn > 0.5) mist = texture(uMist, vUv - shift);
       col = (mist.rgb + mist.a * col) * (1.0 - 0.1 * smoothstep(0.5, 1.6, steep));
     } else {
@@ -324,7 +337,7 @@ void main() {
     // night, laid over everything, turned the whole picture into a murky navy). The discharges
     // and lamps added below keep their colour.
     float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-    col = mix(vec3(lum), col, NIGHT_COLOUR) * NIGHT_TINT;
+    col = mix(vec3(lum), col, mix(NIGHT_COLOUR, 1.0, uVivid * smoothstep(0.04, 0.5, lum))) * NIGHT_TINT;
     float cosI = abs(dot(dir, n));
     float F = 0.04 + 0.96 * pow(1.0 - cosI, 5.0);
     col *= (1.0 - F) * 0.97;

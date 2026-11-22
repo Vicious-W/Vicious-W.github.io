@@ -7,6 +7,12 @@
 
 uniform sampler3D uStorm;
 uniform vec2 uStormCam;     // camera position in the storm volume, from its corner (m)
+// The second storm (night/storm.js), in its own volume of the same size: where its corner is from
+// the first's (xz, m) and whether it has been baked yet (y: 1); and its centre and the radii
+// between which fair-weather clouds come back around it (like STORM_CALM).
+uniform sampler3D uStorm2;
+uniform vec3 uStorm2At;
+uniform vec4 uStorm2Calm;
 uniform sampler3D uMistNoise;
 // Scud and veils of mist on the journey's way, and pockets of thinner air in the rear tower
 // (journey.js), nearest first: ellipsoids turned to the path. Unused slots come last, size.w 0.
@@ -16,6 +22,25 @@ uniform vec4 uScudPos[SCUD_MAX];  // centre relative to the camera (y: altitude)
 uniform vec4 uScudSize[SCUD_MAX]; // radii across, up, along (m); w: how deep in mist its middle is (< 0: a pocket)
 uniform vec2 uScudTurn[SCUD_MAX]; // the path's right there (world x, z)
 uniform vec3 uMistOffset;   // where the mist noise is (m, wrapped): it drifts with the air
+
+// The abyss (PLAN.md 5.2): from under the second storm on, there is no sea. Decks of cloud lie
+// one under another, kilometres apart, down into the dark, one more over the aircraft; holed a
+// few kilometres across, and swirled by vortices tens of kilometres wide. uAlien: how far the
+// world has turned into it (0..1). Each deck: its middle (m: far below sea level, most of them)
+// and half its thickness. Each vortex: its centre (world x, z), radius, and turn at its middle.
+// (They are set from night/abyss.js.)
+uniform float uAlien;
+// The abyss's code is compiled only into the passes' abyss variants (sky.js): in the others it
+// would slow the first storm down, for nothing (the shaders grow, and run slower even where it
+// is never used).
+#ifdef ABYSS
+#define IN_ABYSS (uAlien > 0.0)
+#else
+#define IN_ABYSS false
+#endif
+#define DECKS 5
+uniform vec2 DECK[DECKS];
+uniform vec4 SWIRL[3];
 
 // The edge of the storm is not a surface. From the outer edge of its shape the cloud thickens
 // over FRINGE metres into the core, eaten away by turbulent mist at every scale down to a
@@ -44,6 +69,49 @@ vec3 stormUv(vec3 p, float alt) {
 
 bool inStormBox(vec3 suv) {
   return all(greaterThan(suv, vec3(0.0))) && all(lessThan(suv, vec3(1.0)));
+}
+
+vec3 stormUv2(vec3 p, float alt) {
+  return vec3(p.x + uStormCam.x - uStorm2At.x, alt, p.z + uStormCam.y - uStorm2At.z) / STORM_SIZE;
+}
+
+// Whether p lies in either storm's volume.
+bool inAStorm(vec3 p, float alt) {
+  return inStormBox(stormUv(p, alt)) || (uStorm2At.y > 0.5 && inStormBox(stormUv2(p, alt)));
+}
+
+// The baked distance at p (m, positive inside) in whichever storm's volume it lies; the floor
+// of the range in neither (the volumes do not overlap).
+float stormField(vec3 p, float alt, float lod) {
+  // (One exit: Direct3D warns of every early return.)
+  float sd = -STORM_RANGE;
+  vec3 suv = stormUv(p, alt);
+  if (inStormBox(suv)) {
+    sd = stormSD(suv, lod);
+  } else if (uStorm2At.y > 0.5) {
+    vec3 s2 = stormUv2(p, alt);
+    if (inStormBox(s2)) sd = (textureLod(uStorm2, s2, lod).r * 2.0 - 1.0) * STORM_RANGE;
+  }
+  return sd;
+}
+
+// Where p is in the world (x, z: the storm frame).
+vec2 worldXZ(vec3 p) {
+  return p.xz + uStormCam + STORM_MIN;
+}
+
+// How much fair-weather cloud there may be at p: none around either storm, all far from both.
+float stormCalm(vec3 p) {
+  vec2 w = worldXZ(p);
+  return min(smoothstep(STORM_CALM.z, STORM_CALM.w, length(w - STORM_CALM.xy)), smoothstep(uStorm2Calm.z, uStorm2Calm.w, length(w - uStorm2Calm.xy)));
+}
+
+// Whether p is within the inner radius of either storm's calm (no fair cloud at all there).
+bool nearAStorm(vec3 p) {
+  vec2 w = worldXZ(p);
+  vec2 a = w - STORM_CALM.xy;
+  vec2 b = w - uStorm2Calm.xy;
+  return dot(a, a) < STORM_CALM.z * STORM_CALM.z || dot(b, b) < uStorm2Calm.z * uStorm2Calm.z;
 }
 
 // The storm's billows, at the scale of its towers: the lumpy Perlin-Worley of every other
@@ -180,6 +248,79 @@ float mistNoise(vec3 p, vec2 flow, float lodM, bool fine) {
   return e;
 }
 
+// The abyss's decks, swirled: a point's place in their pattern (world x, z).
+// (The vortices come round again every SWIRL_REPEAT metres each way, for the journey that goes
+// on for ever: the nearest of each.)
+const float SWIRL_REPEAT = 150000.0;
+vec2 swirlCentre(int i, vec2 w) {
+  vec2 c = SWIRL[i].xy;
+  return c + SWIRL_REPEAT * floor((w - c) / SWIRL_REPEAT + 0.5);
+}
+
+vec2 abyssWarp(vec2 w) {
+  for (int i = 0; i < 3; i++) {
+    vec2 o = swirlCentre(i, w);
+    vec2 v = w - o;
+    float k = 1.0 - length(v) / SWIRL[i].z;
+    if (k > 0.0) {
+      float a = SWIRL[i].w * k * k;
+      float c = cos(a);
+      float s = sin(a);
+      w = o + vec2(c * v.x - s * v.y, s * v.x + c * v.y);
+    }
+  }
+  return w;
+}
+
+// How far inside the nearest deck's slab alt is (m; negative outside), holes not counted: for
+// coarse tests and skips.
+float deckSlab(float alt) {
+  float best = -1e5;
+  for (int i = 0; i < DECKS; i++) best = max(best, DECK[i].y - abs(alt - DECK[i].x));
+  return best;
+}
+
+// The light of the deep (uAbyssGlow, from under the last deck) that reaches a deck at alt from
+// below: each deck under it lets 60% of it through, by its holes and through its thin parts.
+uniform vec3 uAbyssGlow; // irradiance
+vec3 deepLight(vec3 p, float alt) {
+  float k = 1.0;
+  for (int i = 0; i < DECKS; i++) {
+    if (DECK[i].x + DECK[i].y < alt) k *= 0.6; // (abyss.js: DEEP.through)
+  }
+  return uAbyssGlow * k;
+}
+
+// The decks at p: metres inside their outer edge, with their holes (lodB: mip of the noise).
+float deckShape(vec3 p, float alt, float lodB) {
+  float shape = -STORM_RANGE;
+  if (uAlien > 0.0) {
+    vec2 world = worldXZ(p);
+    vec2 w = abyssWarp(world);
+    for (int i = 0; i < DECKS; i++) {
+      float slab = DECK[i].y - abs(alt - DECK[i].x);
+      if (slab > -900.0) {
+        // Two scales that never line up, so the pattern of holes does not come round again.
+        float lod = max(lodB - 2.0, 0.0);
+        float c = 0.62 * textureLod(uBaseNoise, vec3(w.x, 917.0 * float(i), w.y) / 23000.0, lod).r
+                + 0.38 * textureLod(uBaseNoise, vec3(w.x + 7100.0, 1531.0 * float(i) + 300.0, w.y - 3900.0) / 37700.0, lod).r;
+        c = 0.5 + (c - 0.5) / 0.73;
+        // The holes widen towards the deck's top and bottom: their rims are rounded.
+        float y = (alt - DECK[i].x) / DECK[i].y;
+        shape = max(shape, min(slab, (c - 0.44) * 3000.0 - 260.0 * y * y));
+      }
+    }
+    // Each vortex's eye: a well through every deck, a few kilometres across, its walls ragged.
+    for (int i = 0; i < 3; i++) {
+      vec2 v = world - swirlCentre(i, world);
+      float r = length(v);
+      float rag = 1.0 + 0.12 * sin(5.0 * atan(v.y, v.x) + r / 900.0);
+      shape = min(shape, (r - 0.15 * SWIRL[i].z * rag) * 0.8);
+    }
+  }
+  return shape;
+}
+
 // Density of the storm's cloud (0..1) at shape metres inside the outer edge of its shape, where
 // the mist noise is e. Going in, more and more of the air holds mist (the mist noise decides
 // where), until the holes close; each wisp has a clear edge and is fairly dense already, so
@@ -196,12 +337,15 @@ float stormMist(float shape, float e) {
 // Metres inside the storm's surface at p: the baked distance plus the billows.
 float stormShape(vec3 p, float lodB) {
   float alt = altitudeAt(p);
-  vec3 suv = stormUv(p, alt);
-  if (alt < CLOUD_BOTTOM || any(lessThan(suv, vec3(0.0))) || any(greaterThan(suv, vec3(1.0)))) return -STORM_RANGE;
-  float sd = stormSD(suv, max(lodB - 3.0, 0.0));
-  if (sd < -700.0) return sd; // the billows could not reach
-  vec4 n = textureLod(uBaseNoise, (p + uBaseOffset) * vec3(1.0, BASE_Y_SCALE, 1.0) / BASE_PERIOD, lodB);
-  return sd + stormBillows(n, alt);
+  float shape = -STORM_RANGE;
+  if (alt >= CLOUD_BOTTOM) {
+    shape = stormField(p, alt, max(lodB - 3.0, 0.0));
+    // (Beyond 700 m the billows could not reach.)
+    if (shape >= -700.0) shape += stormBillows(textureLod(uBaseNoise, (p + uBaseOffset) * vec3(1.0, BASE_Y_SCALE, 1.0) / BASE_PERIOD, lodB), alt);
+  }
+  // The abyss's decks: their light and shadows are the storm's.
+  if (IN_ABYSS && deckSlab(alt) > -900.0) shape = max(shape, deckShape(p, alt, lodB));
+  return shape;
 }
 
 // Optical depth of the storm from p along l, in growing steps up to reach.
@@ -225,7 +369,10 @@ float stormDepth(vec3 p, vec3 l, float first, float growth, int steps, float rea
 // How much of the storm lies at q, 0..1, from a coarse level of the baked shape: soft, for
 // shadows cast from far away.
 float stormBlock(vec3 q, float lod) {
-  return clamp(stormSD(stormUv(q, altitudeAt(q)), lod) / 600.0 + 0.4, 0.0, 1.0);
+  float alt = altitudeAt(q);
+  float sd = stormField(q, alt, lod);
+  if (IN_ABYSS) sd = max(sd, deckSlab(alt) - 300.0);
+  return clamp(sd / 600.0 + 0.4, 0.0, 1.0);
 }
 
 // The moon as seen from p past the far parts of the storm (other towers, the anvil): 0..1.
@@ -238,7 +385,7 @@ float moonFar(vec3 p) {
 // overhang). They shade the storm's unlit side into shape.
 vec2 skyOpen(vec3 p, float lodB) {
   float near = 1.0 - clamp(stormShape(p + vec3(0.0, 420.0, 0.0), lodB + 2.0) / 420.0 + 0.5, 0.0, 1.0);
-  float far = 1.0 - clamp(stormSD(stormUv(p + vec3(0.0, 1900.0, 0.0), altitudeAt(p) + 1900.0), 2.0) / 900.0 + 0.5, 0.0, 1.0);
+  float far = 1.0 - clamp(stormField(p + vec3(0.0, 1900.0, 0.0), altitudeAt(p) + 1900.0, 2.0) / 900.0 + 0.5, 0.0, 1.0);
   return vec2(near, near * (0.3 + 0.7 * far));
 }
 

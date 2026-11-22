@@ -1,5 +1,9 @@
 import * as THREE from "three";
-import { coronaAround, FUNNEL, SPRITES, STORM_CENTRE, spritePower, TRAFFIC, trafficLamps } from "./moments.js";
+import { mulberry32 } from "../sky/cumulus.js";
+import { coronaAround, CREATURE, FUNNEL, ORB, orbAt, SPRITES, STORM_CENTRE, spritePower, TRAFFIC, trafficLamps, twinAt } from "./moments.js";
+import { BEACONS, BEACON_COLOR, BEACON_POWER, beaconPulse, NAV, NAV_COLORS, NAV_POWER } from "../cockpit/lamps.js";
+// (Read only when the journey runs: storm.js imports this module too.)
+import { SECOND_CENTRE, STORM } from "./storm.js";
 
 /**
  * The night journey: the aircraft flies itself along a fixed path through the thunderstorm.
@@ -7,9 +11,11 @@ import { coronaAround, FUNNEL, SPRITES, STORM_CENTRE, spritePower, TRAFFIC, traf
  * From the south it approaches past the flanking towers, enters through the canyon between two
  * towers as the anvil closes overhead, crosses the hall beside the main updraft and over a well
  * that drops to the sea, flies into the rear tower (blind, but for a cave in its middle), and
- * comes out into moonlight to the north, turning west so the storm stays in sight.
+ * comes out into moonlight to the north, turning west so the storm stays in sight. Then on west
+ * to the second storm, through its wall, out under its base into the abyss, and on through the
+ * abyss for ever (ONWARD).
  */
-export const PATH = [
+const PLANNED = [
   [-1900, 4300, 17500],
   [-1500, 4350, 12500],
   [-700, 4500, 8500],
@@ -21,8 +27,39 @@ export const PATH = [
   [-2600, 4450, -14500],
   [-5500, 4400, -20500],
   [-11500, 4400, -24500],
-  [-18500, 4400, -25500]
+  [-18500, 4400, -25500],
+  // On west over the moonlit cloud sea to the second storm (storm.js), into its eastern wall,
+  // down through it blind and out of its base.
+  [-25000, 4450, -28500],
+  [-31000, 4100, -30500],
+  [-36000, 3100, -31500],
+  [-40500, 2100, -32200],
+  [-44000, 1000, -32600],
+  [-49000, 800, -33000],
+  [-56000, 800, -33500],
+  [-64000, 900, -33000],
+  [-72000, 1000, -32000]
 ];
+
+// On through the abyss for ever: westwards in long, gentle bends, rising and sinking between
+// the deck below and the deck overhead (abyss.js). A fixed seed: the same every night, and
+// nothing in it repeats for hours.
+const ONWARD = (() => {
+  const rand = mulberry32(2026);
+  const out = [];
+  let [x, y, z] = PLANNED[PLANNED.length - 1];
+  let h = Math.PI; // west, as an angle in x, z
+  for (let i = 0; i < 400; i++) {
+    h = Math.min(Math.PI + 1.0, Math.max(Math.PI - 1.0, h + (rand() - 0.5) * 0.7));
+    const d = 7000 + 4000 * rand();
+    x += Math.cos(h) * d;
+    z += Math.sin(h) * d;
+    y = Math.min(2400, Math.max(900, y + (rand() - 0.5) * 800));
+    out.push([Math.round(x), Math.round(y), Math.round(z)]);
+  }
+  return out;
+})();
+export const PATH = [...PLANNED, ...ONWARD];
 
 const SPEED = 68;
 
@@ -265,6 +302,19 @@ export function createJourney(options = {}) {
     // A red sprite (moments.js): where it stands relative to the camera (x, z, m), how bright,
     // how many columns, its seed.
     sprite: { power: 0, x: 0, z: 0, count: 0, seed: 0 },
+    // The abyss (storm.glsl): 0 before it, 1 once the world has turned into it, which happens
+    // while the aircraft is blind in the second storm's wall.
+    alien: 0,
+    // The orb (moments.js): its centre relative to the camera in world axes (m), its radius,
+    // its intensity (rgb), and how deep in cloud it is (m).
+    orb: { on: false, pos: new THREE.Vector3(), radius: ORB.radius, light: new THREE.Vector3(), inside: 0 },
+    // The creature (moments.js): its middle relative to the camera (x, z; y its height), where
+    // it is in the world (for the flashes behind it; null when there is no sighting), its size
+    // (0: not there), heading (rad, of its length in world x, z) and the phase of its ripples.
+    creature: { on: false, pos: new THREE.Vector3(), world: null, size: 0, heading: 0, phase: 0 },
+    // The twin (moments.js): where it is relative to the eye (world axes, m; its attitude is
+    // this aircraft's), and how lit it is (0..1). Its lamps go in traffic (kind "twin").
+    twin: { on: false, pos: new THREE.Vector3(), lit: 0 },
     // The scud nearest the aircraft, for the cloud shaders (see storm.glsl).
     scud: {
       count: 0,
@@ -274,6 +324,10 @@ export function createJourney(options = {}) {
     }
   };
   const order = bodies.map((b, i) => i);
+  // How high above the aircraft the orb goes into the base's cloud (see orbAt), once known.
+  let orbCeiling = null;
+  // The creature's place in the world for its current sighting.
+  let creatureAt = null;
 
   // The other aircraft's line: it crosses the path at TRAFFIC.cross, TRAFFIC.lead seconds before
   // the aircraft gets there, flying from right to left and a little back towards it.
@@ -382,6 +436,38 @@ export function createJourney(options = {}) {
     }
   }
 
+  // The second storm (storm.js): where its anvil comes overhead, where the aircraft flies into
+  // its wall, where it comes out under its base and where it leaves the base behind. From its
+  // baked cloud once a worker has made it (main.js); until then as planned.
+  let mark2 = null;
+  const second = () => {
+    if (mark2) return mark2;
+    const m = { anvil: 900 * SPEED, wall: 1052 * SPEED, base: 1172 * SPEED, leave: 1400 * SPEED };
+    if (stormSD(SECOND_CENTRE[0], 6000, SECOND_CENTRE[1]) <= 0) return m;
+    for (let s = 950 * SPEED; s < 1150 * SPEED; s += 25) {
+      if (stormSD(...path.position(s)) > -100) {
+        m.wall = s;
+        break;
+      }
+    }
+    for (let s = m.wall; s < 1300 * SPEED; s += 25) {
+      if (path.position(s)[1] < STORM.base - 30) {
+        m.base = s;
+        break;
+      }
+    }
+    for (let s = m.base; s < 1700 * SPEED; s += 50) {
+      const p = path.position(s);
+      if (stormSD(p[0], STORM.base + 300, p[2]) < -200) {
+        m.leave = s;
+        break;
+      }
+    }
+    m.anvil = m.wall - 150 * SPEED;
+    mark2 = m;
+    return m;
+  };
+
   const fixed = options.cabin || {};
   /** The cabin at distance s and time t: all levels 0..1. */
   const cabinAt = (s, t) => {
@@ -399,13 +485,22 @@ export function createJourney(options = {}) {
       Math.max(0.5 * bump(s, mark.canyon - 400, 1500), smooth(s, mark.wall - 200, mark.wall + 900) * (1 - smooth(s, mark.out - 700, mark.out + 200))) *
       (0.6 + 0.4 * noise1(t * 0.43, 9));
     const turb = 0.07 + storm * (0.26 + 0.22 * bump(s, mark.updraft, 2600)) + 0.6 * blind;
+    // The second storm: rain from under its anvil, a downpour, hail and St. Elmo's fire in its
+    // wall, rain still falling from its base after the aircraft has come out under it.
+    const m2 = second();
+    const storm2 = Math.min(smooth(s, m2.anvil - 900, m2.anvil + 900), 1 - smooth(s, m2.leave - 300, m2.leave + 900));
+    const blind2 = smooth(s, m2.wall - 300, m2.wall + 700) * (1 - smooth(s, m2.base - 400, m2.base + 200));
+    const rain2 = storm2 * THREE.MathUtils.clamp(Math.max(0.4 + 0.25 * noise1(s / 1500, 21), 0.9 * cloud + 0.7 * blind2) * (0.85 + 0.15 * noise1(t * 0.29, 22)), 0, 1);
+    const hail2 = 0.7 * blind2 * (0.7 + 0.3 * noise1(t * 0.8, 23));
+    const elmo2 = 0.85 * blind2 * (0.6 + 0.4 * noise1(t * 0.4, 24));
+    const turb2 = storm2 * (0.3 + 0.15 * noise1(s / 2000, 25)) + 0.7 * blind2;
     return {
-      storm,
+      storm: Math.max(storm, storm2),
       cloud,
-      rain: fixed.rain ?? rain,
-      hail: fixed.hail ?? hail,
-      elmo: fixed.elmo ?? Math.min(1, elmo * coronaAround(t)),
-      turb: fixed.turb ?? Math.min(turb, 1)
+      rain: fixed.rain ?? Math.max(rain, rain2),
+      hail: fixed.hail ?? Math.max(hail, hail2),
+      elmo: fixed.elmo ?? Math.min(1, Math.max(elmo * coronaAround(t), elmo2)),
+      turb: fixed.turb ?? Math.min(Math.max(turb, 0.07 + turb2), 1)
     };
   };
 
@@ -543,10 +638,97 @@ export function createJourney(options = {}) {
       // Rain and mist in the air around the aircraft: the storm's showers (see mist.frag).
       view.airMist = cabin.storm * Math.min(1, 0.35 + cabin.rain);
       trafficAt(t, view.traffic);
+      view.traffic.kind = "aircraft";
+      {
+        // The twin: in the path's level frame, flying as this aircraft flies.
+        const w = twinAt(t);
+        view.twin.on = !!w;
+        if (w) {
+          const h = state.heading;
+          const [x, y, z] = w.at;
+          view.twin.pos.set(Math.cos(h) * x - Math.sin(h) * z, y, Math.sin(h) * x + Math.cos(h) * z);
+          view.twin.lit = w.lit;
+          // Its lamps, as this aircraft's, and its beacons flashing with these.
+          const tr = view.traffic;
+          tr.on = w.lit > 0;
+          tr.kind = "twin";
+          const pulse = beaconPulse(t);
+          const lamps = [
+            [NAV[0], NAV_COLORS[0], NAV_POWER],
+            [NAV[1], NAV_COLORS[1], NAV_POWER],
+            [BEACONS[0], BEACON_COLOR, BEACON_POWER * pulse],
+            [BEACONS[1], BEACON_COLOR, BEACON_POWER * pulse]
+          ];
+          lamps.forEach(([p, c, k], i) => {
+            tr.pos[i].set(p[0], p[1], p[2]).applyQuaternion(qAircraft).add(view.twin.pos);
+            tr.light[i].set(c[0] * k * w.lit, c[1] * k * w.lit, c[2] * k * w.lit);
+          });
+        }
+      }
+      {
+        // Where the base's cloud is, above the orb as it leaves (once).
+        if (orbCeiling === null && t >= ORB.leave - 1) {
+          const o = orbAt(ORB.leave);
+          const h = state.heading;
+          const wx = state.x + Math.cos(h) * o.at[0] - Math.sin(h) * o.at[2];
+          const wz = state.z + Math.sin(h) * o.at[0] + Math.cos(h) * o.at[2];
+          orbCeiling = 520;
+          for (let y = 100; y < 1500; y += 20) {
+            if (stormSD(wx, state.alt + y, wz) > 60) {
+              orbCeiling = y;
+              break;
+            }
+          }
+        }
+        const o = orbAt(t, orbCeiling ?? 520);
+        view.orb.on = !!o;
+        if (o) {
+          // From the path's level frame (moments.js) to world axes.
+          const h = state.heading;
+          const [x, y, z] = o.at;
+          view.orb.pos.set(Math.cos(h) * x - Math.sin(h) * z, y, Math.sin(h) * x + Math.cos(h) * z);
+          const k = ORB.power * o.light;
+          view.orb.light.set(ORB.color[0] * k, ORB.color[1] * k, ORB.color[2] * k);
+          view.orb.inside = Math.max(0, stormSD(state.x + view.orb.pos.x, state.alt + y, state.z + view.orb.pos.z));
+        } else {
+          view.orb.light.set(0, 0, 0);
+        }
+      }
+      {
+        const c = CREATURE.find(k => t >= k.t && t < k.until);
+        const cr = view.creature;
+        cr.on = !!c && c.size > 0;
+        cr.world = null;
+        if (c) {
+          if (!creatureAt || creatureAt.sighting !== c) {
+            // From where the aircraft is when the sighting begins: fixed in the world after.
+            const s = c.t * SPEED;
+            const p = path.position(s);
+            const a = path.position(s + 120);
+            const b = path.position(s - 120);
+            const h = Math.atan2(a[0] - b[0], -(a[2] - b[2]));
+            creatureAt = {
+              sighting: c,
+              x: p[0] + Math.sin(h) * c.along + Math.cos(h) * c.side,
+              z: p[2] - Math.cos(h) * c.along + Math.sin(h) * c.side,
+              heading: h - Math.PI / 2 + c.turn
+            };
+          }
+          cr.world = [creatureAt.x, c.alt, creatureAt.z];
+          cr.pos.set(creatureAt.x - state.x, c.alt, creatureAt.z - state.z);
+          cr.size = c.size;
+          cr.heading = creatureAt.heading;
+          cr.phase = t * 0.35;
+        }
+      }
       view.funnel.on = t < FUNNEL.until;
       view.funnel.x = FUNNEL.x - state.x;
       view.funnel.z = FUNNEL.z - state.z;
       view.funnel.spin = (t * FUNNEL.spin) % (Math.PI * 2000);
+      {
+        const m2 = second();
+        view.alien = smooth(t * SPEED, m2.wall + 0.3 * (m2.base - m2.wall), m2.base - 400);
+      }
       view.sprite.power = 0;
       for (const sp of SPRITES) {
         const k = spritePower(t - sp.t);

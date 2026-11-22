@@ -91,19 +91,27 @@ vec3 gTurb = vec3(0.0);
 float mistDensity(vec3 p, float fp, vec3 turb, out float shape) {
   float alt = altitudeAt(p);
   float z = alt - CLOUD_BOTTOM;
-  vec3 suv = stormUv(p, alt);
   shape = -STORM_RANGE;
-  if (z < 0.0 || !inStormBox(suv)) return 0.0;
-  float sd = stormSD(suv, 0.0);
+  // The abyss's decks too (storm.glsl), below the storm's base as well.
+  bool nearDeck = IN_ABYSS && deckSlab(alt) > -900.0;
+  if (!nearDeck && (z < 0.0 || !inAStorm(p, alt))) return 0.0;
+  float sd = z < 0.0 ? -STORM_RANGE : stormField(p, alt, 0.0);
+  float dsh = nearDeck ? deckShape(p, alt, 0.0) : -STORM_RANGE;
   float reach = scudReach(p);
   // Far from everything: how far, for the march to stop.
-  shape = max(sd, -700.0 - max(reach, 0.0));
-  if (sd < -700.0 && reach > 0.0) return 0.0;
+  shape = max(max(sd, dsh), -700.0 - max(reach, 0.0));
+  if (max(sd, dsh) < -700.0 && reach > 0.0) return 0.0;
   float lodB = max(log2(fp / (BASE_PERIOD / 128.0)), 0.0);
   vec4 n = baseNoiseAt(p, lodB);
   float edgeK;
   float thin;
   shape = withScud(p, n, sd + stormBillows(n, alt), edgeK, thin);
+  bool deck = dsh + 0.4 * stormBillows(n, alt) > shape;
+  if (deck) {
+    shape = dsh + 0.4 * stormBillows(n, alt);
+    edgeK = 1.0;
+    thin = 1.0;
+  }
   if (shape < -260.0) return 0.0;
   shape += stormEdge(p, z, max(log2(fp / (DETAIL_PERIOD / 32.0)), 0.0) + 1.2, true) * edgeK;
   if (shape <= 0.0) return 0.0;
@@ -112,7 +120,7 @@ float mistDensity(vec3 p, float fp, vec3 turb, out float shape) {
   gTurb = turb;
   float e = mistNoise(p + gTurb, n.ba, gLodM, true);
   gThin = thin;
-  return stormMist(shape, e) * smoothstep(0.0, 30.0, z) * thin;
+  return stormMist(shape, e) * (deck ? 1.0 : smoothstep(0.0, 30.0, z)) * thin;
 }
 
 // Rain and mist in the air between the towers: faint veils, tens of metres across, that stream

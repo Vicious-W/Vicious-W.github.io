@@ -72,6 +72,7 @@ uniform vec3 uColor;
 uniform float uCoreScale;
 uniform float uOcclude; // 1: hide what lies behind the clouds
 uniform float uPoint;
+uniform float uPixels;
 in float vAcross;
 in float vAlong;
 in float vGlow;
@@ -91,8 +92,13 @@ void main() {
   float x = length(vec2(vAcross, vAlong)) / uCoreScale;
   float core = exp(-x * x / (vWidth * vWidth + 0.05)) * 1.6;
   float halo = exp(-x / 4.0) * 0.22;
-  // A lamp in rain and mist, seen by the eye: a wide, faint glare around the point.
-  if (uPoint > 0.5) halo += exp(-x / 9.0) * 0.06 + exp(-x / 28.0) * 0.012;
+  // A lamp in rain and mist, seen by the eye: a wide, faint glare around the point (fading out
+  // before the edge of its square).
+  if (uPoint > 0.5) {
+    halo += exp(-x / 9.0) * 0.06 + exp(-x / 28.0) * 0.012;
+    float edge = max(1.0 - length(vec2(vAcross, vAlong)) / uPixels, 0.0);
+    halo *= edge * edge;
+  }
   float i = (core + halo) * vGlow * uPower * seen;
   outColor = vec4(uColor * i, 1.0);
 }

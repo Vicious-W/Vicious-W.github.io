@@ -127,3 +127,138 @@ export function trafficLamps(t) {
   const beacon = b < 0.012 ? b / 0.012 : Math.exp(-(b - 0.012) / 0.08);
   return { steady: 0.6, strobe: 30 * strobe, beacon: 3 * beacon };
 }
+
+// ---- the second storm and the abyss (PLAN.md 5.2) ------------------------------------------------
+
+/**
+ * The orb: under the second storm's base, where the sea has gone, a glowing ball comes out of
+ * the dark ahead and to the right, settles beside the aircraft a couple of dozen metres off and
+ * keeps pace with it, wandering, once drifting closer as if to look in; then it climbs away into
+ * the base and is lost in the cloud. Times (s): it shows, it is alongside, it leaves, it is gone.
+ * radius (m); power: its intensity (scene units per steradian); its colour.
+ */
+export const ORB = Object.freeze({ t: 1197, settle: 1207, leave: 1231, gone: 1252, radius: 0.7, power: 24, color: [0.5, 0.72, 1.0] });
+
+const ease = u => u * u * (3 - 2 * u);
+
+/**
+ * The orb at journey time t: where it is relative to the aircraft (m: x to the right, y up, z
+ * back, in the path's level frame; it does not shake with the airframe) and how bright (0..1),
+ * or null when it is not there. ceiling: how high above the aircraft it is a few dozen metres
+ * into the cloud of the base, where it stops and goes out.
+ */
+export function orbAt(t, ceiling = 520) {
+  if (t < ORB.t || t > ORB.gone) return null;
+  // Its own small unrest: a wander of a few metres and a flicker.
+  const wx = 2.4 * Math.sin(t * 0.23 + 1.1) + 1.1 * Math.sin(t * 0.61 + 0.3);
+  const wy = 1.0 * Math.sin(t * 0.31 + 2.0) + 0.45 * Math.sin(t * 1.7);
+  const wz = 3.5 * Math.sin(t * 0.17 + 0.7) + 1.2 * Math.sin(t * 0.47 + 2.4);
+  const glow = 0.9 + 0.07 * Math.sin(t * 37.1) * Math.sin(t * 23.3 + 1) + 0.03 * Math.sin(t * 91.7);
+  const side = [17 + wx, 1.5 + wy, -11 + wz];
+  // Closer for a few seconds, as if to look in.
+  const look = Math.max(0, Math.min(1, (t - 1218) / 2)) * (1 - Math.max(0, Math.min(1, (t - 1223) / 2.5)));
+  side[0] -= 6 * ease(look);
+  side[2] += 4 * ease(look);
+  if (t < ORB.settle) {
+    // Out of the dark ahead, lighting up as it comes.
+    const u = ease((t - ORB.t) / (ORB.settle - ORB.t));
+    const from = [55, -18, -170];
+    return { at: from.map((v, i) => v + (side[i] - v) * u), light: glow * ease(Math.min(1, (t - ORB.t) / 3)) };
+  }
+  if (t < ORB.leave) return { at: side, light: glow };
+  // Up and away into the base above, still keeping pace; in the cloud it slows, a glow in the
+  // dark of it, and goes out.
+  const v = (t - ORB.leave) / (ORB.gone - ORB.leave);
+  const up = ease(Math.min(1, v / 0.85));
+  return { at: [side[0] + 40 * up, side[1] + (ceiling - side[1]) * up, side[2] - 30 * up], light: glow * (1 - ease(Math.max(0, (v - 0.72) / 0.28))) };
+}
+
+/**
+ * The radio (audio/radio.js): it comes alive with static as the second storm comes over, and
+ * calls come through it at these times (s); after the last, on and on, every minute or two.
+ */
+export const RADIO = Object.freeze({ on: 905, calls: [962, 1031, 1109, 1216, 1281, 1347, 1419, 1497, 1560] });
+
+/** The radio's calls from journey time from to to. */
+export function radioCalls(from, to) {
+  const out = RADIO.calls.filter(c => c >= from && c < to);
+  // Beyond the list: one in each stretch of 85 s, somewhere in its middle.
+  const last = RADIO.calls[RADIO.calls.length - 1];
+  for (let k = Math.max(1, Math.floor((from - last) / 85)); last + k * 85 - 40 < to; k++) {
+    const h = Math.sin(k * 127.1 + 311.7) * 43758.5453;
+    const c = last + k * 85 + (h - Math.floor(h) - 0.5) * 50;
+    if (c >= from && c < to) out.push(c);
+  }
+  return out;
+}
+
+/**
+ * The creature (PLAN.md 5.2): deep in the abyss, when lightning lights the cloud beyond it, the
+ * outline of something vast shows in it, a few kilometres off; at the next flash it is gone; at
+ * the next but one it is back, much closer. It sends back no light: it shows only against the
+ * flashes scripted to light the cloud behind it (lightning.js). Each sighting: from t to until
+ * (s); where it is, from where the aircraft is at t (along: m ahead, side: m to the right; alt:
+ * the height of its middle, m); how it is turned from the path's heading (rad); its size (0:
+ * not there); the times of the flashes behind it.
+ */
+export const CREATURE = Object.freeze([
+  { t: 1452, until: 1461, along: 6400, side: -2200, alt: 150, turn: 0.6, size: 1, flashes: [1455.6, 1459.1] },
+  { t: 1461, until: 1468, along: 6400, side: -2200, alt: 150, turn: 0.6, size: 0, flashes: [1464.2] },
+  { t: 1468, until: 1478, along: 3000, side: -800, alt: 280, turn: 1.2, size: 1, flashes: [1470.9, 1474.8] },
+  ...onwardSightings()
+]);
+
+/**
+ * Beyond the planned journey (journey.js's ONWARD) it shows again and again, every few minutes,
+ * never twice the same: somewhere off to one side, then gone at the next flash, or back closer.
+ */
+function onwardSightings() {
+  let a = 90173;
+  const rand = () => {
+    a = (a * 16807) % 2147483647;
+    return a / 2147483647;
+  };
+  const out = [];
+  let t = 1680;
+  while (t < 60000) {
+    const side = (rand() < 0.5 ? -1 : 1) * (1500 + 1800 * rand());
+    const far = { t, until: t + 9, along: 5500 + 2500 * rand(), side, alt: 100 + 300 * rand(), turn: rand() * 6.28, size: 0.8 + 0.5 * rand() };
+    out.push({ ...far, flashes: [t + 3 + rand(), t + 6.5 + rand()].slice(0, rand() < 0.5 ? 1 : 2) });
+    out.push({ ...far, t: t + 9, until: t + 16, size: 0, flashes: [t + 12 + rand()] });
+    if (rand() < 0.55) {
+      out.push({ t: t + 16, until: t + 25, along: 2400 + 1200 * rand(), side: side * (0.3 + 0.3 * rand()), alt: 200 + 200 * rand(), turn: rand() * 6.28, size: far.size, flashes: [t + 18.5 + rand(), t + 22 + rand()] });
+    }
+    t += 200 + 220 * rand();
+  }
+  return out;
+}
+
+/**
+ * The twin (PLAN.md 5.2): out in the abyss, a set of navigation lights again, far ahead and to
+ * the right; they come nearer and nearer, and settle beside the aircraft, a few metres off its
+ * wing tip: an aircraft just like this one, the same glass bubble, the same glowing
+ * instruments, its seat empty. It flies as this one flies, its beacons flash with these, and it
+ * makes no sound. Then its lights go out, and it falls away into the dark. Times (s): it shows,
+ * it is alongside, its lights die, it is gone; and the flashes in the deck above that light it
+ * (lightning.js).
+ */
+export const TWIN = Object.freeze({ t: 1503, near: 1527, dark: 1556, gone: 1566, flashes: [1533.4, 1540.9, 1548.6] });
+
+/**
+ * The twin at journey time t: where it is relative to the aircraft (m: x to the right, y up, z
+ * back, in the path's level frame), how lit its lamps and screens are (0..1), or null.
+ */
+export function twinAt(t) {
+  if (t < TWIN.t || t > TWIN.gone) return null;
+  // Abreast, to the right and a little below: looking into its glass from the side.
+  const close = [11 + 0.6 * Math.sin(t * 0.21), -2 + 0.4 * Math.sin(t * 0.33 + 1), 0.5 + 1.0 * Math.sin(t * 0.13 + 2)];
+  if (t < TWIN.near) {
+    const u = ease((t - TWIN.t) / (TWIN.near - TWIN.t));
+    const from = [700, 120, -2600];
+    return { at: from.map((v, i) => v + (close[i] - v) * u), lit: 1 };
+  }
+  if (t < TWIN.dark) return { at: close, lit: 1 };
+  // Dark, and falling away below and behind.
+  const v = (t - TWIN.dark) / (TWIN.gone - TWIN.dark);
+  return { at: [close[0] + 30 * v * v, close[1] - 260 * v * v, close[2] + 160 * v * v], lit: 0 };
+}

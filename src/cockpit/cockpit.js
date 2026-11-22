@@ -5,6 +5,7 @@ import { createRibbons } from "../night/bolts.js";
 import { createInstruments } from "./instruments.js";
 import { createStreamers } from "./streamers.js";
 import { WING, BEACONS, NAV, BEACON_COLOR, NAV_COLORS, BEACON_POWER, NAV_POWER, beaconPulse } from "./lamps.js";
+import { deepLight } from "../night/abyss.js";
 import vertexShader from "../shaders/fullscreen.vert?raw";
 import common from "../shaders/common.glsl?raw";
 import glassSrc from "../shaders/glass.frag?raw";
@@ -136,7 +137,7 @@ function wingGeometry() {
 }
 
 const DIRS = 3; // moon, flash, flicker
-const POINTS = 7; // three screens, two wing-tip lights, the belly beacon, St. Elmo's fire
+const POINTS = 8; // three screens, two wing-tip lights, the belly beacon, St. Elmo's fire, the orb
 
 const meshVertex = /* glsl */ `
 out vec3 vPos;
@@ -212,6 +213,58 @@ void main() {
 }
 `;
 
+// The twin's glass bubble: a unit sphere scaled to the bubble (uRadii) about its centre, cut
+// where the bulkhead closes it; it mirrors the lights around it, more at a slant (Fresnel), and
+// lets the rest through.
+const bubbleVertex = /* glsl */ `
+uniform vec3 uRadii;
+uniform float uCentreZ;
+out vec3 vPos;
+out vec3 vNormal;
+out float vCabinZ;
+void main() {
+  vec4 world = modelMatrix * vec4(position, 1.0);
+  vPos = world.xyz;
+  vNormal = normalize(mat3(modelMatrix) * (normal / (uRadii * uRadii)));
+  vCabinZ = uCentreZ + uRadii.z * position.z;
+  gl_Position = projectionMatrix * viewMatrix * world;
+}
+`;
+
+const bubbleFragment = /* glsl */ `
+precision highp float;
+uniform vec3 uEye;
+uniform vec3 uAmbient;
+uniform vec3 uDirDir[${DIRS}];
+uniform vec3 uDirLight[${DIRS}];
+uniform vec3 uPointPos[${POINTS}];
+uniform vec3 uPointLight[${POINTS}];
+uniform float uFogSigma;
+in vec3 vPos;
+in vec3 vNormal;
+in float vCabinZ;
+out vec4 outColor;
+
+void main() {
+  if (vCabinZ > BACK_Z) discard;
+  vec3 v = normalize(uEye - vPos);
+  vec3 n = normalize(vNormal);
+  if (dot(n, v) < 0.0) n = -n;
+  float F = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+  vec3 r = reflect(-v, n);
+  // What it mirrors: the dark, the light from below or the moon, lightning, its lamps' glints.
+  vec3 c = 2.0 * uAmbient;
+  for (int i = 0; i < ${DIRS}; i++) c += uDirLight[i] * (0.12 + 4.0 * pow(max(dot(r, uDirDir[i]), 0.0), 60.0));
+  for (int i = 0; i < ${POINTS}; i++) {
+    vec3 lp = uPointPos[i] - vPos;
+    float d2 = dot(lp, lp);
+    c += uPointLight[i] / (d2 + 0.01) * 3.0 * pow(max(dot(r, lp * inversesqrt(d2)), 0.0), 300.0);
+  }
+  float T = exp(-uFogSigma * max(length(vPos - uEye) - 1.3, 0.0));
+  outColor = vec4(c * F * T, (0.05 + 0.85 * F) * T);
+}
+`;
+
 /**
  * stormSD(x, y, z): the baked storm distance (for the radar and for whether the moon shows).
  */
@@ -228,34 +281,49 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
     uPointLight: { value: Array.from({ length: POINTS }, () => new THREE.Vector3()) },
     uFogSigma: { value: 0 }
   };
-  const material = (albedo, gloss, kind = 0, emissive = [0, 0, 0]) =>
-    new THREE.ShaderMaterial({
-      glslVersion: THREE.GLSL3,
-      vertexShader: meshVertex,
-      fragmentShader: meshFragment,
-      uniforms: {
-        ...shared,
-        uAlbedo: { value: new THREE.Vector3(...albedo) },
-        uGloss: { value: gloss },
-        uKind: { value: kind },
-        uEmissive: { value: new THREE.Vector3(...emissive) }
-      },
-      side: THREE.DoubleSide
-    });
-  const frameMat = material([0.06, 0.062, 0.068], 0.55);
-  const panelMat = material([0.028, 0.028, 0.032], 0.2);
-  const metalMat = material([0.11, 0.115, 0.125], 0.7);
-  const fabricMat = material([0.04, 0.037, 0.036], 0.0);
-  const hullMat = material([0.16, 0.165, 0.18], 0.35);
-  const faceMat = material([0, 0, 0], 0.8, 1);
-  const lampMats = NAV_COLORS.map(c => material([0, 0, 0], 0, 2, c.map(v => v * 0.8)));
+  // The materials of an aircraft, lit by the lights in uniforms (this one's: shared).
+  const materials = uniforms => {
+    const material = (albedo, gloss, kind = 0, emissive = [0, 0, 0]) =>
+      new THREE.ShaderMaterial({
+        glslVersion: THREE.GLSL3,
+        vertexShader: meshVertex,
+        fragmentShader: meshFragment,
+        uniforms: {
+          ...uniforms,
+          uAlbedo: { value: new THREE.Vector3(...albedo) },
+          uGloss: { value: gloss },
+          uKind: { value: kind },
+          uEmissive: { value: new THREE.Vector3(...emissive) }
+        },
+        side: THREE.DoubleSide
+      });
+    return {
+      frameMat: material([0.06, 0.062, 0.068], 0.55),
+      panelMat: material([0.028, 0.028, 0.032], 0.2),
+      metalMat: material([0.11, 0.115, 0.125], 0.7),
+      fabricMat: material([0.04, 0.037, 0.036], 0.0),
+      hullMat: material([0.16, 0.165, 0.18], 0.35),
+      faceMat: material([0, 0, 0], 0.8, 1),
+      lampMats: NAV_COLORS.map(c => material([0, 0, 0], 0, 2, c.map(v => v * 0.8)))
+    };
+  };
+  const own = materials(shared);
+  const lampMats = own.lampMats;
+  const CONSOLE_SCALE = 0.85;
 
   const scene = new THREE.Scene();
-  const add = (geometry, mat, position = [0, 0, 0], rotation = [0, 0, 0], parent = scene) => {
+  const { face, shield } = buildAircraft(scene, own);
+
+  /**
+   * An aircraft's meshes, into parent (this one, or its twin: moments.js). outside: with what
+   * only shows from outside, behind the bulkhead (the tail boom, the ducted fan, the tail).
+   */
+  function buildAircraft(parent, { frameMat, panelMat, metalMat, fabricMat, hullMat, faceMat, lampMats }, outside = false) {
+  const add = (geometry, mat, position = [0, 0, 0], rotation = [0, 0, 0], into = parent) => {
     const mesh = new THREE.Mesh(geometry, mat);
     mesh.position.set(...position);
     mesh.rotation.set(...rotation);
-    parent.add(mesh);
+    into.add(mesh);
     return mesh;
   };
 
@@ -269,12 +337,11 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
 
   // Console: the instruments' face tilted towards the eye, under a short glare shield, on a
   // pedestal that stands on the keel.
-  const CONSOLE_SCALE = 0.85;
   const consoleGroup = new THREE.Group();
   consoleGroup.position.set(0, -0.56, -1.0);
   consoleGroup.rotation.x = -0.49;
   consoleGroup.scale.setScalar(CONSOLE_SCALE);
-  scene.add(consoleGroup);
+  parent.add(consoleGroup);
   add(new RoundedBoxGeometry(0.53, 0.275, 0.16, 4, 0.022), panelMat, [0, 0, 0], [0, 0, 0], consoleGroup);
   const face = add(new THREE.PlaneGeometry(0.49, 0.245), faceMat, [0, 0, 0.0815], [0, 0, 0], consoleGroup);
   const shield = add(new RoundedBoxGeometry(0.57, 0.016, 0.21, 3, 0.007), panelMat, [0, 0.147, 0.035], [0, 0, 0], consoleGroup);
@@ -303,6 +370,68 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
   // A slim fairing carries it over the cabin.
   add(new RoundedBoxGeometry(0.34, 0.72, 1.7, 3, 0.15), hullMat, [0, 0.86, 1.6]);
   NAV.forEach((p, i) => add(new THREE.SphereGeometry(0.035, 12, 8), lampMats[i], p));
+
+  if (outside) {
+    // Behind the bulkhead: a tail boom, tapering back to the tail, rising a little; the ducted
+    // fan (heard in the cabin) behind the wing; a T-tail with the beacon on top of its fin; a
+    // short strake under the cabin carrying the belly beacon.
+    add(new THREE.CylinderGeometry(0.13, 0.5, 4.4, 24, 1), hullMat, [0, 0.15, 2.85], [Math.PI / 2 - 0.06, 0, 0]);
+    add(new THREE.TorusGeometry(0.52, 0.075, 12, 48), hullMat, [0, 0.95, 2.75]);
+    add(new THREE.CylinderGeometry(0.52, 0.52, 0.5, 40, 1, true), hullMat, [0, 0.95, 2.75], [Math.PI / 2, 0, 0]);
+    add(new THREE.SphereGeometry(0.13, 16, 12), metalMat, [0, 0.95, 2.78]);
+    for (let k = 0; k < 6; k++) add(new RoundedBoxGeometry(0.06, 0.46, 0.02, 1, 0.01), metalMat, [0.24 * Math.sin((k * Math.PI) / 3), 0.95 + 0.24 * Math.cos((k * Math.PI) / 3), 2.8], [0.3, 0, (-k * Math.PI) / 3]);
+    add(new RoundedBoxGeometry(0.06, 1.45, 0.95, 2, 0.025), hullMat, [0, 1.32, 4.75], [-0.35, 0, 0]);
+    add(new RoundedBoxGeometry(2.5, 0.05, 0.62, 2, 0.02), hullMat, [0, 2.02, 4.95]);
+    add(new RoundedBoxGeometry(0.08, 0.95, 0.8, 2, 0.03), hullMat, [0, -0.74, 1.8], [0.15, 0, 0]);
+  }
+  return { face, shield };
+  }
+
+  // ---- the twin (moments.js): an aircraft just like this one, seen from this one ------------
+  // Its lights are worked out in this eye's world frame (render); it is drawn into a layer of
+  // its own that the glass pass lays over the outside.
+  const twinShared = {
+    uAtlas: shared.uAtlas,
+    uFaceGain: { value: 0 },
+    uEye: { value: new THREE.Vector3() },
+    uAmbient: { value: new THREE.Vector3() },
+    uDirDir: { value: Array.from({ length: DIRS }, () => new THREE.Vector3(0, 1, 0)) },
+    uDirLight: { value: Array.from({ length: DIRS }, () => new THREE.Vector3()) },
+    uPointPos: { value: Array.from({ length: POINTS }, () => new THREE.Vector3()) },
+    uPointLight: { value: Array.from({ length: POINTS }, () => new THREE.Vector3()) },
+    uFogSigma: shared.uFogSigma
+  };
+  const twinMats = materials(twinShared);
+  const twinScene = new THREE.Scene();
+  const twinGroup = new THREE.Group();
+  twinScene.add(twinGroup);
+  buildAircraft(twinGroup, twinMats, true);
+  // Its glass bubble (this one's is the glass pass's): mirroring a little, more at a slant.
+  const bubble = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 72, 48),
+    new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: bubbleVertex,
+      fragmentShader: bubbleFragment,
+      uniforms: { ...twinShared, uRadii: { value: R.clone() }, uCentreZ: { value: C.z } },
+      defines: { BACK_Z: BUBBLE.backZ.toFixed(3) },
+      side: THREE.DoubleSide,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneMinusSrcAlphaFactor,
+      blendSrcAlpha: THREE.OneFactor,
+      blendDstAlpha: THREE.OneMinusSrcAlphaFactor
+    })
+  );
+  bubble.position.copy(C);
+  bubble.scale.copy(R);
+  bubble.renderOrder = 1;
+  twinGroup.add(bubble);
+  const twinCamera = new THREE.PerspectiveCamera(60, 1, 0.3, 8000);
+  let twinLayer = null;
 
   // Where the instruments' face and the glare shield are, for their reflections in the glass
   // and for the light they shed.
@@ -344,6 +473,8 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
     uniforms: {
       uOutside: { value: null },
       uCockpit: { value: null },
+      uTwin: { value: null },
+      uTwinOn: { value: 0 },
       uMist: { value: null },
       uMistOn: { value: 0 },
       uShow: { value: show },
@@ -357,6 +488,7 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
       uRain: { value: 0 },
       uHail: { value: 0 },
       uCloud: { value: 0 },
+      uVivid: { value: 0 },
       uMotes: { value: 0 },
       uHaze: { value: 0 },
       uWindAxis: { value: new THREE.Vector3(0, 0, 1) },
@@ -446,6 +578,15 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
       shared.uDirDir.value[0].copy(view.sunDir).applyQuaternion(inverse);
       shared.uDirLight.value[0].set(...skyLight).multiplyScalar(moonSeen * (1 - cabin.cloud));
       shared.uAmbient.value.set(...skyLight).multiplyScalar(0.05 + 0.1 * moonSeen);
+      // In the abyss there is no moon: the deep's light comes up through the glass floor.
+      if ((view.alien ?? 0) > 0.5) {
+        shared.uDirDir.value[0].set(0, -1, 0).applyQuaternion(inverse);
+        const deep = deepLight(view.alt, view.deepGlow ?? 0);
+        const grey = (deep[0] + deep[1] + deep[2]) / 3;
+        // (Seen with the night's eyes: half its colour.)
+        shared.uDirLight.value[0].set(deep[0] + grey, deep[1] + grey, deep[2] + grey).multiplyScalar(0.3 * view.alien * (1 - 0.7 * cabin.cloud));
+        shared.uAmbient.value.copy(shared.uDirLight.value[0]).multiplyScalar(0.06);
+      }
       shared.uFogSigma.value = 0.12 * cabin.cloud + 0.003 * cabin.rain * cabin.storm;
 
       // Lightning.
@@ -480,6 +621,14 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
       lastFire = fire;
       shared.uPointPos.value[6].copy(fire.centre);
       shared.uPointLight.value[6].set(0.3, 0.36, 1.0).multiplyScalar(0.012 * fire.light);
+      // The orb outside (moments.js): its light in the cabin.
+      const orb = view.orb;
+      if (orb && orb.on) {
+        shared.uPointPos.value[7].copy(orb.pos).applyQuaternion(inverse).add(view.eye);
+        shared.uPointLight.value[7].copy(orb.light).multiplyScalar(0.6);
+      } else {
+        shared.uPointLight.value[7].set(0, 0, 0);
+      }
       for (let i = 0; i < streamers.max; i++) g.uGlow.value[i].copy(fire.glows[i]);
 
       // The head in the cabin.
@@ -492,6 +641,63 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
       camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(view.tanHalf.y));
       camera.aspect = view.tanHalf.x / view.tanHalf.y;
       camera.updateProjectionMatrix();
+
+      // The twin (moments.js), into its own layer: lit as this aircraft is, by the same lights
+      // (in this eye's world frame), and by its own lamps and screens.
+      const tw = view.twin;
+      const twinOn = !!(tw && tw.on);
+      if (twinOn) {
+        const qa = view.qAircraft;
+        const ts = twinShared;
+        twinGroup.position.copy(tw.pos);
+        twinGroup.quaternion.copy(qa);
+        twinGroup.updateMatrixWorld(true);
+        ts.uEye.value.copy(view.eye).applyQuaternion(qa);
+        ts.uAmbient.value.copy(shared.uAmbient.value);
+        for (let i = 0; i < DIRS; i++) {
+          ts.uDirDir.value[i].copy(shared.uDirDir.value[i]).applyQuaternion(qa);
+          ts.uDirLight.value[i].copy(shared.uDirLight.value[i]);
+        }
+        const toWorld = (out, p) => out.copy(p).applyQuaternion(qa).add(tw.pos);
+        for (let i = 0; i < 3; i++) {
+          toWorld(ts.uPointPos.value[i], shared.uPointPos.value[i]);
+          ts.uPointLight.value[i].copy(shared.uPointLight.value[i]).multiplyScalar(tw.lit);
+        }
+        NAV.forEach((p, i) => {
+          toWorld(ts.uPointPos.value[3 + i], tmp.set(...p));
+          ts.uPointLight.value[3 + i].set(...NAV_COLORS[i]).multiplyScalar(0.09 * tw.lit);
+          twinMats.lampMats[i].uniforms.uEmissive.value.set(...NAV_COLORS[i]).multiplyScalar(0.8 * tw.lit);
+        });
+        toWorld(ts.uPointPos.value[5], tmp.set(...BEACONS[1]));
+        ts.uPointLight.value[5].set(...BEACON_COLOR).multiplyScalar(0.5 * pulse * tw.lit);
+        // And this aircraft's lamps on it: the right wing tip's, the beacon on top.
+        ts.uPointPos.value[6].set(...NAV[1]).applyQuaternion(qa);
+        ts.uPointLight.value[6].set(...NAV_COLORS[1]).multiplyScalar(NAV_POWER * (power.on ? 1 : 0));
+        ts.uPointPos.value[7].set(...BEACONS[0]).applyQuaternion(qa);
+        ts.uPointLight.value[7].set(...BEACON_COLOR).multiplyScalar(BEACON_POWER * pulse * power.on);
+        // (Its screens a little brighter than this one's: they light its empty seat.)
+        for (let i = 0; i < 3; i++) ts.uPointLight.value[i].multiplyScalar(3);
+        ts.uFaceGain.value = shared.uFaceGain.value * tw.lit;
+        if (!twinLayer || twinLayer.width !== width || twinLayer.height !== height) {
+          twinLayer?.dispose();
+          twinLayer = new THREE.WebGLRenderTarget(width, height, {
+            type: THREE.HalfFloatType,
+            format: THREE.RGBAFormat,
+            depthBuffer: true,
+            stencilBuffer: false,
+            samples: 4
+          });
+        }
+        twinCamera.position.copy(ts.uEye.value);
+        twinCamera.quaternion.copy(qa).multiply(view.qHead);
+        twinCamera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(view.tanHalf.y));
+        twinCamera.aspect = view.tanHalf.x / view.tanHalf.y;
+        twinCamera.updateProjectionMatrix();
+        renderer.setRenderTarget(twinLayer);
+        renderer.setClearColor(0x000000, 0);
+        renderer.clear(true, true, false);
+        renderer.render(twinScene, twinCamera);
+      }
 
       // The layer: streamers first (they are on the glass, behind everything in the cabin),
       // then the cockpit over them.
@@ -528,6 +734,8 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
       // The glass pass finishes the frame.
       g.uOutside.value = outside;
       g.uCockpit.value = layer.texture;
+      g.uTwin.value = twinOn ? twinLayer.texture : null;
+      g.uTwinOn.value = twinOn ? 1 : 0;
       g.uMist.value = mist;
       g.uMistOn.value = mist ? 1 : 0;
       g.uHeadRight.value.copy(headRight);
@@ -539,6 +747,7 @@ export function createCockpit(renderer, { stormSD = () => -1500, show = 0 } = {}
       g.uRain.value = cabin.rain;
       g.uHail.value = cabin.hail;
       g.uCloud.value = cabin.cloud;
+      g.uVivid.value = view.alien ?? 0;
       g.uMotes.value = cabin.mist ?? cabin.cloud;
       g.uHaze.value = cabin.storm;
       // Rain as the cabin meets it: the drops fall, and the air streams back past the cabin.

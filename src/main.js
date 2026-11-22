@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { createSky, NEAR } from "./sky/sky.js";
 import { createFlight } from "./flight.js";
 import { createJourney } from "./night/journey.js";
-import { bakeStorm, STORM } from "./night/storm.js";
+import { bakeStorm, makeSampler, stormTexture, SECOND, STORM, STORM2 } from "./night/storm.js";
 import { createLightning } from "./night/lightning.js";
 import { createBolts, createLampPoints } from "./night/bolts.js";
 import { createCockpit } from "./cockpit/cockpit.js";
@@ -46,12 +46,19 @@ function start() {
   const baseScale = num("scale", 1);
   renderer.setPixelRatio(dpr);
 
+  // The second storm is baked in a worker meanwhile (it is far off at first); until it arrives
+  // the storms' distance is the first's alone.
+  // (In captures it is baked here, so every still has it.)
+  const bakeWorker = night && !still ? new Worker(new URL("./night/stormbake.worker.js", import.meta.url), { type: "module" }) : null;
+  if (bakeWorker) bakeWorker.postMessage("bake");
   const storm = night ? bakeStorm() : null;
+  let sample2 = null;
+  const stormSD = night ? (x, y, z) => (sample2 ? Math.max(storm.sample(x, y, z), sample2(x, y, z)) : storm.sample(x, y, z)) : null;
   const sky = createSky(renderer, {
     cloudScale: baseScale,
     quality: params.get("q") || "high",
     maxSteps: num("steps", 0),
-    night: storm && { storm: storm.texture, min: STORM.min, size: STORM.size, range: STORM.range, base: STORM.base, calm: STORM.calm }
+    night: storm && { storm: storm.texture, min: STORM.min, size: STORM.size, range: STORM.range, base: STORM.base, calm: STORM.calm, calm2: STORM2.calm }
   });
   // Capture aids: "night&free" flies the free day-style flight (x, z, alt, heading) at night;
   // rain, hail, elmo, turb, cloud (0..1) hold the cabin's levels; "cockpit=0" shows the
@@ -59,7 +66,7 @@ function start() {
   const cabin = {};
   for (const key of ["rain", "hail", "elmo", "turb", "cloud"]) if (params.has(key)) cabin[key] = num(key, 0);
   const flight = night && !params.has("free")
-    ? createJourney({ time: num("t", undefined), hold: params.has("hold") ? num("t", 0) : undefined, yaw: num("yaw", undefined), pitch: num("pitch", undefined), cabin, stormSD: storm.sample })
+    ? createJourney({ time: num("t", undefined), hold: params.has("hold") ? num("t", 0) : undefined, yaw: num("yaw", undefined), pitch: num("pitch", undefined), cabin, stormSD })
     : createFlight({
         alt: num("alt", undefined),
         heading: num("heading", undefined),
@@ -71,7 +78,7 @@ function start() {
       });
 
   // At night the outside is finished into a texture, then seen through the cockpit's glass.
-  const cockpit = night && !params.has("free") && params.get("cockpit") !== "0" ? createCockpit(renderer, { stormSD: storm.sample, show: { mist: 1, outside: 2 }[params.get("show")] || 0 }) : null;
+  const cockpit = night && !params.has("free") && params.get("cockpit") !== "0" ? createCockpit(renderer, { stormSD, show: { mist: 1, outside: 2 }[params.get("show")] || 0 }) : null;
   let frameTarget = null;
   function resize() {
     renderer.setSize(window.innerWidth, window.innerHeight, false);
@@ -185,7 +192,7 @@ function start() {
   const lamps = { pos: [0, 1, 2, 3].map(() => new THREE.Vector3()), light: [0, 1, 2, 3].map(() => new THREE.Vector3()) };
   const clamp01 = v => Math.min(Math.max(v, 0), 1);
   function airAround(view) {
-    const sd = storm.sample(view.x, view.alt, view.z);
+    const sd = stormSD(view.x, view.alt, view.z);
     // Within reach of the storm, or of scud (the nearest is first; its reach as in storm.glsl).
     let scud = Infinity;
     if (view.scud && view.scud.count > 0) {
@@ -197,11 +204,11 @@ function start() {
     view.near = (sd > -(NEAR.reach + 900) || scud < NEAR.reach + 300 || (view.airMist ?? 0) > 0.02) && params.get("near") !== "0" ? NEAR.reach : 0;
     let open = 1;
     for (let d = 400; d < 16000 && open > 0; d += 500) {
-      if (storm.sample(view.x + view.sunDir.x * d, view.alt + view.sunDir.y * d, view.z + view.sunDir.z * d) > -150) open = 0;
+      if (stormSD(view.x + view.sunDir.x * d, view.alt + view.sunDir.y * d, view.z + view.sunDir.z * d) > -150) open = 0;
     }
     moonSeen += (open - moonSeen) * 0.08;
     view.moonSeen = moonSeen;
-    const above = h => storm.sample(view.x, view.alt + h, view.z);
+    const above = h => stormSD(view.x, view.alt + h, view.z);
     const openNear = 1 - clamp01(above(420) / 420 + 0.5);
     view.open = [openNear, openNear * (0.3 + 0.7 * (1 - clamp01(above(1900) / 900 + 0.5)))];
     view.lamps = lampsInWorld(view.qAircraft, view.time, lamps);
@@ -209,7 +216,19 @@ function start() {
     view.power = powerAt(view.time);
     if (!view.power.on) for (const l of view.lamps.light) l.set(0, 0, 0);
   }
-  const lightning = night ? createLightning({ stormSD: storm.sample }) : null;
+  const lightning = night ? createLightning({ stormSD, seed: num("bolt", 9) }) : null;
+  if (night && still) {
+    const second = bakeStorm(SECOND);
+    sample2 = second.sample;
+    sky.setSecondStorm(second.texture, STORM2.min);
+  }
+  if (bakeWorker) {
+    bakeWorker.onmessage = e => {
+      sample2 = makeSampler(e.data.field, STORM2);
+      sky.setSecondStorm(stormTexture(e.data.data, STORM2), STORM2.min);
+      bakeWorker.terminate();
+    };
+  }
   const bolts = night ? createBolts(renderer) : null;
   const trafficPoints = night ? createLampPoints(renderer) : null;
   let flashControl = null;
@@ -234,6 +253,7 @@ function start() {
       view.flash = lit.flash;
       view.flick = lit.flick;
       view.stormGlow = lit.glow;
+      view.deepGlow = lit.deep;
     }
     if (cockpit) airAround(view);
     sky.render(view, { still: still && !motion, target: frameTarget, linear: !!cockpit });
